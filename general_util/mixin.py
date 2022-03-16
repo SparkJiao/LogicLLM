@@ -1,9 +1,9 @@
 from collections import defaultdict
-from typing import Dict, List
+from typing import Dict, List, Tuple
 
 import torch
 
-from general_util.average_meter import LogMetric
+from general_util.average_meter import LogMetric, AverageMeter
 from general_util.logger import get_child_logger
 
 logger = get_child_logger("Mixin")
@@ -15,9 +15,14 @@ class LogMixin:
     def init_metric(self, *metric_names):
         self.eval_metrics = LogMetric(*metric_names)
 
-    def get_eval_log(self, reset=False):
+    def get_eval_log(self, reset=False, ddp=False, device='cpu'):
+
         if self.eval_metrics is None:
             logger.warning("The `eval_metrics` attribute hasn't been initialized.")
+
+        if ddp:
+            for metric in self.eval_metrics.metrics.values():
+                metric.gather(device=device)
 
         results = self.eval_metrics.get_log()
 
@@ -27,6 +32,19 @@ class LogMixin:
             self.eval_metrics.reset()
 
         return _eval_metric_log, results
+
+
+class MetricMixin:
+    # TODO: 如何利用hydra解耦计算metric的方式和模型？
+    def __init__(self, metrics: List[Tuple[str, str, str, str]]):
+        self.metrics = {
+            name: {
+                "key": key,
+                "val": val,
+                "func": func,
+                "meter": AverageMeter()
+            } for key, val, func, name in metrics
+        }
 
 
 class PredictionMixin:

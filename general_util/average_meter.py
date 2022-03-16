@@ -1,4 +1,7 @@
+from typing import Dict
+
 import torch
+import torch.distributed as dist
 
 
 class AverageMeter(object):
@@ -46,6 +49,19 @@ class AverageMeter(object):
         self.sum = value['sum'] if 'sum' in value else 0
         self.count = value['count'] if 'count' in value else 0
 
+    def gather(self, device):
+        tensor_list = [torch.zeros(2, device=device) for _ in range(dist.get_world_size())]
+        tensor = torch.tensor([self.sum, self.count], device=device)
+        dist.all_gather(tensor_list, tensor)
+
+        all_tensor = torch.stack(tensor_list, dim=0)
+        self.sum = all_tensor[:, 0].sum().item()
+        self.count = all_tensor[:, 1].sum().item()
+        if self.count > 0:
+            self.avg = self.sum / self.count
+        else:
+            self.avg = 0
+
 
 class LogMetric(object):
     """
@@ -54,7 +70,7 @@ class LogMetric(object):
 
     def __init__(self, *metric_names):
 
-        self.metrics = {
+        self.metrics: Dict[str, AverageMeter] = {
             key: AverageMeter() for key in metric_names
         }
 
