@@ -1,13 +1,12 @@
-import json
 import os.path
-import torch
 
-from transformers import AutoTokenizer, PreTrainedTokenizer
+import torch
+from torch.utils.data import TensorDataset
+from transformers import PreTrainedTokenizer
+from transformers.tokenization_utils_base import PaddingStrategy, TruncationStrategy, TensorType
+
 from data.data_utils import tokenizer_get_name, get_sep_tokens
 from general_util.logger import get_child_logger
-from transformers.tokenization_utils_base import PaddingStrategy, TruncationStrategy, TensorType
-from torch.utils.data import TensorDataset
-
 
 logger = get_child_logger("MCQA")
 
@@ -67,5 +66,3 @@ def multiple_choice_get_tensor(read_func, file_path: str, tokenizer: PreTrainedT
 
     dataset = TensorDataset(*inputs)
     return dataset
-
-

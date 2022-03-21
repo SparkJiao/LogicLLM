@@ -6,7 +6,7 @@ from torch import nn, Tensor
 from torch.nn import CrossEntropyLoss
 from transformers.modeling_outputs import MultipleChoiceModelOutput
 from transformers.models.roberta.modeling_roberta import RobertaModel, RobertaPreTrainedModel, RobertaConfig, RobertaLMHead, \
-    MaskedLMOutput
+    MaskedLMOutput, SequenceClassifierOutput
 
 from general_util.logger import get_child_logger
 from general_util.mixin import LogMixin
@@ -566,6 +566,91 @@ class RobertaForMultipleChoicePrompt(RobertaPreTrainedModel, LogMixin, ABC):
         return MultipleChoiceModelOutput(
             loss=loss,
             logits=reshaped_logits,
+            hidden_states=outputs.hidden_states,
+            attentions=outputs.attentions,
+        )
+
+
+class RobertaForSequenceClassification(RobertaPreTrainedModel, LogMixin, ABC):
+    def __init__(self, config: RobertaConfig,
+                 fs_checkpoint: bool = False,
+                 fs_checkpoint_offload_to_cpu: bool = False,
+                 fs_checkpoint_maintain_forward_counter: bool = False,
+                 freeze_encoder: bool = False,
+                 no_pooler: bool = False):
+        super().__init__(config)
+
+        self.roberta = RobertaModel(config)
+        self.dropout = nn.Dropout(p=getattr(config, "pooler_dropout", config.hidden_dropout_prob))
+        self.classifier = nn.Linear(config.hidden_size, config.num_labels)
+
+        if fs_checkpoint:
+            for i in range(config.num_hidden_layers):
+                self.roberta.encoder.layer[i] = checkpoint_wrapper(self.roberta.encoder.layer[i],
+                                                                   offload_to_cpu=fs_checkpoint_offload_to_cpu,
+                                                                   maintain_forward_counter=fs_checkpoint_maintain_forward_counter)
+
+        self.no_pooler = no_pooler
+        self.freeze_encoder = freeze_encoder
+        if freeze_encoder:
+            layers.freeze_module(self.roberta)
+
+        self.init_weights()
+
+        self.init_metric("loss", "acc")
+
+    def forward(
+            self,
+            input_ids: Tensor,
+            attention_mask: Tensor = None,
+            token_type_ids: Tensor = None,
+            labels: Tensor = None,
+            output_attentions=None,
+            output_hidden_states=None,
+            return_dict=None,
+    ):
+        r"""
+        labels (:obj:`torch.LongTensor` of shape :obj:`(batch_size,)`, `optional`):
+            Labels for computing the multiple choice classification loss. Indices should be in ``[0, ...,
+            num_choices-1]`` where :obj:`num_choices` is the size of the second dimension of the input tensors. (See
+            :obj:`input_ids` above)
+        """
+        return_dict = return_dict if return_dict is not None else self.config.use_return_dict
+
+        outputs = self.roberta(
+            input_ids,
+            token_type_ids=token_type_ids,
+            attention_mask=attention_mask,
+            output_attentions=output_attentions,
+            output_hidden_states=output_hidden_states,
+            return_dict=return_dict,
+        )
+        if self.no_pooler:
+            pooled_output = outputs[0][:, 0]
+        else:
+            pooled_output = outputs[1]
+
+        pooled_output = self.dropout(pooled_output)
+
+        logits = self.classifier(pooled_output)
+
+        loss = None
+        if labels is not None:
+            loss_fct = CrossEntropyLoss(ignore_index=-1)
+            loss = loss_fct(logits, labels)
+
+            if not self.training:
+                acc, true_label_num = layers.get_accuracy(logits, labels)
+                self.eval_metrics.update("acc", val=acc, n=true_label_num)
+                self.eval_metrics.update("loss", val=loss.item(), n=true_label_num)
+
+        if not return_dict:
+            output = (logits,) + outputs[2:]
+            return ((loss,) + output) if loss is not None else output
+
+        return SequenceClassifierOutput(
+            loss=loss,
+            logits=logits,
             hidden_states=outputs.hidden_states,
             attentions=outputs.attentions,
         )
