@@ -1,5 +1,5 @@
 import json
-from typing import List, Dict
+from typing import List
 
 
 class LSATReader:
@@ -49,3 +49,22 @@ class LogicNLILangReader:
 
         return all_facts, all_rules, all_statements, all_labels
 
+
+class ReClorReader:
+    def __call__(self, file):
+        data = json.load(open(file, 'r'))
+
+        all_context = []
+        all_question = []
+        all_option_list = []
+        all_label = []
+        for sample in data:
+            all_context.append(sample["context"])
+            all_question.append(sample["question"])
+            if "label" not in sample:
+                all_label.append(-1)
+            else:
+                all_label.append(sample["label"])
+            all_option_list.append(sample["answers"])
+
+        return all_context, all_question, all_option_list, all_label
