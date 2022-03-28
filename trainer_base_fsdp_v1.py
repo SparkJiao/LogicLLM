@@ -202,7 +202,7 @@ def train(cfg, train_dataset, model, tokenizer, continue_from_global_step=0):
                 if cfg.fp16:
                     scaler.unscale_(optimizer)
 
-                if cfg.max_grad_norm and not ("optimizer" in cfg and "lamb" in cfg.optimizer):
+                if cfg.max_grad_norm and not ("optimizer" in cfg and cfg.optimizer and "lamb" in cfg.optimizer):
                     if hasattr(optimizer, "clip_grad_norm"):
                         optimizer.clip_grad_norm(cfg.max_grad_norm)
                     elif hasattr(model, "clip_grad_norm_"):
@@ -414,6 +414,7 @@ def main(cfg: DictConfig):
     # Test
     results = {}
     if cfg.do_eval and cfg.local_rank in [-1, 0]:
+        cfg.ddp_eval = False  # Canceling distributed evaluation since other progresses have already existed.
         checkpoints = [cfg.output_dir]
         if cfg.save_best:
             logging.getLogger("transformers.modeling_utils").setLevel(logging.WARN)  # Reduce logging

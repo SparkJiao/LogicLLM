@@ -53,7 +53,7 @@ def initialize_optimizer(cfg: DictConfig, grouped_parameters: List[Dict] = None,
             }
         ]
 
-    if "optimizer" in cfg and 'lamb' in cfg.optimizer:
+    if "optimizer" in cfg and cfg.optimizer and 'lamb' in cfg.optimizer:
         if "bit_training" in cfg and cfg.bit_training:
             from bitsandbytes.optim import LAMB8bit
 
@@ -86,7 +86,7 @@ def initialize_optimizer(cfg: DictConfig, grouped_parameters: List[Dict] = None,
             if hasattr(cfg, "multi_tensor") and cfg.multi_tensor:
                 from torch.optim._multi_tensor import AdamW
             else:
-                from transformers import AdamW
+                from torch.optim.adamw import AdamW
 
             optimizer = AdamW(grouped_parameters, lr=cfg.learning_rate, eps=cfg.adam_epsilon, betas=(eval(cfg.adam_betas)))
 

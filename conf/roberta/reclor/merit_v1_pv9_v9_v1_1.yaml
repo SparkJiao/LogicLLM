@@ -2,50 +2,38 @@ hydra:
   run:
     dir: ./
 
-train_file: wiki_erica_path/v9.0/train_distant.path_v9.train.0.pkl
-dev_file: wiki_erica_path/v9.0/train_distant.path_v9.dev.pkl
-test_file:
+train_file: reclor_data/train.json
+dev_file: reclor_data/val.json
+test_file: reclor_data/test.json
 
 # Model
 model:
-  _target_: models.roberta.RobertaForMultipleChoiceForPreTrain.from_pretrained
+  _target_: models.roberta.RobertaForMultipleChoiceForZeroShot.from_pretrained
   mlp_hidden_size: 2048
 
 # Data loading
 read_tensor:
-  _target_: data.wiki_entity_path_v9.convert_examples_into_features
-  max_neg_num: 3
-  aug_num: 1
-  max_seq_length: 384
-  shuffle_context: True
-  min_rep_num: 5
-  geo_p: 0.4
-  deduct_ratio: 1.0
-  context_ratio: 1.0
-  noise_sent_ratio: 0.5
-  num_workers: 48
+  _target_: data.mcqa.multiple_choice_get_tensor
+  read_func:
+    _target_: data.readers.ReClorReader
+  max_seq_length: 256
 
 extended_vocab:
 
 # Data collator
 collator:
-  _target_: data.collators.WikiPathDatasetCollatorWithContext
-  max_seq_length: 320
-  tokenizer: pretrained-models/roberta-large
-  mlm_probability: 0.15
-  max_option_num: 4
-  swap: True
+  _target_: data.collators.Tuple2DictCollator
 
 # Dataloader
-num_workers: 8
+num_workers: 4
 prefetch_factor: 2
 
 # Wiki path pretrain v8.2
-model_name_or_path: pretrained-models/roberta-large
+model_name_or_path: pretrained-models/roberta.large.wiki_erica_path_v9_v9.0.1aug.seq320.w4.2080Ti/checkpoint-400
 pretrain:
 
-#output_dir: experiments/roberta.large.wiki_erica_path_v9_v9.0.1aug.seq320.w4.2080Ti
-output_dir: experiments/roberta.large.wiki_erica_path_v9_v9.0.1aug.seq320.w4.2080Ti.rerun
+#output_dir: experiments/reclor.roberta.merit-v1.pv9.v9.0.cp400.w2.TitanXP.v1.0.s${seed}
+output_dir: experiments/reclor.roberta.merit-v1.pv9.v9.0.cp400.w4.TitanXP.v1.1.s${seed}
 
 do_train: True
 evaluate_during_training: True
@@ -56,26 +44,24 @@ eval_sub_path:
 # Training hyper-parameters
 per_gpu_train_batch_size: 1
 per_gpu_eval_batch_size: 1
-learning_rate: 1e-5
-gradient_accumulation_steps: 1024
+#learning_rate: 1e-5
+learning_rate: 2e-5
+gradient_accumulation_steps: 6
 weight_decay: 0.01
 adam_epsilon: 1e-6
 adam_betas: "(0.9, 0.98)"
-max_grad_norm: 5.0
-num_train_epochs: 5
-max_steps: 500
+#adam_betas: "(0.9, 0.999)"
+max_grad_norm: 0.0
+#max_grad_norm: 1.0
+num_train_epochs: 10
+max_steps: 0
 warmup_proportion: 0.1
 warmup_steps: 0
 
-# Optimizer
-optimizer: lamb
-use_nvlamb: True
-bit_training:
 
-
-logging_steps: 1
+logging_steps: 5
+save_steps: -1
 save_best: True
-save_steps: 100
 eval_steps: 100
 ddp_eval: True
 no_cuda: False
@@ -142,8 +128,6 @@ summary_helper:
   _target_: general_util.tensorboard_helper.SummaryWriterHelper
   batch_index_or_keys:
   outputs_index_or_keys:
-    "train/mlm_loss": mlm_loss
-    "train/cls_loss": cls_loss
 
 # Temporary variables
 n_gpu:

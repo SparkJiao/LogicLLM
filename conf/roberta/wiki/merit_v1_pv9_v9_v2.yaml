@@ -10,6 +10,7 @@ test_file:
 model:
   _target_: models.roberta.RobertaForMultipleChoiceForPreTrain.from_pretrained
   mlp_hidden_size: 2048
+  mlm_alpha: 0.5
 
 # Data loading
 read_tensor:
@@ -30,7 +31,7 @@ extended_vocab:
 # Data collator
 collator:
   _target_: data.collators.WikiPathDatasetCollatorWithContext
-  max_seq_length: 320
+  max_seq_length: 384
   tokenizer: pretrained-models/roberta-large
   mlm_probability: 0.15
   max_option_num: 4
@@ -45,7 +46,8 @@ model_name_or_path: pretrained-models/roberta-large
 pretrain:
 
 #output_dir: experiments/roberta.large.wiki_erica_path_v9_v9.0.1aug.seq320.w4.2080Ti
-output_dir: experiments/roberta.large.wiki_erica_path_v9_v9.0.1aug.seq320.w4.2080Ti.rerun
+#output_dir: experiments/roberta.large.wiki_erica_path_v9_v9.0.1aug.seq320.w4.2080Ti.rerun
+output_dir: experiments/roberta.large.wiki_erica_path_v9_v9.0.1aug.seq384.w4.adamw.mlm_0.5.2080Ti
 
 do_train: True
 evaluate_during_training: True
@@ -62,14 +64,14 @@ weight_decay: 0.01
 adam_epsilon: 1e-6
 adam_betas: "(0.9, 0.98)"
 max_grad_norm: 5.0
-num_train_epochs: 5
-max_steps: 500
+num_train_epochs: 10
+max_steps: 1000
 warmup_proportion: 0.1
 warmup_steps: 0
 
 # Optimizer
-optimizer: lamb
-use_nvlamb: True
+optimizer:
+use_nvlamb:
 bit_training:
 
 

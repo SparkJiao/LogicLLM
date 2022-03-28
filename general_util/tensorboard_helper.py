@@ -1,5 +1,11 @@
+from typing import Union, Dict, Tuple
+
+from torch import Tensor
 from torch.utils.tensorboard import SummaryWriter
-from typing import List, Union, Dict, Tuple
+
+from general_util.logger import get_child_logger
+
+logger = get_child_logger("TensorboardHelper")
 
 
 class SummaryWriterHelper:
@@ -15,11 +21,24 @@ class SummaryWriterHelper:
         self.writer = writer
         self.batch_index_or_keys = batch_index_or_keys
         self.outputs_index_or_keys = outputs_index_or_keys
+        logger.info("Tensorboard details:")
+        logger.info(self.batch_index_or_keys)
+        logger.info(self.outputs_index_or_keys)
 
     def __call__(self, step: int, last_batch: Union[Dict, Tuple] = None, last_outputs: Union[Dict, Tuple] = None):
         if last_batch is not None and self.batch_index_or_keys is not None:
-            for name, k in self.batch_index_or_keys:
-                self.writer.add_scalar(name, last_batch[k], global_step=step)
+            for name, k in self.batch_index_or_keys.items():
+                if last_batch[k] is not None:
+                    if isinstance(last_batch[k], Tensor):
+                        scalar = last_batch[k].item()
+                    else:
+                        scalar = last_batch[k]
+                    self.writer.add_scalar(name, scalar, global_step=step)
         if last_outputs is not None and self.outputs_index_or_keys is not None:
-            for name, k in self.outputs_index_or_keys:
-                self.writer.add_scalar(name, last_outputs[k], global_step=step)
+            for name, k in self.outputs_index_or_keys.items():
+                if last_outputs[k] is not None:
+                    if isinstance(last_outputs[k], Tensor):
+                        scalar = last_outputs[k].item()
+                    else:
+                        scalar = last_outputs[k]
+                    self.writer.add_scalar(name, scalar, global_step=step)

@@ -1,4 +1,5 @@
 from abc import ABC
+from dataclasses import dataclass
 
 import torch
 from fairscale.nn.checkpoint.checkpoint_activations import checkpoint_wrapper
@@ -113,11 +114,20 @@ class RobertaForMultipleChoice(RobertaPreTrainedModel, LogMixin, ABC):
         )
 
 
+@dataclass
+class MultipleChoicePreTrainModelOutput(MultipleChoiceModelOutput):
+    mlm_loss: torch.FloatTensor = None
+    mlm_acc: torch.FloatTensor = None
+    cls_loss: torch.FloatTensor = None
+    cls_acc: torch.FloatTensor = None
+
+
 class RobertaForMultipleChoiceForPreTrain(RobertaPreTrainedModel, LogMixin, ABC):
     _keys_to_ignore_on_load_missing = [r"position_ids"]
 
     def __init__(self, config: RobertaConfig,
                  mlp_hidden_size: int = 768,
+                 mlm_alpha: float = 1.0,
                  fs_checkpoint: bool = False,
                  fs_checkpoint_offload_to_cpu: bool = False,
                  fs_checkpoint_maintain_forward_counter: bool = False,
@@ -144,6 +154,8 @@ class RobertaForMultipleChoiceForPreTrain(RobertaPreTrainedModel, LogMixin, ABC)
         self.init_weights()
 
         self.init_metric("loss", "acc", "mlm_loss", "mlm_acc", "cls_loss")
+
+        self.mlm_alpha = mlm_alpha
 
     @staticmethod
     def fold_tensor(x: Tensor):
@@ -190,10 +202,9 @@ class RobertaForMultipleChoiceForPreTrain(RobertaPreTrainedModel, LogMixin, ABC)
         logits = self.cls(self.dropout(self.pooler(pooled_output)))
         reshaped_logits = logits.view(-1, num_choices)
 
-        # choice_mask = (attention_mask.sum(dim=-1) == 0).reshape(-1, num_choices)
-        # reshaped_logits = reshaped_logits + choice_mask * -10000.0
-
         loss = 0.
+        mlm_loss = 0.
+        cls_loss = 0.
         if labels is not None:
             loss_fct = CrossEntropyLoss(ignore_index=-1)
             cls_loss = loss_fct(reshaped_logits, labels)
@@ -210,7 +221,7 @@ class RobertaForMultipleChoiceForPreTrain(RobertaPreTrainedModel, LogMixin, ABC)
                 )
 
                 mlm_scores = self.lm_head(mlm_outputs[0])
-                mlm_loss = loss_fct(mlm_scores.reshape(-1, self.vocab_size), mlm_labels.reshape(-1))
+                mlm_loss = self.mlm_alpha * loss_fct(mlm_scores.reshape(-1, self.vocab_size), mlm_labels.reshape(-1))
                 loss = loss + mlm_loss
             else:
                 mlm_scores = None
@@ -228,14 +239,16 @@ class RobertaForMultipleChoiceForPreTrain(RobertaPreTrainedModel, LogMixin, ABC)
                     self.eval_metrics.update("mlm_loss", val=mlm_loss.item(), n=true_label_num)
 
         if not return_dict:
-            output = (reshaped_logits,) + outputs[2:]
+            output = (reshaped_logits,) + outputs[2:] + (mlm_loss, cls_loss,)
             return ((loss,) + output) if loss is not None else output
 
-        return MultipleChoiceModelOutput(
+        return MultipleChoicePreTrainModelOutput(
             loss=loss,
             logits=reshaped_logits,
             hidden_states=outputs.hidden_states,
             attentions=outputs.attentions,
+            mlm_loss=mlm_loss,
+            cls_loss=cls_loss,
         )
 
 
