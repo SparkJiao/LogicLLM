@@ -120,6 +120,13 @@ def train(cfg, train_dataset, model, tokenizer, continue_from_global_step=0):
         logger.info(f"Extended extra vocab size: {cfg.extended_vocab}")
         model.resize_token_embeddings(model.config.vocab_size + cfg.extended_vocab)
 
+    if "with_lightseq" in cfg and cfg.with_lightseq:
+        logger.info(f"Enabling Lightseq.")
+
+        from general_util.lightseq_utils import inject_ls_roberta_enc_layer
+
+        inject_ls_roberta_enc_layer(model, cfg, model.config)
+
     if cfg.max_steps > 0:
         t_total = cfg.max_steps
         cfg.num_train_epochs = cfg.max_steps // (len(train_dataloader) // cfg.gradient_accumulation_steps) + 1
@@ -321,6 +328,8 @@ def evaluate(cfg, model, tokenizer: PreTrainedTokenizer, prefix="", _split="dev"
         prediction_file = os.path.join(cfg.output_dir, prefix, "eval_predictions.npy")
         np.save(prediction_file, pred_list)
         json.dump(prob_list, open(os.path.join(cfg.output_dir, prefix, "eval_probs.json"), "w"))
+
+    torch.cuda.empty_cache()
 
     return results
 

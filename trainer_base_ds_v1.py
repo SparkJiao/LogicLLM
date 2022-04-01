@@ -66,11 +66,6 @@ def save_model(model: Union[deepspeed.DeepSpeedEngine, deepspeed.PipelineEngine]
         state_dict = get_state_dict(model, cfg)
 
     if cfg.local_rank in [-1, 0]:
-        # TODO: Is it necessary to convert the state dict of float16 into float32?
-        # for k in state_dict:
-        #     if state_dict[k].dtype == torch.float16:
-        #         state_dict[k] = state_dict[k].float()
-
         unwrapped_model.save_pretrained(output_dir, state_dict=state_dict)
         if tokenizer is not None:
             tokenizer.save_pretrained(output_dir)
@@ -79,19 +74,19 @@ def save_model(model: Union[deepspeed.DeepSpeedEngine, deepspeed.PipelineEngine]
 
 
 def forward_step(model, inputs: Dict[str, torch.Tensor]):
-    # loss = model(**inputs)["loss"]
     outputs = model(**inputs)
     if isinstance(outputs, tuple):
         loss = outputs[0]
     else:
-        loss = outputs.pop("loss")
+        loss = outputs["loss"]
+
     model.backward(loss)
     model.step()
 
     return loss.item(), outputs
 
 
-def train(cfg, train_dataset, features, model, tokenizer, continue_from_global_step=0):
+def train(cfg, train_dataset, model, tokenizer, continue_from_global_step=0):
     """ Train the model """
     if cfg.local_rank in [-1, 0]:
         _dir_splits = cfg.output_dir.split('/')
@@ -106,8 +101,12 @@ def train(cfg, train_dataset, features, model, tokenizer, continue_from_global_s
     cfg.train_batch_size = cfg.per_gpu_train_batch_size * max(1, cfg.n_gpu)
     train_sampler = RandomSampler(train_dataset) if cfg.local_rank == -1 else DistributedSampler(train_dataset)
     train_collator = hydra.utils.instantiate(cfg.collator) if "collator" in cfg and cfg.collator else None
-    train_dataloader = DataLoader(dataset=train_dataset, sampler=train_sampler, batch_size=cfg.train_batch_size,
-                                  collate_fn=train_collator, num_workers=cfg.num_workers, pin_memory=True,
+    train_dataloader = DataLoader(dataset=train_dataset,
+                                  sampler=train_sampler,
+                                  batch_size=cfg.train_batch_size,
+                                  collate_fn=train_collator,
+                                  num_workers=cfg.num_workers,
+                                  pin_memory=True,
                                   prefetch_factor=cfg.prefetch_factor)
 
     if cfg.max_steps > 0:
@@ -205,16 +204,18 @@ def train(cfg, train_dataset, features, model, tokenizer, continue_from_global_s
                 if cfg.evaluate_during_training and cfg.eval_steps > 0 and global_step % cfg.eval_steps == 0:
                     state_dict = get_state_dict(model, cfg)
 
-                    if cfg.local_rank in [-1, 0]:
+                    if cfg.ddp_eval or cfg.local_rank in [-1, 0]:
                         results = evaluate(cfg, model, tokenizer, prefix=str(global_step), _split="dev")
-                        for key, value in results.items():
-                            tb_writer.add_scalar(f"eval/{key}", value, global_step)
 
-                        sub_path = os.path.join(cfg.output_dir, 'checkpoint-{}'.format(global_step))
-                        flag = note_best_checkpoint(cfg, results, sub_path)
-                        if cfg.save_best and flag:
-                            save_model(model, cfg, cfg.output_dir, tokenizer, state_dict)
-                            del state_dict
+                        if cfg.local_rank in [-1, 0]:
+                            for key, value in results.items():
+                                tb_writer.add_scalar(f"eval/{key}", value, global_step)
+
+                            sub_path = os.path.join(cfg.output_dir, 'checkpoint-{}'.format(global_step))
+                            flag = note_best_checkpoint(cfg, results, sub_path)
+                            if cfg.save_best and flag:
+                                save_model(model, cfg, cfg.output_dir, tokenizer, state_dict)
+                                del state_dict
 
             if 0 < cfg.max_steps < global_step:
                 epoch_iterator.close()
@@ -231,16 +232,22 @@ def train(cfg, train_dataset, features, model, tokenizer, continue_from_global_s
 
 
 def evaluate(cfg, model, tokenizer: PreTrainedTokenizer, prefix="", _split="dev"):
-    dataset, features = load_and_cache_examples(cfg, tokenizer, _split=_split)
+    dataset = load_and_cache_examples(cfg, tokenizer, _split=_split)
 
     if not os.path.exists(os.path.join(cfg.output_dir, prefix)):
         os.makedirs(os.path.join(cfg.output_dir, prefix))
 
     cfg.eval_batch_size = cfg.per_gpu_eval_batch_size
-    eval_sampler = SequentialSampler(dataset)  # Note that DistributedSampler samples randomly
+    if _split == 'dev' and cfg.ddp_eval:
+        eval_sampler = DistributedSampler(dataset, shuffle=False)
+    else:
+        eval_sampler = SequentialSampler(dataset)  # Note that DistributedSampler samples randomly
     eval_collator = hydra.utils.instantiate(cfg.collator) if "collator" in cfg and cfg.collator else None
-    eval_dataloader = DataLoader(dataset, sampler=eval_sampler, batch_size=cfg.eval_batch_size,
+    eval_dataloader = DataLoader(dataset,
+                                 sampler=eval_sampler,
+                                 batch_size=cfg.eval_batch_size,
                                  collate_fn=eval_collator)
+
     single_model_gpu = unwrap_model(model)
     single_model_gpu.get_eval_log(reset=True)
     # Eval!
@@ -252,7 +259,7 @@ def evaluate(cfg, model, tokenizer: PreTrainedTokenizer, prefix="", _split="dev"
     model.eval()
     pred_list = []
     prob_list = []
-    for batch in tqdm(eval_dataloader, desc="Evaluating", dynamic_ncols=True):
+    for batch in tqdm(eval_dataloader, desc="Evaluating", disable=cfg.local_rank not in [-1, 0], dynamic_ncols=True):
         batch = batch_to_device(batch, cfg.device)
         with torch.no_grad():
             outputs = model(**batch)
@@ -261,14 +268,17 @@ def evaluate(cfg, model, tokenizer: PreTrainedTokenizer, prefix="", _split="dev"
             pred_list.extend(pred.tolist())
             prob_list.extend(prob.tolist())
 
-    metric_log, results = single_model_gpu.get_eval_log(reset=True)
+    metric_log, results = single_model_gpu.get_eval_log(reset=True, ddp=(_split == 'dev' and cfg.ddp_eval), device=cfg.device)
     logger.info("****** Evaluation Results ******")
     logger.info(f"Global Steps: {prefix}")
     logger.info(metric_log)
 
-    prediction_file = os.path.join(cfg.output_dir, prefix, "eval_predictions.npy")
-    np.save(prediction_file, pred_list)
-    json.dump(prob_list, open(os.path.join(cfg.output_dir, prefix, "eval_probs.json"), "w"))
+    if cfg.local_rank in [-1, 0]:
+        prediction_file = os.path.join(cfg.output_dir, prefix, "eval_predictions.npy")
+        np.save(prediction_file, pred_list)
+        json.dump(prob_list, open(os.path.join(cfg.output_dir, prefix, "eval_probs.json"), "w"))
+
+    torch.cuda.empty_cache()
 
     return results
 
@@ -286,14 +296,12 @@ def load_and_cache_examples(cfg, tokenizer: PreTrainedTokenizer, _split="train")
     else:
         raise RuntimeError(_split)
 
-    examples, features, tensors = hydra.utils.call(cfg.read_tensor, file_path=input_file, tokenizer=tokenizer)
+    dataset = hydra.utils.call(cfg.read_tensor, file_path=input_file, tokenizer=tokenizer)
 
     if cfg.local_rank == 0 and _split == "train":
         dist.barrier()  # Make sure only the first process in distributed training process the dataset, and the others will use the cache
 
-    dataset = TensorDataset(*tensors)
-
-    return dataset, features
+    return dataset
 
 
 @hydra.main(config_path="conf", config_name="config")
@@ -333,9 +341,6 @@ def main(cfg: DictConfig):
     if cfg.local_rank == 0:
         dist.barrier()  # Make sure only the first process in distributed training will download model & vocab
 
-    # if cfg.local_rank == -1:  # For FullyShardedDDP, place the model on cpu first.
-    #     model.to(cfg.device)
-
     # logger.info("Training/evaluation parameters %s", OmegaConf.to_yaml(cfg))
     if cfg.local_rank in [-1, 0] and cfg.do_train:
         if not os.path.exists(cfg.output_dir):
@@ -358,13 +363,14 @@ def main(cfg: DictConfig):
         #         model = model_class.from_pretrained(checkpoint)
         #         model.to(args.device)
 
-        train_dataset, features = load_and_cache_examples(cfg, tokenizer, _split="train")
-        global_step, tr_loss = train(cfg, train_dataset, features, model, tokenizer, continue_from_global_step)
+        train_dataset = load_and_cache_examples(cfg, tokenizer, _split="train")
+        global_step, tr_loss = train(cfg, train_dataset, model, tokenizer, continue_from_global_step)
         logger.info(" global_step = %s, average loss = %s", global_step, tr_loss)
 
     # Test
     results = {}
     if cfg.do_eval and cfg.local_rank in [-1, 0]:
+        cfg.ddp_eval = False  # Canceling distributed evaluation since other progresses have already existed.
         checkpoints = [cfg.output_dir]
         if cfg.save_best:
             logging.getLogger("transformers.modeling_utils").setLevel(logging.WARN)  # Reduce logging

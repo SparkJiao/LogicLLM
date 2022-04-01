@@ -48,20 +48,20 @@ pretrain:
 #output_dir: experiments/roberta.large.wiki_erica_path_v9_v9.0.1aug.seq320.w4.2080Ti
 #output_dir: experiments/roberta.large.wiki_erica_path_v9_v9.0.1aug.seq320.w4.2080Ti.rerun
 #output_dir: experiments/roberta.large.wiki_erica_path_v9_v9.0.1aug.seq384.w4.adamw.mlm_0.5.2080Ti
-output_dir: experiments/roberta.large.wiki_erica_path_v9_v9.0.1aug.seq384.w4.adamw.mlm_0.5.500steps.8bit.2080Ti
+#output_dir: experiments/roberta.large.wiki_erica_path_v9_v9.0.1aug.seq384.w4.adamw.mlm_0.5.500steps.8bit.2080Ti
+output_dir: experiments/roberta.large.wiki_erica_path_v9_v9.0.1aug.seq384.w4.adamw.mlm_0.5.500steps.ds.2080Ti
 
-#do_train: True
-do_train: False
-evaluate_during_training: False
+do_train: True
+evaluate_during_training: True
 
 do_eval: True
-eval_sub_path: checkpoint-*
+eval_sub_path:
 
 # Training hyper-parameters
-per_gpu_train_batch_size: 1
-per_gpu_eval_batch_size: 8
+per_gpu_train_batch_size: 2
+per_gpu_eval_batch_size: 2
 learning_rate: 1e-5
-gradient_accumulation_steps: 1024
+gradient_accumulation_steps: 512
 weight_decay: 0.01
 adam_epsilon: 1e-6
 adam_betas: "(0.9, 0.98)"
@@ -78,8 +78,7 @@ bit_training: True
 
 
 logging_steps: 1
-#save_best: True
-save_best: False
+save_best: True
 save_steps: 100
 eval_steps: 100
 ddp_eval: True
@@ -87,7 +86,7 @@ no_cuda: False
 seed: 42
 local_rank: -1
 fp16: True
-fp16_opt_level: O1
+fp16_opt_level: O2
 
 # Prediction config
 prediction_cfg:
@@ -98,11 +97,14 @@ prediction_cfg:
 
 # fairscale.FullyShardedDP
 fairscale_config:
-#  _target_: general_util.fsdp_utils.recursive_initialize
   _target_: general_util.fsdp_utils.default_initialize
+#  _target_: general_util.fsdp_utils.recursive_initialize
   fp16: ${fp16}
+#  reshard_after_forward: False
+#  disable_reshard_on_root: True
   move_grads_to_cpu: False
   move_params_to_cpu: False
+#  flatten_parameters: True
 
 # Lightseq config
 with_lightseq: False
@@ -115,7 +117,7 @@ ds_cfg:
     type: AdamW
     params:
       lr: ${learning_rate}
-      betas: [0.9, 0.999]
+      betas: [0.9, 0.98]
       eps: ${adam_epsilon}
       weight_decay: ${weight_decay}
   scheduler:
@@ -130,13 +132,13 @@ ds_cfg:
     enabled: ${fp16}
     initial_scale_power: 12
   zero_optimization:
-    stage: 3
-#    offload_optimizer:
-#      device: cpu
-#      pin_memory: True
-#    offload_param:
-#      device: cpu
-#      pin_memory: True
+    stage: 2
+    offload_optimizer:
+      device: cpu
+      pin_memory: True
+    offload_param:
+      device: cpu
+      pin_memory: True
 #  activation_checkpointing:
 #    partition_activations: True
 #    cpu_checkpointing: True
@@ -144,7 +146,7 @@ ds_cfg:
 #    number_checkpoints: False
 #    synchronize_checkpoint_boundary: False
 #    profile: False
-  steps_per_print: 1024
+  steps_per_print: 1000000
 
 summary_helper:
   _target_: general_util.tensorboard_helper.SummaryWriterHelper

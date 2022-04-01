@@ -62,6 +62,8 @@ class AverageMeter(object):
         else:
             self.avg = 0
 
+        del all_tensor
+
 
 class LogMetric(object):
     """
