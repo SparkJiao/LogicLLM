@@ -56,7 +56,7 @@ def multiple_choice_get_tensor(read_func, file_path: str, tokenizer: PreTrainedT
     op_mask = torch.tensor(c_q_op_mask, dtype=torch.long).reshape(data_num, max_option_num)
     labels = torch.tensor(all_label, dtype=torch.long).reshape(data_num)
     if 'token_type_ids' in tokenizer_outputs:
-        token_type_ids = tokenizer_outputs['token_type_ids']
+        token_type_ids = tokenizer_outputs['token_type_ids'].reshape(data_num, max_option_num, max_seq_length)
         inputs = (input_ids, attention_mask, token_type_ids, op_mask, labels)
     else:
         inputs = (input_ids, attention_mask, op_mask, labels)

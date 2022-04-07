@@ -29,10 +29,9 @@ from typing import Dict, Union
 import hydra
 import numpy as np
 import torch
-from fairscale.nn.data_parallel.fully_sharded_data_parallel import FullyShardedDataParallel as FullyShardedDDP
-from fairscale.optim.grad_scaler import ShardedGradScaler
 from omegaconf import DictConfig, OmegaConf
 from torch import distributed as dist
+from torch.distributed.fsdp import FullyShardedDataParallel
 from torch.utils.data import (DataLoader, RandomSampler, SequentialSampler, TensorDataset)
 from torch.utils.data.distributed import DistributedSampler
 from torch.utils.tensorboard import SummaryWriter
@@ -42,13 +41,16 @@ from transformers import (get_linear_schedule_with_warmup, AutoTokenizer, PreTra
 from general_util.logger import setting_logger
 from general_util.training_utils import batch_to_device, unwrap_model, set_seed, note_best_checkpoint, initialize_optimizer
 
+"""
+Requires torch >= 1.11.0
+"""
+
+
 logger: logging.Logger
 
 
-# transformers.logging.set_verbosity_error()
-
-
-def save_model(model: Union[torch.nn.Module, FullyShardedDDP], cfg: DictConfig, output_dir: str, tokenizer: PreTrainedTokenizer = None):
+def save_model(model: Union[torch.nn.Module, FullyShardedDataParallel], cfg: DictConfig, output_dir: str,
+               tokenizer: PreTrainedTokenizer = None):
     # Save model checkpoint.
     if cfg.local_rank != -1:
         state_dict = model.state_dict()
@@ -142,22 +144,20 @@ def train(cfg, train_dataset, model, tokenizer, continue_from_global_step=0):
         scheduler = get_linear_schedule_with_warmup(optimizer, num_warmup_steps=num_warmup_steps, num_training_steps=t_total)
 
     if cfg.fp16:
-        if cfg.local_rank != -1:
-            scaler = ShardedGradScaler()
-        else:
-            from torch.cuda.amp.grad_scaler import GradScaler
+        from torch.cuda.amp.grad_scaler import GradScaler
 
-            scaler = GradScaler()
+        scaler = GradScaler()
     else:
         scaler = None
 
     # Distributed training (should be after apex fp16 initialization)
     if cfg.local_rank != -1:
-        model = hydra.utils.instantiate(cfg.fairscale_config, model=model, device=cfg.device)
+        model = hydra.utils.instantiate(cfg.fsdp_config, model=model, device=cfg.device)
         optimizer = initialize_optimizer(cfg, model=model)
         scheduler = get_linear_schedule_with_warmup(optimizer, num_warmup_steps=num_warmup_steps, num_training_steps=t_total)
 
     logger.info(optimizer)
+    logger.info(model)
 
     # Train!
     logger.info("***** Running training *****")
@@ -196,13 +196,13 @@ def train(cfg, train_dataset, model, tokenizer, continue_from_global_step=0):
             model.train()
             batch = batch_to_device(batch, cfg.device)
 
-            last_outputs = None
-            if (step + 1) % cfg.gradient_accumulation_steps != 0 and cfg.local_rank != -1:
-                # Avoid unnecessary DDP synchronization since there will be no backward pass on this example.
-                with model.no_sync():
-                    loss = forward_step(model, batch, cfg, scaler)
-            else:
-                loss, last_outputs = forward_step(model, batch, cfg, scaler, return_outputs=True)
+            # last_outputs = None
+            # if (step + 1) % cfg.gradient_accumulation_steps != 0 and cfg.local_rank != -1:
+            #     # Avoid unnecessary DDP synchronization since there will be no backward pass on this example.
+            #     with model.no_sync():
+            #         loss = forward_step(model, batch, cfg, scaler)
+            # else:
+            loss, last_outputs = forward_step(model, batch, cfg, scaler, return_outputs=True)
 
             tr_loss += loss
             if (step + 1) % cfg.gradient_accumulation_steps == 0:

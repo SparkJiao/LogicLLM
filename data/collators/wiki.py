@@ -235,3 +235,47 @@ class WikiPathDatasetCollatorWithContext(WikiPathDatasetCollator):
         if "token_type_ids" in tokenizer_outputs:
             res["token_type_ids"] = tokenizer_outputs["token_type_ids"]
         return res
+
+
+class WikiPathDatasetCollatorWithContextInMLMPredict(WikiPathDatasetCollatorWithContext):
+    def __init__(self, max_seq_length: int, tokenizer: str, mlm_probability: float = 0.15, max_option_num: int = 4, swap: bool = False,
+                 use_mask: bool = False):
+        super().__init__(max_seq_length, tokenizer, mlm_probability, max_option_num)
+        self.swap = swap
+        self.use_mask = use_mask
+
+    def __call__(self, batch):
+        inputs = super().__call__(batch)
+
+        input_ids = inputs["input_ids"]
+        attention_mask = inputs["attention_mask"]
+        if "token_type_ids" in inputs:
+            token_type_ids = inputs["token_type_ids"]
+        else:
+            token_type_ids = None
+
+        assert input_ids.size(1) == self.max_option_num
+        input_ids = input_ids.reshape(-1, self.max_seq_length)
+        attention_mask = attention_mask.reshape(-1, self.max_seq_length)
+
+        sep_mask = input_ids == self.tokenizer.sep_token_id
+        acc_sep_mask = sep_mask.cumsum(dim=1)
+        sep_mask_num = acc_sep_mask.max(dim=1, keepdim=True)[0]
+        mlm_mask = (acc_sep_mask.eq(sep_mask_num) * attention_mask).bool()
+
+        if self.use_mask:
+            input_ids[mlm_mask] = self.tokenizer.mask_token_id
+
+        labels = input_ids.clone()
+        labels[~mlm_mask] = -1
+
+        inputs = {
+            "input_ids": input_ids,
+            "attention_mask": attention_mask,
+            "mlm_labels": labels,
+            "labels": inputs["labels"]
+        }
+        if token_type_ids is not None:
+            inputs["token_type_ids"] = token_type_ids.reshape(-1, self.max_seq_length)
+
+        return inputs

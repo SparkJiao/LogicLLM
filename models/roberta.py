@@ -128,6 +128,7 @@ class RobertaForMultipleChoiceForPreTrain(RobertaPreTrainedModel, LogMixin, ABC)
     def __init__(self, config: RobertaConfig,
                  mlp_hidden_size: int = 768,
                  mlm_alpha: float = 1.0,
+                 mlm_disabled: bool = False,
                  fs_checkpoint: bool = False,
                  fs_checkpoint_offload_to_cpu: bool = False,
                  fs_checkpoint_start_layer_id: int = 0):
@@ -154,6 +155,9 @@ class RobertaForMultipleChoiceForPreTrain(RobertaPreTrainedModel, LogMixin, ABC)
         self.init_metric("loss", "acc", "mlm_loss", "mlm_acc", "cls_loss")
 
         self.mlm_alpha = mlm_alpha
+        # The option is added to disable the MLM loss but keep computing the MLM accuracy on the validation set,
+        # in order to observe if there is the catastrophic forgetting problem.
+        self.mlm_disabled = mlm_disabled
 
     @staticmethod
     def fold_tensor(x: Tensor):
@@ -208,7 +212,7 @@ class RobertaForMultipleChoiceForPreTrain(RobertaPreTrainedModel, LogMixin, ABC)
             cls_loss = loss_fct(reshaped_logits, labels)
             loss = loss + cls_loss
 
-            if mlm_labels is not None:
+            if mlm_labels is not None and (self.mlm_disabled is False or self.training is False):
                 if mlm_attention_mask is None:
                     mlm_attention_mask = attention_mask.reshape(reshaped_logits.size(0), num_choices, -1)[:, 0]
 
@@ -220,7 +224,8 @@ class RobertaForMultipleChoiceForPreTrain(RobertaPreTrainedModel, LogMixin, ABC)
 
                 mlm_scores = self.lm_head(mlm_outputs[0])
                 mlm_loss = self.mlm_alpha * loss_fct(mlm_scores.reshape(-1, self.vocab_size), mlm_labels.reshape(-1))
-                loss = loss + mlm_loss
+                if not self.mlm_disabled:
+                    loss = loss + mlm_loss
             else:
                 mlm_scores = None
                 mlm_loss = None
@@ -255,8 +260,7 @@ class RobertaForMaskedLM(RobertaPreTrainedModel, LogMixin, ABC):
 
     def __init__(self, config: RobertaConfig,
                  fs_checkpoint: bool = False,
-                 fs_checkpoint_offload_to_cpu: bool = False,
-                 fs_checkpoint_maintain_forward_counter: bool = False):
+                 fs_checkpoint_offload_to_cpu: bool = False):
         super().__init__(config)
 
         if config.is_decoder:
@@ -272,8 +276,7 @@ class RobertaForMaskedLM(RobertaPreTrainedModel, LogMixin, ABC):
         if fs_checkpoint:
             for i in range(config.num_hidden_layers):
                 self.roberta.encoder.layer[i] = checkpoint_wrapper(self.roberta.encoder.layer[i],
-                                                                   offload_to_cpu=fs_checkpoint_offload_to_cpu,
-                                                                   maintain_forward_counter=fs_checkpoint_maintain_forward_counter)
+                                                                   offload_to_cpu=fs_checkpoint_offload_to_cpu)
 
         self.init_weights()
 
@@ -348,6 +351,114 @@ class RobertaForMaskedLM(RobertaPreTrainedModel, LogMixin, ABC):
         )
 
 
+class RobertaForMultipleChoiceInMLM(RobertaPreTrainedModel, LogMixin, ABC):
+    _keys_to_ignore_on_load_missing = [r"position_ids", r"lm_head.decoder.bias"]
+
+    def __init__(self, config: RobertaConfig,
+                 fs_checkpoint: bool = False,
+                 fs_checkpoint_offload_to_cpu: bool = False):
+        super().__init__(config)
+
+        if config.is_decoder:
+            logger.warning(
+                "If you want to use `RobertaForMaskedLM` make sure `config.is_decoder=False` for "
+                "bi-directional self-attention."
+            )
+
+        self.roberta = RobertaModel(config)
+        self.lm_head = RobertaLMHead(config)
+        self.vocab_size = config.vocab_size
+
+        if fs_checkpoint:
+            for i in range(config.num_hidden_layers):
+                self.roberta.encoder.layer[i] = checkpoint_wrapper(self.roberta.encoder.layer[i],
+                                                                   offload_to_cpu=fs_checkpoint_offload_to_cpu)
+
+        self.init_weights()
+
+        self.init_metric("loss", "acc")
+
+    def get_output_embeddings(self):
+        return self.lm_head.decoder
+
+    def set_output_embeddings(self, new_embeddings):
+        self.lm_head.decoder = new_embeddings
+
+    def forward(
+            self,
+            input_ids=None,
+            attention_mask=None,
+            token_type_ids=None,
+            position_ids=None,
+            head_mask=None,
+            inputs_embeds=None,
+            encoder_hidden_states=None,
+            encoder_attention_mask=None,
+            mlm_labels=None,
+            labels=None,
+            output_attentions=None,
+            output_hidden_states=None,
+            return_dict=None,
+    ):
+        r"""
+        labels (:obj:`torch.LongTensor` of shape :obj:`(batch_size, sequence_length)`, `optional`):
+            Labels for computing the masked language modeling loss. Indices should be in ``[-100, 0, ...,
+            config.vocab_size]`` (see ``input_ids`` docstring) Tokens with indices set to ``-100`` are ignored
+            (masked), the loss is only computed for the tokens with labels in ``[0, ..., config.vocab_size]``
+        kwargs (:obj:`Dict[str, any]`, optional, defaults to `{}`):
+            Used to hide legacy arguments that have been deprecated.
+        """
+        return_dict = return_dict if return_dict is not None else self.config.use_return_dict
+
+        outputs = self.roberta(
+            input_ids,
+            attention_mask=attention_mask,
+            token_type_ids=token_type_ids,
+            position_ids=position_ids,
+            head_mask=head_mask,
+            inputs_embeds=inputs_embeds,
+            encoder_hidden_states=encoder_hidden_states,
+            encoder_attention_mask=encoder_attention_mask,
+            output_attentions=output_attentions,
+            output_hidden_states=output_hidden_states,
+            return_dict=return_dict,
+        )
+        sequence_output = outputs[0]
+        prediction_scores = self.lm_head(sequence_output)
+
+        seq_len = input_ids.shape[1]
+        batch_size = labels.size(0)
+
+        loss_fct = CrossEntropyLoss(ignore_index=-1, reduction="none")
+        masked_lm_loss = -loss_fct(prediction_scores.view(-1, self.vocab_size), mlm_labels.view(-1)).reshape(-1, seq_len)
+
+        # batch_size * choice_num
+        logits = masked_lm_loss.sum(dim=-1) / (mlm_labels != -1).sum(dim=-1)
+        logits = logits.reshape(batch_size, -1)
+
+        loss = None
+        if labels is not None:
+
+            loss_fct = CrossEntropyLoss(ignore_index=-1)
+            loss = loss_fct(logits, labels)
+
+            if not self.training:
+                acc, true_label_num = layers.get_accuracy(logits, labels)
+                self.eval_metrics.update("acc", acc, n=true_label_num)
+                self.eval_metrics.update("loss", loss.item(), n=true_label_num)
+
+        if not return_dict:
+            output = (logits,) + outputs[2:]
+            return ((loss,) + output) if loss is not None else output
+
+        return MaskedLMOutput(
+            loss=loss,
+            logits=logits,
+            hidden_states=outputs.hidden_states,
+            attentions=outputs.attentions,
+        )
+
+
 class RobertaForMultipleChoiceForZeroShot(RobertaPreTrainedModel, LogMixin, ABC):
     _keys_to_ignore_on_load_missing = [r"position_ids"]
 
@@ -355,7 +466,6 @@ class RobertaForMultipleChoiceForZeroShot(RobertaPreTrainedModel, LogMixin, ABC)
                  mlp_hidden_size: int = 768,
                  fs_checkpoint: bool = False,
                  fs_checkpoint_offload_to_cpu: bool = False,
-                 fs_checkpoint_maintain_forward_counter: bool = False,
                  fs_checkpoint_start_layer_id: int = 0,
                  freeze_encoder: bool = False,
                  freeze_pooler: bool = False):
@@ -373,8 +483,7 @@ class RobertaForMultipleChoiceForZeroShot(RobertaPreTrainedModel, LogMixin, ABC)
         if fs_checkpoint:
             for i in range(fs_checkpoint_start_layer_id, config.num_hidden_layers):
                 self.roberta.encoder.layer[i] = checkpoint_wrapper(self.roberta.encoder.layer[i],
-                                                                   offload_to_cpu=fs_checkpoint_offload_to_cpu,
-                                                                   maintain_forward_counter=fs_checkpoint_maintain_forward_counter)
+                                                                   offload_to_cpu=fs_checkpoint_offload_to_cpu)
 
         self.freeze_pooler = freeze_pooler
         if self.freeze_pooler:

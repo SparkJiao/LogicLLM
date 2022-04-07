@@ -23,6 +23,7 @@ import glob
 import json
 import logging
 import os
+import subprocess
 import sys
 from typing import Dict, Union
 
@@ -33,7 +34,7 @@ from fairscale.nn.data_parallel.fully_sharded_data_parallel import FullyShardedD
 from fairscale.optim.grad_scaler import ShardedGradScaler
 from omegaconf import DictConfig, OmegaConf
 from torch import distributed as dist
-from torch.utils.data import (DataLoader, RandomSampler, SequentialSampler, TensorDataset)
+from torch.utils.data import (DataLoader, RandomSampler, SequentialSampler)
 from torch.utils.data.distributed import DistributedSampler
 from torch.utils.tensorboard import SummaryWriter
 from tqdm import tqdm, trange
@@ -43,9 +44,6 @@ from general_util.logger import setting_logger
 from general_util.training_utils import batch_to_device, unwrap_model, set_seed, note_best_checkpoint, initialize_optimizer
 
 logger: logging.Logger
-
-
-# transformers.logging.set_verbosity_error()
 
 
 def save_model(model: Union[torch.nn.Module, FullyShardedDDP], cfg: DictConfig, output_dir: str, tokenizer: PreTrainedTokenizer = None):
@@ -355,23 +353,52 @@ def load_and_cache_examples(cfg, tokenizer: PreTrainedTokenizer, _split="train")
     return dataset
 
 
+def setup_slurm_distributed(cfg: DictConfig, backend="nccl", port=None):
+    """
+    Most code are copied from https://github.com/BIGBALLON/distribuuuu/blob/master/tutorial/mnmc_ddp_slurm.py.
+    """
+    num_gpus = torch.cuda.device_count()
+    if num_gpus <= 1 or cfg.no_cuda:
+        cfg.local_rank = -1
+        cfg.device = str(torch.device("cuda" if torch.cuda.is_available() else "cpu"))
+        cfg.n_gpu = num_gpus
+        return
+
+    proc_id = int(os.environ["SLURM_PROCID"])
+    n_tasks = int(os.environ["SLURM_NTASKS"])
+    node_list = os.environ["SLURM_NODELIST"]
+
+    torch.cuda.set_device(proc_id % num_gpus)
+
+    addr = subprocess.getoutput(f"scontrol show hostname {node_list} | head -n1")
+    # specify master port
+    if port is not None:
+        os.environ["MASTER_PORT"] = str(port)
+    elif "MASTER_PORT" not in os.environ:
+        os.environ["MASTER_PORT"] = "29500"
+    if "MASTER_ADDR" not in os.environ:
+        os.environ["MASTER_ADDR"] = addr
+
+    os.environ["WORLD_SIZE"] = str(n_tasks)
+    os.environ["LOCAL_RANK"] = str(proc_id % num_gpus)
+    os.environ["RANK"] = str(proc_id)
+
+    cfg.n_gpu = 1
+    cfg.local_rank = int(os.environ["LOCAL_RANK"])
+    cfg.world_size = int(os.environ["WORLD_SIZE"])
+    cfg.device = str(torch.device("cuda", cfg.local_rank))
+
+    dist.init_process_group(backend=backend)
+
+
 @hydra.main(config_path="conf", config_name="config")
 def main(cfg: DictConfig):
-    if cfg.local_rank == -1 or cfg.no_cuda:
-        device = str(torch.device("cuda" if torch.cuda.is_available() and not cfg.no_cuda else "cpu"))
-        cfg.n_gpu = torch.cuda.device_count()
-    else:  # Initializes the distributed backend which will take care of synchronizing nodes/GPUs
-        torch.cuda.set_device(cfg.local_rank)
-        device = str(torch.device("cuda", cfg.local_rank))
-        dist.init_process_group(backend='nccl')
-        cfg.n_gpu = 1
-        cfg.world_size = dist.get_world_size()
-    cfg.device = device
+    setup_slurm_distributed(cfg)
 
     global logger
     logger = setting_logger(cfg.output_dir, local_rank=cfg.local_rank)
     logger.warning("Process rank: %s, device: %s, n_gpu: %s, distributed training: %s, 16-bits training: %s",
-                   cfg.local_rank, device, cfg.n_gpu, bool(cfg.local_rank != -1), cfg.fp16)
+                   cfg.local_rank, cfg.device, cfg.n_gpu, bool(cfg.local_rank != -1), cfg.fp16)
 
     # Set seed
     set_seed(cfg)
@@ -443,7 +470,7 @@ def main(cfg: DictConfig):
             split = "dev"
 
             model = hydra.utils.call(cfg.model, checkpoint)
-            model.to(device)
+            model.to(cfg.device)
 
             if cfg.test_file:
                 prefix = f'test' + (f'-{prefix}' if prefix != "" else "")
