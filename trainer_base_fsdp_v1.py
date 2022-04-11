@@ -40,7 +40,8 @@ from tqdm import tqdm, trange
 from transformers import (get_linear_schedule_with_warmup, AutoTokenizer, PreTrainedTokenizer)
 
 from general_util.logger import setting_logger
-from general_util.training_utils import batch_to_device, unwrap_model, set_seed, note_best_checkpoint, initialize_optimizer
+from general_util.training_utils import batch_to_device, unwrap_model, set_seed, note_best_checkpoint, initialize_optimizer, \
+    load_and_cache_examples
 
 logger: logging.Logger
 
@@ -334,27 +335,6 @@ def evaluate(cfg, model, tokenizer: PreTrainedTokenizer, prefix="", _split="dev"
     return results
 
 
-def load_and_cache_examples(cfg, tokenizer: PreTrainedTokenizer, _split="train"):
-    if cfg.local_rank not in [-1, 0] and _split == "train":
-        dist.barrier()  # Make sure only the first process in distributed training process the dataset, and the others will use the cache
-
-    if _split == "train":
-        input_file = cfg.train_file
-    elif _split == "dev":
-        input_file = cfg.dev_file
-    elif _split == "test":
-        input_file = cfg.test_file
-    else:
-        raise RuntimeError(_split)
-
-    dataset = hydra.utils.call(cfg.read_tensor, file_path=input_file, tokenizer=tokenizer)
-
-    if cfg.local_rank == 0 and _split == "train":
-        dist.barrier()  # Make sure only the first process in distributed training process the dataset, and the others will use the cache
-
-    return dataset
-
-
 @hydra.main(config_path="conf", config_name="config")
 def main(cfg: DictConfig):
     if cfg.local_rank == -1 or cfg.no_cuda:
@@ -423,7 +403,10 @@ def main(cfg: DictConfig):
     # Test
     results = {}
     if cfg.do_eval and cfg.local_rank in [-1, 0]:
-        cfg.ddp_eval = False  # Canceling distributed evaluation since other progresses have already existed.
+        # Canceling distributed evaluation since other progresses have already existed.
+        if cfg.local_rank == 0:
+            cfg.local_rank = -1
+            cfg.ddp_eval = False
         checkpoints = [cfg.output_dir]
         if cfg.save_best:
             logging.getLogger("transformers.modeling_utils").setLevel(logging.WARN)  # Reduce logging

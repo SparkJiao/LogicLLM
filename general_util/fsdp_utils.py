@@ -58,6 +58,9 @@ def recursive_initialize(model: torch.nn.Module,
                        move_params_to_cpu=move_params_to_cpu)
     with enable_wrap(wrapper_cls=FullyShardedDP, auto_wrap_policy=wrap_policy, **fsdp_params):
         model = auto_wrap(model)
+    model = FullyShardedDP(model, **fsdp_params)
+
+    logger.info(model)
 
     assert isinstance(model, FullyShardedDP)
 

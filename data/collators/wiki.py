@@ -40,7 +40,8 @@ class WikiPathDatasetV5(Dataset):
         text = self.raw_texts[index]
         return {
             "example": example,
-            "text": text
+            "text": text,
+            "index": index,
         }
 
 
@@ -245,6 +246,7 @@ class WikiPathDatasetCollatorWithContextInMLMPredict(WikiPathDatasetCollatorWith
         self.use_mask = use_mask
 
     def __call__(self, batch):
+        index = torch.tensor([b["index"] for b in batch], dtype=torch.long)
         inputs = super().__call__(batch)
 
         input_ids = inputs["input_ids"]
@@ -273,7 +275,8 @@ class WikiPathDatasetCollatorWithContextInMLMPredict(WikiPathDatasetCollatorWith
             "input_ids": input_ids,
             "attention_mask": attention_mask,
             "mlm_labels": labels,
-            "labels": inputs["labels"]
+            "labels": inputs["labels"],
+            "index": index
         }
         if token_type_ids is not None:
             inputs["token_type_ids"] = token_type_ids.reshape(-1, self.max_seq_length)

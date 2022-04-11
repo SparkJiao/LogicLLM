@@ -41,9 +41,13 @@ from tqdm import tqdm, trange
 from transformers import (get_linear_schedule_with_warmup, AutoTokenizer, PreTrainedTokenizer)
 
 from general_util.logger import setting_logger
-from general_util.training_utils import batch_to_device, unwrap_model, set_seed, note_best_checkpoint, initialize_optimizer
+from general_util.training_utils import batch_to_device, unwrap_model, set_seed, note_best_checkpoint, initialize_optimizer, \
+    load_and_cache_examples
 
 logger: logging.Logger
+
+
+# transformers.logging.set_verbosity_error()
 
 
 def save_model(model: Union[torch.nn.Module, FullyShardedDDP], cfg: DictConfig, output_dir: str, tokenizer: PreTrainedTokenizer = None):
@@ -332,27 +336,6 @@ def evaluate(cfg, model, tokenizer: PreTrainedTokenizer, prefix="", _split="dev"
     return results
 
 
-def load_and_cache_examples(cfg, tokenizer: PreTrainedTokenizer, _split="train"):
-    if cfg.local_rank not in [-1, 0] and _split == "train":
-        dist.barrier()  # Make sure only the first process in distributed training process the dataset, and the others will use the cache
-
-    if _split == "train":
-        input_file = cfg.train_file
-    elif _split == "dev":
-        input_file = cfg.dev_file
-    elif _split == "test":
-        input_file = cfg.test_file
-    else:
-        raise RuntimeError(_split)
-
-    dataset = hydra.utils.call(cfg.read_tensor, file_path=input_file, tokenizer=tokenizer)
-
-    if cfg.local_rank == 0 and _split == "train":
-        dist.barrier()  # Make sure only the first process in distributed training process the dataset, and the others will use the cache
-
-    return dataset
-
-
 def setup_slurm_distributed(cfg: DictConfig, backend="nccl", port=None):
     """
     Most code are copied from https://github.com/BIGBALLON/distribuuuu/blob/master/tutorial/mnmc_ddp_slurm.py.
@@ -385,10 +368,16 @@ def setup_slurm_distributed(cfg: DictConfig, backend="nccl", port=None):
 
     cfg.n_gpu = 1
     cfg.local_rank = int(os.environ["LOCAL_RANK"])
+    # cfg.local_rank = int(os.environ["RANK"])
     cfg.world_size = int(os.environ["WORLD_SIZE"])
     cfg.device = str(torch.device("cuda", cfg.local_rank))
 
-    dist.init_process_group(backend=backend)
+    dist.init_process_group(backend=backend, world_size=int(os.environ["WORLD_SIZE"]), rank=int(os.environ["RANK"]))
+
+    # print(cfg.n_gpu, cfg.local_rank, cfg.world_size, cfg.device)
+    # print(cfg.local_rank)
+    cfg.local_rank = dist.get_rank()
+    # print(cfg.local_rank)
 
 
 @hydra.main(config_path="conf", config_name="config")
@@ -444,13 +433,19 @@ def main(cfg: DictConfig):
         #         model.to(args.device)
 
         train_dataset = load_and_cache_examples(cfg, tokenizer, _split="train")
+
+        if cfg.do_preprocess:
+            exit(0)
+
         global_step, tr_loss = train(cfg, train_dataset, model, tokenizer, continue_from_global_step)
         logger.info(" global_step = %s, average loss = %s", global_step, tr_loss)
 
     # Test
     results = {}
     if cfg.do_eval and cfg.local_rank in [-1, 0]:
-        cfg.ddp_eval = False  # Canceling distributed evaluation since other progresses have already existed.
+        if cfg.local_rank == 0:
+            cfg.ddp_eval = False  # Canceling distributed evaluation since other progresses have already existed.
+            cfg.local_rank = -1
         checkpoints = [cfg.output_dir]
         if cfg.save_best:
             logging.getLogger("transformers.modeling_utils").setLevel(logging.WARN)  # Reduce logging

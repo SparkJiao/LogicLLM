@@ -66,7 +66,11 @@ def evaluate(cfg, model, tokenizer: PreTrainedTokenizer, prefix="", _split="dev"
     input_ids_list = []
     logits_list = []
     pred_list = []
+    index_list = []
     for batch in tqdm(eval_dataloader, desc="Evaluating", disable=cfg.local_rank not in [-1, 0], dynamic_ncols=True):
+        if "index" in batch:
+            feat_index = batch.pop("index")
+            index_list.append(feat_index)
         batch = batch_to_device(batch, cfg.device)
         with torch.cuda.amp.autocast():
             with torch.no_grad():
@@ -77,7 +81,7 @@ def evaluate(cfg, model, tokenizer: PreTrainedTokenizer, prefix="", _split="dev"
 
                 input_ids = batch["input_ids"]
 
-                if cfg.local_rank != -1:
+                if cfg.local_rank != -1 and cfg.sync:
                     _all_logits = [torch.zeros(logits.size()).to(logits.device) for _ in range(dist.get_world_size())]
                     _all_preds = [torch.zeros(pred.size(), dtype=torch.long).to(probs.device) for _ in range(dist.get_world_size())]
 
@@ -101,12 +105,18 @@ def evaluate(cfg, model, tokenizer: PreTrainedTokenizer, prefix="", _split="dev"
     logger.info(f"Global Steps: {prefix}")
     logger.info(metric_log)
 
-    if cfg.local_rank in [-1, 0]:
-        torch.save({
+    if cfg.local_rank in [-1, 0] or not cfg.sync:
+        predictions = {
             "logits": torch.cat(logits_list, dim=0),
             "preds": torch.cat(pred_list, dim=0),
-            "input_ids": torch.cat(input_ids_list, dim=0)
-        }, os.path.join(cfg.output_dir, prefix, f"{prefix}_prediction.pth"))
+            "input_ids": torch.cat(input_ids_list, dim=0),
+        }
+        if len(index_list) > 0:
+            predictions["index"] = torch.cat(index_list, dim=0)
+        if cfg.local_rank == -1:
+            torch.save(predictions, os.path.join(cfg.output_dir, prefix, f"{prefix}_prediction.pth"))
+        else:
+            torch.save(predictions, os.path.join(cfg.output_dir, prefix, f"{prefix}_prediction_{cfg.local_rank}.pth"))
 
     return results
 

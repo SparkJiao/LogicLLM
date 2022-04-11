@@ -933,3 +933,11 @@ def convert_examples_into_features(file_path: str, tokenizer: PreTrainedTokenize
     torch.save((all_examples, raw_texts), cached_file_path)
 
     return WikiPathDatasetV5(all_examples, raw_texts)
+
+
+def _quick_loading(file_path: str, **kwargs):
+    logger.info(f"Quickly loading cached file from {file_path}")
+    all_examples, raw_texts = torch.load(file_path)
+    dataset = WikiPathDatasetV5(all_examples, raw_texts)
+    return dataset
+
