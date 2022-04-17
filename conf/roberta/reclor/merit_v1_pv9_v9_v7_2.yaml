@@ -45,7 +45,7 @@ pretrain:
 #output_dir: experiments/reclor.roberta.merit-v1.pv9.v9.0.seq384.A100-cp500-no_mlm.w2.A100.v1.0.s${seed}
 #output_dir: experiments/reclor.roberta.merit-v1.pv9.v9.0.seq384.A100-cp500-mlm_1.0-mlm_filter.w2.A100.v1.0.s${seed}
 #output_dir: experiments/reclor.roberta.merit-v1.pv9.v9.0.seq384.A100-cp100-mlm_1.0-5neg.w4.TitanXP.v1.0.s${seed}
-output_dir: experiments/reclor.roberta.merit-v1.pv9.v9.0.seq384.3090-cp500-mlm_1.0-5neg.w1.3090.v1.0.s${seed}
+output_dir: experiments/reclor.roberta.merit-v1.pv9.v9.0.seq384.3090-cp500-mlm_1.0-5neg.w1.3090.v1.2.s${seed}
 
 do_train: True
 evaluate_during_training: True
@@ -58,8 +58,7 @@ do_preprocess: False
 # Training hyper-parameters
 per_gpu_train_batch_size: 2
 per_gpu_eval_batch_size: 8
-learning_rate: 1e-5
-#learning_rate: 5e-6
+learning_rate: 8e-6
 gradient_accumulation_steps: 12
 weight_decay: 0.01
 adam_epsilon: 1e-6

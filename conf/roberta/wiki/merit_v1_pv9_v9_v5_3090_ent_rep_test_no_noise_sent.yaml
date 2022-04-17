@@ -1,0 +1,165 @@
+hydra:
+  run:
+    dir: ./
+
+train_file: wiki_erica_path/v9.0/train_distant.path_v9.train.0.pkl
+dev_file: wiki_erica_path/v9.0/train_distant.path_v9.dev.pkl
+test_file:
+
+# Model
+model:
+  _target_: models.roberta.RobertaForMultipleChoiceForPreTrain.from_pretrained
+  mlp_hidden_size: 2048
+  mlm_alpha: 1.0
+
+# Data loading
+read_tensor:
+  _target_: data.wiki_entity_path_v9_ent_replace_test.convert_examples_into_features
+  max_neg_num: 3
+  aug_num: 1
+  max_seq_length: 384
+  shuffle_context: True
+  min_rep_num: 5
+  geo_p: 0.4
+  deduct_ratio: 1.0
+  context_ratio: 1.0
+#  noise_sent_ratio: 0.5
+  noise_sent_ratio: 0.0  # no noise sentences added equals ``read_tensor`` in version v8.2
+  num_workers: 48
+#read_tensor_dev:
+#  _target_: data.wiki_entity_path_v9_ent_replace_test._quick_loading_keep_aug_only
+
+extended_vocab:
+
+# Data collator
+collator:
+  _target_: data.collators.WikiPathDatasetCollatorWithContext
+  max_seq_length: 384
+  tokenizer: pretrained-models/roberta-large
+  mlm_probability: 0.15
+  max_option_num: 4
+  swap: True
+
+# Dataloader
+num_workers: 8
+prefetch_factor: 2
+
+# Wiki path pretrain v8.2
+model_name_or_path: pretrained-models/roberta-large
+pretrain:
+
+#output_dir: experiments/roberta.large.wiki_erica_path_v9_v9.0.1aug.seq320.w4.2080Ti
+#output_dir: experiments/roberta.large.wiki_erica_path_v9_v9.0.1aug.seq320.w4.2080Ti.rerun
+#output_dir: experiments/roberta.large.wiki_erica_path_v9_v9.0.1aug.seq384.w4.adamw.mlm_0.5.2080Ti
+output_dir: experiments/roberta.large.wiki_erica_path_v9_v9.0.1aug.ent_rep_all_train.no_noise_sent.seq384.w4.adamw.mlm_1.0.3090
+#output_dir: experiments/roberta.large.wiki_erica_path_v9_v9.0.1aug.seq384.w4.adamw.mlm_0.5.500steps.8bit.2080Ti
+
+do_train: True
+evaluate_during_training: True
+
+do_eval: True
+eval_sub_path: checkpoint-500
+
+do_preprocess: False
+
+# Training hyper-parameters
+per_gpu_train_batch_size: 2
+per_gpu_eval_batch_size: 4
+learning_rate: 1e-5
+gradient_accumulation_steps: 512
+weight_decay: 0.01
+adam_epsilon: 1e-6
+adam_betas: "(0.9, 0.98)"
+max_grad_norm: 5.0
+num_train_epochs: 10
+max_steps: 500
+warmup_proportion: 0.1
+warmup_steps: 0
+
+# Optimizer
+optimizer:
+use_nvlamb:
+bit_training:
+
+
+logging_steps: 1
+save_best: False
+save_steps: 100
+eval_steps: 100
+ddp_eval: True
+no_cuda: False
+seed: 42
+local_rank: -1
+fp16: True
+fp16_opt_level: O1
+
+# Prediction config
+prediction_cfg:
+  metric: "acc"
+  measure: 1
+  best_checkpoint:
+  best_result:
+
+# fairscale.FullyShardedDP
+fairscale_config:
+#  _target_: general_util.fsdp_utils.recursive_initialize
+  _target_: general_util.fsdp_utils.default_initialize
+  fp16: ${fp16}
+  move_grads_to_cpu: False
+  move_params_to_cpu: False
+
+# Lightseq config
+with_lightseq: False
+
+# Deepspeed config
+ds_cfg:
+  train_micro_batch_size_per_gpu: ${per_gpu_train_batch_size}
+  gradient_accumulation_steps: ${gradient_accumulation_steps}
+  optimizer:
+    type: AdamW
+    params:
+      lr: ${learning_rate}
+      betas: [0.9, 0.999]
+      eps: ${adam_epsilon}
+      weight_decay: ${weight_decay}
+  scheduler:
+    type: WarmupDecayLR
+    params:
+      total_num_steps:
+      warmup_max_lr: ${learning_rate}
+      warmup_num_steps:
+      warmup_type: linear
+  gradient_clipping: ${max_grad_norm}
+  fp16:
+    enabled: ${fp16}
+    initial_scale_power: 12
+  zero_optimization:
+    stage: 3
+#    offload_optimizer:
+#      device: cpu
+#      pin_memory: True
+#    offload_param:
+#      device: cpu
+#      pin_memory: True
+#  activation_checkpointing:
+#    partition_activations: True
+#    cpu_checkpointing: True
+#    contiguous_memory_optimization: False
+#    number_checkpoints: False
+#    synchronize_checkpoint_boundary: False
+#    profile: False
+  steps_per_print: 1024
+
+summary_helper:
+  _target_: general_util.tensorboard_helper.SummaryWriterHelper
+  batch_index_or_keys:
+  outputs_index_or_keys:
+    "train/mlm_loss": mlm_loss
+    "train/cls_loss": cls_loss
+
+# Temporary variables
+n_gpu:
+device:
+train_batch_size:
+eval_batch_size:
+world_size:

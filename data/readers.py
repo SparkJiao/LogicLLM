@@ -24,6 +24,148 @@ class LSATReader:
         return all_context, all_question, all_option_list, all_label
 
 
+class LSATReaderWPrompt:
+    label2id = {'A': 0, 'B': 1, 'C': 2, 'D': 3, 'E': 4}
+
+    def __call__(self, file: str):
+        data = json.load(open(file, 'r'))
+        all_context = []
+        all_question = []
+        all_option_list = []
+        all_label = []
+
+        for item in data:
+            passage = item['passage']
+            for q in item['questions']:
+                ques = q['question']
+                deduction = q['prediction']
+                all_context.append(passage + ' ' + deduction)
+                all_question.append(ques)
+                all_option_list.append(q['options'])
+                all_label.append(self.label2id[q['answer']])
+
+        return all_context, all_question, all_option_list, all_label
+
+
+class LSATReaderTrigger(LSATReader):
+    relational_trigger_words = {
+        'before': ['before', 'above', 'precede', 'earlier'],
+        'after': ['after', 'larger', 'higher', 'bigger', 'older'],
+        'last': ['immediately before', 'last'],
+        'next': ['immediately after', 'next'],
+        'adjacent': ['neighboring', 'adjacent'],
+        'different': ['different'],
+        'same': ['same', 'also'],
+        'before_equal': ['no later'],
+        'after_equal': ['no earlier'],
+        'to': ['to', 'on', 'given', 'in']
+    }
+    relational_prompt = {
+        'before': 'participant #1 is in the position before participant #2.',
+        'after': 'participant #1 is in the position after participant #2.',
+        'last': 'participant #1 is in the last position of participant #2.',
+        'next': 'participant #1 is next to participant #2.',
+        'adjacent': 'participant #1 is neighbouring to participant #2.',
+        'different': 'participant #1 is in the different position with participant #2.',
+        'same': 'participant #1 is in the same position with participant #2.',
+        'before_equal': 'participant #1 is before or equals to the position of participant #2.',
+        'after_equal': 'participant #1 is after or equals to the position of participant #2.',
+        'to': 'participant #1 is assigned to the position #2.'
+    }
+
+    def __call__(self, file: str):
+        data = json.load(open(file, 'r'))
+        all_context = []
+        all_question = []
+        all_option_list = []
+        all_label = []
+
+        for item in data:
+            passage = item['passage']
+            for q in item['questions']:
+                ques = q['question']
+
+                prompts = []
+                template = "The operation {} means that {}"
+                for trigger, trigger_words in self.relational_trigger_words.items():
+                    for _word in trigger_words:
+                        if _word in ques or _word in passage:
+                            prompts.append(template.format(_word, self.relational_prompt[trigger]))
+                            break
+                passage = ' '.join(prompts) + ' ' + passage
+
+                all_context.append(passage)
+                all_question.append(ques)
+                all_option_list.append(q['options'])
+                all_label.append(self.label2id[q['answer']])
+
+        return all_context, all_question, all_option_list, all_label
+
+
+class LSATReaderTriggerV2(LSATReader):
+    relational_trigger_words = {
+        'before': ['before', 'above', 'precede', 'earlier'],
+        'after': ['after', 'larger', 'higher', 'bigger', 'older'],
+        'last': ['immediately before', 'last'],
+        'next': ['immediately after', 'next'],
+        'adjacent': ['neighboring', 'adjacent'],
+        'different': ['different'],
+        'same': ['same', 'also'],
+        'before_equal': ['no later'],
+        'after_equal': ['no earlier'],
+        'to': ['to', 'on', 'given', 'in']
+    }
+    relational_prompt = {
+        # 'before': 'participant #1 is in the position before participant #2.',
+        'before': 'If A does something {} B, then A is in the position before B.',
+        # 'after': 'participant #1 is in the position after participant #2.',
+        'after': 'If A does something {} B, then A is in the position after B.',
+        # 'last': 'participant #1 is in the last position of participant #2.',
+        'last': 'If A does something {} B, then A is in the last position of B.',
+        # 'next': 'participant #1 is next to participant #2.',
+        'next': 'If A does something {} B, then A is next to B.',
+        # 'adjacent': 'participant #1 is neighbouring to participant #2.',
+        'adjacent': 'If A does something {} to B, then A is neighbouring to B.',
+        # 'different': 'participant #1 is in the different position with participant #2.',
+        'different': 'If A does something {} to B, then A is in the different position with B.',
+        # 'same': 'participant #1 is in the same position with participant #2.',
+        'same': 'If A does something {} to B, then A is in the same position with B.',
+        # 'before_equal': 'participant #1 is before or equals to the position of participant #2.',
+        'before_equal': 'If A does something {} than B, then A is before or equals to the position of B.',
+        # 'after_equal': 'participant #1 is after or equals to the position of participant #2.',
+        'after_equal': 'If A does something {} than B, then A is after or equals to the position of B.',
+        # 'to': 'participant #1 is assigned to the position #2.'
+        'to': 'If A does something {} B, then A is assigned to the position of B.'
+    }
+
+    def __call__(self, file: str):
+        data = json.load(open(file, 'r'))
+        all_context = []
+        all_question = []
+        all_option_list = []
+        all_label = []
+
+        for item in data:
+            passage = item['passage']
+            for q in item['questions']:
+                ques = q['question']
+
+                prompts = []
+                for trigger, trigger_words in self.relational_trigger_words.items():
+                    for _word in trigger_words:
+                        if _word in ques or _word in passage:
+                            prompts.append(self.relational_prompt[trigger].format(_word))
+                            break
+                passage = ' '.join(prompts) + ' ' + passage
+
+                all_context.append(passage)
+                all_question.append(ques)
+                all_option_list.append(q['options'])
+                all_label.append(self.label2id[q['answer']])
+
+        return all_context, all_question, all_option_list, all_label
+
+
 class LogicNLILangReader:
     label2id = {
         'contradiction': 0,

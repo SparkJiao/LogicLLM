@@ -6,7 +6,7 @@ import torch
 import transformers
 from torch.utils.data import Dataset
 from torch.utils.data.dataset import T_co
-from transformers import AutoTokenizer, PreTrainedTokenizer
+from transformers import AutoTokenizer, PreTrainedTokenizer, T5Tokenizer, BartTokenizer
 from transformers.tokenization_utils import PaddingStrategy, TruncationStrategy
 
 from general_util.logger import get_child_logger
@@ -41,6 +41,25 @@ class WikiPathDatasetV5(Dataset):
         return {
             "example": example,
             "text": text,
+            "index": index,
+        }
+
+
+class WikiPathDatasetGenerate(Dataset):
+    """
+    It seems that the dataset class is not relevant to ``generation``.
+    """
+
+    def __init__(self, examples):
+        self.examples = examples
+
+    def __len__(self):
+        return len(self.examples)
+
+    def __getitem__(self, index) -> T_co:
+        example = self.examples[index]
+        return {
+            "example": example,
             "index": index,
         }
 
@@ -282,3 +301,57 @@ class WikiPathDatasetCollatorWithContextInMLMPredict(WikiPathDatasetCollatorWith
             inputs["token_type_ids"] = token_type_ids.reshape(-1, self.max_seq_length)
 
         return inputs
+
+
+class WikiPathDatasetCollatorSeq2Seq:
+    def __init__(self, max_input_length: int, max_output_length: int, tokenizer: str, sent_sample_ratio: float = 0.4):
+        self.max_input_length = max_input_length
+        self.max_output_length = max_output_length
+        self.tokenizer: PreTrainedTokenizer = AutoTokenizer.from_pretrained(tokenizer, use_fast=False)
+        if isinstance(self.tokenizer, T5Tokenizer):
+            self.sep_token = "<extra_id_0>"
+        elif isinstance(self.tokenizer, BartTokenizer):
+            self.sep_token = "<s>"
+        else:
+            raise RuntimeError("Unsupported tokenizer {}".format(tokenizer.__class__.__name__))
+        self.sent_sample_ratio = sent_sample_ratio
+        self.prefix = "generate logically consistent deductions: "
+        self.templates = [
+            "What would happen if {}?",
+            "If {} then what would happen?",
+        ]
+
+        transformers.logging.set_verbosity_error()
+
+    def __call__(self, batch):
+
+        inputs = []
+        outputs = []
+        for b in batch:
+            example = b["example"]
+            ctx = example["context"]
+            condition = example["condition"] if "condition" in example else example["positive"]
+            condition = random.choice(self.templates).format(condition)
+
+            output_sent_num = int(len(ctx) * self.sent_sample_ratio)
+            output_sent_num = max(output_sent_num, 1)
+
+            sent_ids = list(range(len(ctx)))
+            output_sent_ids = set(random.sample(sent_ids, output_sent_num))
+            output_sents = [ctx[i] for i in output_sent_ids]
+            input_sents = [ctx[i] for i in sent_ids if i not in output_sent_ids]
+
+            inputs.append(' '.join([self.prefix] + input_sents + [condition]))
+            outputs.append(self.sep_token.join(output_sents))
+
+        model_inputs = self.tokenizer(inputs, return_tensors="pt",
+                                      padding=PaddingStrategy.LONGEST,
+                                      truncation=True, max_length=self.max_input_length)
+
+        with self.tokenizer.as_target_tokenizer():
+            labels = self.tokenizer(outputs, return_tensors="pt",
+                                    padding=PaddingStrategy.LONGEST,
+                                    truncation=True, max_length=self.max_output_length)["input_ids"]
+        model_inputs["labels"] = labels
+
+        return model_inputs

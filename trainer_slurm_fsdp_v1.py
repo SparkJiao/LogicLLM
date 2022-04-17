@@ -321,7 +321,8 @@ def evaluate(cfg, model, tokenizer: PreTrainedTokenizer, prefix="", _split="dev"
                 pred_list.extend(pred.tolist())
                 prob_list.extend(prob.tolist())
 
-    metric_log, results = single_model_gpu.get_eval_log(reset=True, ddp=(_split == 'dev' and cfg.ddp_eval), device=cfg.device)
+    metric_log, results = single_model_gpu.get_eval_log(reset=True, ddp=(_split == 'dev' and cfg.ddp_eval and cfg.local_rank != -1),
+                                                        device=cfg.device)
     logger.info("****** Evaluation Results ******")
     logger.info(f"Global Steps: {prefix}")
     logger.info(metric_log)
@@ -345,6 +346,7 @@ def setup_slurm_distributed(cfg: DictConfig, backend="nccl", port=None):
         cfg.local_rank = -1
         cfg.device = str(torch.device("cuda" if torch.cuda.is_available() else "cpu"))
         cfg.n_gpu = num_gpus
+        cfg.ddp_eval = False
         return
 
     proc_id = int(os.environ["SLURM_PROCID"])

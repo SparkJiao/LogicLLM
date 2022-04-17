@@ -42,17 +42,24 @@ def batch_to_device(batch: Dict[str, torch.Tensor], device):
 
 
 def load_and_cache_examples(cfg, tokenizer: PreTrainedTokenizer, _split="train"):
-    if cfg.local_rank not in [-1, 0]:
-        dist.barrier()  # Make sure only the first process in distributed training process the dataset, and the others will use the cache
+    if_barrier = False
 
     if _split == "train":
         input_file = cfg.train_file
+        if_barrier = True
     elif _split == "dev":
         input_file = cfg.dev_file
+        if cfg.ddp_eval and cfg.local_rank != -1:
+            if_barrier = True
     elif _split == "test":
         input_file = cfg.test_file
+        if cfg.ddp_eval and cfg.local_rank != -1:
+            if_barrier = True
     else:
         raise RuntimeError(_split)
+
+    if if_barrier and cfg.local_rank not in [-1, 0]:
+        dist.barrier()  # Make sure only the first process in distributed training process the dataset, and the others will use the cache
 
     sub_config = f"read_tensor_{_split}"
     if sub_config in cfg:
@@ -60,10 +67,16 @@ def load_and_cache_examples(cfg, tokenizer: PreTrainedTokenizer, _split="train")
     else:
         dataset = hydra.utils.call(cfg.read_tensor, file_path=input_file, tokenizer=tokenizer)
 
-    if cfg.local_rank == 0:
+    if if_barrier and cfg.local_rank == 0:
         dist.barrier()  # Make sure only the first process in distributed training process the dataset, and the others will use the cache
 
     return dataset
+
+
+def if_cancel_sync(cfg: DictConfig, step: int):
+    if getattr(cfg, "forward_sync", False) is False and (step + 1) % cfg.gradient_accumulation_steps != 0 and cfg.local_rank != -1:
+        return True
+    return False
 
 
 def initialize_optimizer(cfg: DictConfig, grouped_parameters: List[Dict] = None, model: torch.nn.Module = None):

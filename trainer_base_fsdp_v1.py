@@ -41,7 +41,7 @@ from transformers import (get_linear_schedule_with_warmup, AutoTokenizer, PreTra
 
 from general_util.logger import setting_logger
 from general_util.training_utils import batch_to_device, unwrap_model, set_seed, note_best_checkpoint, initialize_optimizer, \
-    load_and_cache_examples
+    load_and_cache_examples, if_cancel_sync
 
 logger: logging.Logger
 
@@ -198,7 +198,7 @@ def train(cfg, train_dataset, model, tokenizer, continue_from_global_step=0):
             batch = batch_to_device(batch, cfg.device)
 
             last_outputs = None
-            if (step + 1) % cfg.gradient_accumulation_steps != 0 and cfg.local_rank != -1:
+            if if_cancel_sync(cfg, step):
                 # Avoid unnecessary DDP synchronization since there will be no backward pass on this example.
                 with model.no_sync():
                     loss = forward_step(model, batch, cfg, scaler)
@@ -320,7 +320,8 @@ def evaluate(cfg, model, tokenizer: PreTrainedTokenizer, prefix="", _split="dev"
                 pred_list.extend(pred.tolist())
                 prob_list.extend(prob.tolist())
 
-    metric_log, results = single_model_gpu.get_eval_log(reset=True, ddp=(_split == 'dev' and cfg.ddp_eval), device=cfg.device)
+    metric_log, results = single_model_gpu.get_eval_log(reset=True, ddp=(_split == 'dev' and cfg.ddp_eval and cfg.local_rank != -1),
+                                                        device=cfg.device)
     logger.info("****** Evaluation Results ******")
     logger.info(f"Global Steps: {prefix}")
     logger.info(metric_log)

@@ -34,7 +34,8 @@ prefetch_factor: 2
 #model_name_or_path: pretrained-models/roberta.large.wiki_erica_path_v9_v9.0.1aug.seq384.w2.adamw.mlm_1.0.A100/checkpoint-500
 #model_name_or_path: pretrained-models/roberta.large.wiki_erica_path_v9_v9.0.1aug.seq384.w2.adamw.no_mlm.A100/checkpoint-500
 #model_name_or_path: experiments/roberta.large.wiki_erica_path_v9_v9.0.1aug.seq384.w2.adamw.mlm_1.0.A100.mlm_filter/checkpoint-500
-model_name_or_path: pretrained-models/roberta.large.wiki_erica_path_v9_v9.0.1aug.seq384.w2.adamw.mlm_1.0.5neg.A100/checkpoint-100
+#model_name_or_path: pretrained-models/roberta.large.wiki_erica_path_v9_v9.0.1aug.seq384.w2.adamw.mlm_1.0.5neg.A100/checkpoint-100
+model_name_or_path: experiments/roberta.large.wiki_erica_path_v9_v9.0.1aug.seq384.5neg.w4.adamw.mlm_1.0.3090/checkpoint-500
 pretrain:
 
 #output_dir: experiments/reclor.roberta.merit-v1.pv9.v9.0.rerun.cp500.w4.TitanXP.v1.0.s${seed}
@@ -43,7 +44,8 @@ pretrain:
 #output_dir: experiments/reclor.roberta.merit-v1.pv9.v9.0.seq384.A100-cp500-mlm_1.1.w2.A100.v1.0.s${seed}
 #output_dir: experiments/reclor.roberta.merit-v1.pv9.v9.0.seq384.A100-cp500-no_mlm.w2.A100.v1.0.s${seed}
 #output_dir: experiments/reclor.roberta.merit-v1.pv9.v9.0.seq384.A100-cp500-mlm_1.0-mlm_filter.w2.A100.v1.0.s${seed}
-output_dir: experiments/reclor.roberta.merit-v1.pv9.v9.0.seq384.A100-cp100-mlm_1.0-5neg.w4.TitanXP.v1.1.s${seed}
+#output_dir: experiments/reclor.roberta.merit-v1.pv9.v9.0.seq384.A100-cp100-mlm_1.0-5neg.w4.TitanXP.v1.1.s${seed}
+output_dir: experiments/reclor.roberta.merit-v1.pv9.v9.0.seq384.3090-cp500-mlm_1.0-5neg.w1.3090.v1.1.s${seed}
 
 do_train: True
 evaluate_during_training: True
@@ -51,12 +53,14 @@ evaluate_during_training: True
 do_eval: True
 eval_sub_path:
 
+do_preprocess: False
+
 # Training hyper-parameters
-per_gpu_train_batch_size: 1
+per_gpu_train_batch_size: 2
 per_gpu_eval_batch_size: 8
 learning_rate: 1.5e-5
 #learning_rate: 5e-6
-gradient_accumulation_steps: 6
+gradient_accumulation_steps: 12
 weight_decay: 0.01
 adam_epsilon: 1e-6
 adam_betas: "(0.9, 0.98)"
@@ -73,7 +77,7 @@ logging_steps: 5
 save_steps: -1
 save_best: True
 eval_steps: 100
-ddp_eval: True
+ddp_eval: False
 no_cuda: False
 seed: 42
 local_rank: -1

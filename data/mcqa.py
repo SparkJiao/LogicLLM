@@ -14,7 +14,7 @@ logger = get_child_logger("MCQA")
 def multiple_choice_get_tensor(read_func, file_path: str, tokenizer: PreTrainedTokenizer, max_seq_length: int):
     tokenizer_name = tokenizer_get_name(tokenizer)
 
-    file_suffix = f"{tokenizer_name}_{max_seq_length}_mc"
+    file_suffix = f"{tokenizer_name}_{max_seq_length}_{read_func.__class__.__name__}_mc"
     cached_file_path = f"{file_path}_{file_suffix}"
     if os.path.exists(cached_file_path):
         logger.info(f"Loading cached file from {cached_file_path}.")
