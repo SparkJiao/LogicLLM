@@ -37,6 +37,7 @@ collator:
   tokenizer: pretrained-models/t5-large
 #  sent_sample_ratio: 0.4
   sent_sample_ratio: 0.3
+  use_template: False
 
 # Dataloader
 num_workers: 8
@@ -47,7 +48,8 @@ model_name_or_path: pretrained-models/t5-large
 pretrain:
 
 #output_dir: experiments/t5.large.wiki_erica_path_v9_v8.2.Gen.1aug.seq256-128-0.4.w4.3090
-output_dir: experiments/t5.large.wiki_erica_path_v9_v8.2.Gen.1aug.seq256-64-0.3.w4.3090
+#output_dir: experiments/t5.large.wiki_erica_path_v9_v8.2.Gen.1aug.seq256-64-0.3-v2.0.w4.3090
+output_dir: experiments/t5.large.wiki_erica_path_v9_v8.2.Gen.1aug.seq256-64-0.3-v2.1.w4.3090
 #output_dir: experiments/t5.large.wiki_erica_path_v9_v8.2.Gen.1aug.seq192-128-0.4.w4.2080Ti
 
 do_train: True
@@ -61,14 +63,16 @@ do_preprocess: False
 # Training hyper-parameters
 per_gpu_train_batch_size: 2
 per_gpu_eval_batch_size: 2
-learning_rate: 1e-5
+#learning_rate: 1e-5
+#learning_rate: 5e-4
+learning_rate: 1e-3
 gradient_accumulation_steps: 512
 weight_decay: 0.01
 adam_epsilon: 1e-8
 adam_betas: "(0.9, 0.999)"
 max_grad_norm: 5.0
 num_train_epochs: 5
-max_steps: 500
+max_steps: 4000
 warmup_proportion: 0.1
 warmup_steps: 0
 
@@ -79,15 +83,16 @@ bit_training:
 
 
 logging_steps: 1
-save_best: False
-save_steps: 100
-eval_steps: 100
+save_best: True
+save_steps: -1
+eval_steps: 400
 ddp_eval: True
 no_cuda: False
 seed: 42
 local_rank: -1
-fp16: False
+fp16: True
 fp16_opt_level: O1
+fp16_bfloat16: True
 
 # Prediction config
 prediction_cfg:

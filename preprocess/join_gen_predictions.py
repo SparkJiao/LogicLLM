@@ -1,12 +1,13 @@
 import json
 import torch
 import argparse
+import os
 
 if __name__ == '__main__':
     parser = argparse.ArgumentParser()
     parser.add_argument('--input_file', type=str, required=True)
     parser.add_argument('--predictions', type=str, required=True)
-    parser.add_argument('--output', type=str, required=True)
+    parser.add_argument('--output', type=str, default=None)
 
     args = parser.parse_args()
 
@@ -20,5 +21,9 @@ if __name__ == '__main__':
         for q in item['questions']:
             q['prediction'] = index2pred[idx]
             idx += 1
-
-    json.dump(data, open(args.output, 'w'), indent=2)
+    if args.output is None:
+        # Get the parent directory of the prediction file
+        output_file = os.path.dirname(args.predictions) + '/combine.json'
+        json.dump(data, open(output_file, 'w'), indent=2)
+    else:
+        json.dump(data, open(args.output, 'w'), indent=2)

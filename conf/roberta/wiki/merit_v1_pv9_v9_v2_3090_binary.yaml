@@ -8,11 +8,14 @@ test_file:
 
 # Model
 model:
-  _target_: models.t5.T5ForSeq2Seq.from_pretrained
+  _target_: models.roberta.RobertaForSequenceClassificationForPreTrain.from_pretrained
+  mlp_hidden_size: 2048
+  mlm_alpha: 1.0
+  num_labels: 2
 
 # Data loading
 read_tensor:
-  _target_: data.wiki_entity_path_v8_2_generate.convert_examples_into_features
+  _target_: data.wiki_entity_path_v9.convert_examples_into_features
   max_neg_num: 3
   aug_num: 1
   max_seq_length: 384
@@ -21,53 +24,55 @@ read_tensor:
   geo_p: 0.4
   deduct_ratio: 1.0
   context_ratio: 1.0
-  num_workers: 48
+  noise_sent_ratio: 0.5
+  num_workers: 8
 
 extended_vocab:
 
 # Data collator
 collator:
-  _target_: data.collators.wiki.WikiPathDatasetCollatorSeq2Seq
-#  max_input_length: 256
-#  max_output_length: 128
-#  max_input_length: 192
-#  max_output_length: 128
-  max_input_length: 256
-  max_output_length: 64
-  tokenizer: pretrained-models/t5-large
-#  sent_sample_ratio: 0.4
-  sent_sample_ratio: 0.3
+  _target_: data.collators.wiki.WikiPathDatasetCollatorWithContextBinary
+  max_seq_length: 384
+  tokenizer: pretrained-models/roberta-large
+  mlm_probability: 0.15
+  max_option_num: 4
+  swap: True
 
 # Dataloader
 num_workers: 8
 prefetch_factor: 2
 
 # Wiki path pretrain v8.2
-model_name_or_path: pretrained-models/t5-large
+model_name_or_path: pretrained-models/roberta-large
 pretrain:
 
-#output_dir: experiments/t5.large.wiki_erica_path_v9_v8.2.Gen.1aug.seq256-128-0.4.w4.3090
-output_dir: experiments/t5.large.wiki_erica_path_v9_v8.2.Gen.1aug.seq256-64-0.3.w4.3090
-#output_dir: experiments/t5.large.wiki_erica_path_v9_v8.2.Gen.1aug.seq192-128-0.4.w4.2080Ti
+#output_dir: experiments/roberta.large.wiki_erica_path_v9_v9.0.1aug.seq320.w4.2080Ti
+#output_dir: experiments/roberta.large.wiki_erica_path_v9_v9.0.1aug.seq320.w4.2080Ti.rerun
+#output_dir: experiments/roberta.large.wiki_erica_path_v9_v9.0.1aug.seq384.w4.adamw.mlm_0.5.2080Ti
+#output_dir: experiments/roberta.large.wiki_erica_path_v9_v9.0.1aug.seq384.w4.adamw.mlm_0.5.3090
+#output_dir: experiments/roberta.large.wiki_erica_path_v9_v9.0.1aug.seq384.w4.adamw.mlm_0.5.500steps.8bit.2080Ti
+output_dir: experiments/roberta.large.wiki_erica_path_v9_v9.0.1aug.seq384.w2.adamw.mlm_1.0.binary.3090
+
 
 do_train: True
 evaluate_during_training: True
 
 do_eval: False
-eval_sub_path:
+eval_sub_path: checkpoint-*
 
 do_preprocess: False
 
 # Training hyper-parameters
-per_gpu_train_batch_size: 2
-per_gpu_eval_batch_size: 2
-learning_rate: 1e-5
+per_gpu_train_batch_size: 4
+per_gpu_eval_batch_size: 8
+#learning_rate: 1e-5
+learning_rate: 5e-4
 gradient_accumulation_steps: 512
 weight_decay: 0.01
-adam_epsilon: 1e-8
-adam_betas: "(0.9, 0.999)"
+adam_epsilon: 1e-6
+adam_betas: "(0.9, 0.98)"
 max_grad_norm: 5.0
-num_train_epochs: 5
+num_train_epochs: 10
 max_steps: 500
 warmup_proportion: 0.1
 warmup_steps: 0
@@ -79,15 +84,16 @@ bit_training:
 
 
 logging_steps: 1
-save_best: False
-save_steps: 100
+save_best: True
+save_steps: -1
 eval_steps: 100
 ddp_eval: True
 no_cuda: False
 seed: 42
 local_rank: -1
-fp16: False
+fp16: True
 fp16_opt_level: O1
+
 
 # Prediction config
 prediction_cfg:
@@ -98,11 +104,14 @@ prediction_cfg:
 
 # fairscale.FullyShardedDP
 fairscale_config:
+#  _target_: general_util.fsdp_utils.recursive_initialize
   _target_: general_util.fsdp_utils.default_initialize
   fp16: ${fp16}
-  reshard_after_forward: False
   move_grads_to_cpu: False
   move_params_to_cpu: False
+
+# Lightseq config
+with_lightseq: False
 
 # Deepspeed config
 ds_cfg:
@@ -147,8 +156,8 @@ summary_helper:
   _target_: general_util.tensorboard_helper.SummaryWriterHelper
   batch_index_or_keys:
   outputs_index_or_keys:
-#    "train/mlm_loss": mlm_loss
-#    "train/cls_loss": cls_loss
+    "train/mlm_loss": mlm_loss
+    "train/cls_loss": cls_loss
 
 # Temporary variables
 n_gpu:

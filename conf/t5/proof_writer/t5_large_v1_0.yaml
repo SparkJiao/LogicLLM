@@ -2,58 +2,42 @@ hydra:
   run:
     dir: ./
 
-train_file: wiki_erica_path/v9.0/train_distant.path_v9.train.0.pkl
-dev_file: wiki_erica_path/v9.0/train_distant.path_v9.dev.pkl
-test_file:
+train_file: proofwriter-data/*/*/meta-stage-train.jsonl
+#train_file: proofwriter-data/*/*/meta-stage-dev.jsonl
+dev_file: proofwriter-data/*/*/meta-stage-dev.jsonl
+test_file: proofwriter-data/*/*/meta-stage-test.jsonl
 
 # Model
 model:
   _target_: models.t5.T5ForSeq2Seq.from_pretrained
+  tokenizer: pretrained-models/t5-large
 
 # Data loading
 read_tensor:
-  _target_: data.wiki_entity_path_v8_2_generate.convert_examples_into_features
-  max_neg_num: 3
-  aug_num: 1
-  max_seq_length: 384
-  shuffle_context: True
-  min_rep_num: 5
-  geo_p: 0.4
-  deduct_ratio: 1.0
-  context_ratio: 1.0
-  num_workers: 48
+  _target_: data.seq2seq.proof_writer_stage_pure_loading
+  max_input_length: 512
+  max_output_length: 64
+  prefix: ''
 
 extended_vocab:
 
 # Data collator
 collator:
-  _target_: data.collators.wiki.WikiPathDatasetCollatorSeq2Seq
-#  max_input_length: 256
-#  max_output_length: 128
-#  max_input_length: 192
-#  max_output_length: 128
-  max_input_length: 256
-  max_output_length: 64
-  tokenizer: pretrained-models/t5-large
-#  sent_sample_ratio: 0.4
-  sent_sample_ratio: 0.3
 
 # Dataloader
-num_workers: 8
+num_workers: 4
 prefetch_factor: 2
 
 # Wiki path pretrain v8.2
 model_name_or_path: pretrained-models/t5-large
 pretrain:
 
-#output_dir: experiments/t5.large.wiki_erica_path_v9_v8.2.Gen.1aug.seq256-128-0.4.w4.3090
-output_dir: experiments/t5.large.wiki_erica_path_v9_v8.2.Gen.1aug.seq256-64-0.3.w4.3090
-#output_dir: experiments/t5.large.wiki_erica_path_v9_v8.2.Gen.1aug.seq192-128-0.4.w4.2080Ti
+output_dir: experiments/t5.large.proof.ft.v1.0.w4.3090
 
 do_train: True
 evaluate_during_training: True
 
-do_eval: False
+do_eval: True
 eval_sub_path:
 
 do_preprocess: False
@@ -61,14 +45,14 @@ do_preprocess: False
 # Training hyper-parameters
 per_gpu_train_batch_size: 2
 per_gpu_eval_batch_size: 2
-learning_rate: 1e-5
-gradient_accumulation_steps: 512
+learning_rate: 1e-4
+gradient_accumulation_steps: 4
 weight_decay: 0.01
-adam_epsilon: 1e-8
+adam_epsilon: 1e-6
 adam_betas: "(0.9, 0.999)"
-max_grad_norm: 5.0
-num_train_epochs: 5
-max_steps: 500
+max_grad_norm: 0.0
+num_train_epochs: 3
+max_steps: 0
 warmup_proportion: 0.1
 warmup_steps: 0
 
@@ -79,22 +63,26 @@ bit_training:
 
 
 logging_steps: 1
-save_best: False
-save_steps: 100
-eval_steps: 100
+save_best: True
+save_steps: -1
+eval_steps: 2000
 ddp_eval: True
 no_cuda: False
 seed: 42
 local_rank: -1
-fp16: False
+fp16: True
 fp16_opt_level: O1
+fp16_bfloat16: True
 
 # Prediction config
 prediction_cfg:
-  metric: "acc"
+  metric: "bleu"
   measure: 1
   best_checkpoint:
   best_result:
+#max_output_length: 64
+#num_beams: 5
+#prediction_dir: AR-LSAT/data/t5.base.merit_v1.gen_v2.2-step2200/dev/
 
 # fairscale.FullyShardedDP
 fairscale_config:

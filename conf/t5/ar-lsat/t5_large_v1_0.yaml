@@ -2,41 +2,29 @@ hydra:
   run:
     dir: ./
 
-train_file: wiki_erica_path/v9.0/train_distant.path_v9.train.0.pkl
-dev_file: wiki_erica_path/v9.0/train_distant.path_v9.dev.pkl
+train_file: AR-LSAT/data/annotations/train_id_*
+dev_file: AR-LSAT/data/annotations/train_id_*
 test_file:
 
 # Model
 model:
   _target_: models.t5.T5ForSeq2Seq.from_pretrained
+  tokenizer: pretrained-models/t5-large
 
 # Data loading
 read_tensor:
-  _target_: data.wiki_entity_path_v8_2_generate.convert_examples_into_features
-  max_neg_num: 3
-  aug_num: 1
-  max_seq_length: 384
-  shuffle_context: True
-  min_rep_num: 5
-  geo_p: 0.4
-  deduct_ratio: 1.0
-  context_ratio: 1.0
-  num_workers: 48
+  _target_: data.seq2seq.lsat_annotation_get_tensor
+  max_input_length: 512
 
 extended_vocab:
 
 # Data collator
 collator:
-  _target_: data.collators.wiki.WikiPathDatasetCollatorSeq2Seq
+#  _target_: data.collators.wiki.WikiPathDatasetCollatorSeq2Seq
 #  max_input_length: 256
 #  max_output_length: 128
-#  max_input_length: 192
-#  max_output_length: 128
-  max_input_length: 256
-  max_output_length: 64
-  tokenizer: pretrained-models/t5-large
+#  tokenizer: pretrained-models/t5-base
 #  sent_sample_ratio: 0.4
-  sent_sample_ratio: 0.3
 
 # Dataloader
 num_workers: 8
@@ -44,31 +32,38 @@ prefetch_factor: 2
 
 # Wiki path pretrain v8.2
 model_name_or_path: pretrained-models/t5-large
+#model_name_or_path: experiments/t5.large.wiki_erica_path_v9_v8.2.Gen.1aug.seq256-64-0.3-v2.1.w4.3090/checkpoint-1600
 pretrain:
 
-#output_dir: experiments/t5.large.wiki_erica_path_v9_v8.2.Gen.1aug.seq256-128-0.4.w4.3090
-output_dir: experiments/t5.large.wiki_erica_path_v9_v8.2.Gen.1aug.seq256-64-0.3.w4.3090
-#output_dir: experiments/t5.large.wiki_erica_path_v9_v8.2.Gen.1aug.seq192-128-0.4.w4.2080Ti
+#output_dir: experiments/t5.base.wiki_erica_path_v9_v8.2.Gen.1aug.seq256-128-0.4.w4.2080Ti
+#output_dir: experiments/t5.base.wiki_erica_path_v9_v8.2.Gen.1aug.seq256-128-0.4.w4.2080Ti.rerun  # Fix mask id.
+
+#output_dir: experiments/t5.base.wiki_erica_path_v9_v8.2.Gen.1aug.seq256-64-v2.w4.2080Ti
+#output_dir: experiments/t5.large.wiki_erica_path_v9_v8.2.gen.1aug.seq256-64-v2.1.w4.3090.cp1600.ft_anno.v1.0.3090
+
+#output_dir: experiments/t5.large.ft_anno.v1.0.3090
+output_dir: experiments/t5.large.ft_anno.v1.1.3090
 
 do_train: True
 evaluate_during_training: True
 
-do_eval: False
+do_eval: True
 eval_sub_path:
 
 do_preprocess: False
 
 # Training hyper-parameters
-per_gpu_train_batch_size: 2
-per_gpu_eval_batch_size: 2
-learning_rate: 1e-5
-gradient_accumulation_steps: 512
+per_gpu_train_batch_size: 4
+per_gpu_eval_batch_size: 4
+#learning_rate: 1e-6  # v1.0
+learning_rate: 1e-5  # v1.1
+gradient_accumulation_steps: 1
 weight_decay: 0.01
-adam_epsilon: 1e-8
+adam_epsilon: 1e-6
 adam_betas: "(0.9, 0.999)"
-max_grad_norm: 5.0
-num_train_epochs: 5
-max_steps: 500
+max_grad_norm: 0.0
+num_train_epochs: 20
+max_steps: 51
 warmup_proportion: 0.1
 warmup_steps: 0
 
@@ -79,22 +74,26 @@ bit_training:
 
 
 logging_steps: 1
-save_best: False
-save_steps: 100
-eval_steps: 100
+save_best: True
+save_steps: 50
+eval_steps: 10
 ddp_eval: True
 no_cuda: False
 seed: 42
 local_rank: -1
-fp16: False
+fp16: True
 fp16_opt_level: O1
+fp16_bfloat16: True
 
 # Prediction config
 prediction_cfg:
-  metric: "acc"
-  measure: 1
+  metric: "loss"
+  measure: -1
   best_checkpoint:
   best_result:
+#max_output_length: 64
+#num_beams: 5
+#prediction_dir: AR-LSAT/data/t5.base.merit_v1.gen_v2.2-step2200/dev/
 
 # fairscale.FullyShardedDP
 fairscale_config:

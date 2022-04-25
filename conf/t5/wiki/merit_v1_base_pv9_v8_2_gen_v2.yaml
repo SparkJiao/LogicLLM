@@ -27,28 +27,22 @@ extended_vocab:
 
 # Data collator
 collator:
-  _target_: data.collators.wiki.WikiPathDatasetCollatorSeq2Seq
-#  max_input_length: 256
-#  max_output_length: 128
-#  max_input_length: 192
-#  max_output_length: 128
+  _target_: data.collators.wiki.WikiPathDatasetCollatorSeq2SeqV2
   max_input_length: 256
   max_output_length: 64
-  tokenizer: pretrained-models/t5-large
-#  sent_sample_ratio: 0.4
-  sent_sample_ratio: 0.3
+  tokenizer: pretrained-models/t5-base
 
 # Dataloader
 num_workers: 8
 prefetch_factor: 2
 
 # Wiki path pretrain v8.2
-model_name_or_path: pretrained-models/t5-large
+model_name_or_path: pretrained-models/t5-base
 pretrain:
 
-#output_dir: experiments/t5.large.wiki_erica_path_v9_v8.2.Gen.1aug.seq256-128-0.4.w4.3090
-output_dir: experiments/t5.large.wiki_erica_path_v9_v8.2.Gen.1aug.seq256-64-0.3.w4.3090
-#output_dir: experiments/t5.large.wiki_erica_path_v9_v8.2.Gen.1aug.seq192-128-0.4.w4.2080Ti
+#output_dir: experiments/t5.base.wiki_erica_path_v9_v8.2.Gen.1aug.seq256-128-0.4.w4.2080Ti
+#output_dir: experiments/t5.base.wiki_erica_path_v9_v8.2.Gen.1aug.seq256-128-0.4.w4.2080Ti.rerun  # Fix mask id.
+output_dir: experiments/t5.base.wiki_erica_path_v9_v8.2.Gen.1aug.seq256-64-v2.w4.2080Ti
 
 do_train: True
 evaluate_during_training: True
@@ -59,16 +53,16 @@ eval_sub_path:
 do_preprocess: False
 
 # Training hyper-parameters
-per_gpu_train_batch_size: 2
-per_gpu_eval_batch_size: 2
-learning_rate: 1e-5
-gradient_accumulation_steps: 512
+per_gpu_train_batch_size: 8
+per_gpu_eval_batch_size: 8
+learning_rate: 1e-4
+gradient_accumulation_steps: 128
 weight_decay: 0.01
-adam_epsilon: 1e-8
+adam_epsilon: 1e-6
 adam_betas: "(0.9, 0.999)"
 max_grad_norm: 5.0
 num_train_epochs: 5
-max_steps: 500
+max_steps: 1000
 warmup_proportion: 0.1
 warmup_steps: 0
 
@@ -86,7 +80,7 @@ ddp_eval: True
 no_cuda: False
 seed: 42
 local_rank: -1
-fp16: False
+fp16: True
 fp16_opt_level: O1
 
 # Prediction config

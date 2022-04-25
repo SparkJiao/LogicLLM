@@ -39,12 +39,12 @@ from tqdm import tqdm, trange
 from transformers import (get_linear_schedule_with_warmup, AutoTokenizer, PreTrainedTokenizer)
 
 from general_util.logger import setting_logger
-from general_util.training_utils import batch_to_device, unwrap_model, set_seed, note_best_checkpoint, initialize_optimizer
+from general_util.training_utils import batch_to_device, unwrap_model, set_seed, note_best_checkpoint, initialize_optimizer, \
+    load_and_cache_examples
 
 """
 Requires torch >= 1.11.0
 """
-
 
 logger: logging.Logger
 
@@ -319,7 +319,8 @@ def evaluate(cfg, model, tokenizer: PreTrainedTokenizer, prefix="", _split="dev"
                 pred_list.extend(pred.tolist())
                 prob_list.extend(prob.tolist())
 
-    metric_log, results = single_model_gpu.get_eval_log(reset=True, ddp=(_split == 'dev' and cfg.ddp_eval), device=cfg.device)
+    metric_log, results = single_model_gpu.get_eval_log(reset=True, ddp=(_split == 'dev' and cfg.ddp_eval and cfg.local_rank != -1),
+                                                        device=cfg.device)
     logger.info("****** Evaluation Results ******")
     logger.info(f"Global Steps: {prefix}")
     logger.info(metric_log)
@@ -332,27 +333,6 @@ def evaluate(cfg, model, tokenizer: PreTrainedTokenizer, prefix="", _split="dev"
     torch.cuda.empty_cache()
 
     return results
-
-
-def load_and_cache_examples(cfg, tokenizer: PreTrainedTokenizer, _split="train"):
-    if cfg.local_rank not in [-1, 0] and _split == "train":
-        dist.barrier()  # Make sure only the first process in distributed training process the dataset, and the others will use the cache
-
-    if _split == "train":
-        input_file = cfg.train_file
-    elif _split == "dev":
-        input_file = cfg.dev_file
-    elif _split == "test":
-        input_file = cfg.test_file
-    else:
-        raise RuntimeError(_split)
-
-    dataset = hydra.utils.call(cfg.read_tensor, file_path=input_file, tokenizer=tokenizer)
-
-    if cfg.local_rank == 0 and _split == "train":
-        dist.barrier()  # Make sure only the first process in distributed training process the dataset, and the others will use the cache
-
-    return dataset
 
 
 @hydra.main(config_path="conf", config_name="config")

@@ -1,5 +1,5 @@
 import copy
-from typing import List, Set
+from typing import List, Set, Union, Dict
 
 from transformers import PreTrainedTokenizer
 
@@ -35,3 +35,38 @@ def get_all_permutation(array: List[int]):
     for state in res:
         assert not all(a == b for a, b in zip(state, array))
     return res
+
+
+def recursive_find_path(node: Union[List, Dict, str], outputs: List[List[str]], res: List[str]):
+    if isinstance(node, str):
+        outputs.append(res + [node])
+        return
+
+    if isinstance(node, list):
+        for x in node:
+            recursive_find_path(x, outputs, res)
+    elif isinstance(node, dict):
+        for key, value in node.items():
+            recursive_find_path(value, outputs, res + [key])
+    else:
+        raise ValueError('Unknown type: {}'.format(type(node)))
+
+
+def recursive_bfs(deduction: Union[List, Dict]):
+    res = ''
+
+    queue = [deduction]
+    while queue:
+        node = queue.pop(0)
+        if isinstance(node, str):
+            res = res + ' ' + node
+        elif isinstance(node, list):
+            queue.extend(node)
+        elif isinstance(node, dict):
+            for key, value in node.items():
+                queue.append(value)
+                res = res + ' ' + key
+        else:
+            raise ValueError('Unknown type: {}'.format(type(node)))
+
+    return res.strip()

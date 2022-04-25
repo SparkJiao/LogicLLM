@@ -303,8 +303,95 @@ class WikiPathDatasetCollatorWithContextInMLMPredict(WikiPathDatasetCollatorWith
         return inputs
 
 
+class WikiPathDatasetCollatorWithContextBinary(WikiPathDatasetCollator):
+    def __init__(self, max_seq_length: int, tokenizer: str, mlm_probability: float = 0.15, max_option_num: int = 4, swap: bool = False):
+        super().__init__(max_seq_length, tokenizer, mlm_probability, max_option_num)
+        self.swap = swap
+
+    def __call__(self, batch):
+        # examples, texts = list(zip(*batch))
+        op_examples, ctx_examples, texts = [], [], []
+        for b in batch:
+            example = b.pop("example")
+            if "negative_context" in example:
+                ctx_examples.append(example)
+            else:
+                op_examples.append(example)
+            # examples.append(b.pop("example"))
+            texts.append(b.pop("text"))
+            # assert isinstance(texts[-1], str), texts[-1]
+        del batch
+        batch_size = len(op_examples) + len(ctx_examples)
+        assert batch_size == len(texts)
+
+        input_a = []
+        input_b = []
+        option_num = -1
+
+        for e in op_examples:
+            # op = ([e["positive"]] + e["negative"])[:self.max_option_num]
+            op = [e["positive"]] + [random.choice(e["negative"])]
+            if self.swap:
+                input_a.extend([e["context"]] * len(op))
+                input_b.extend(op)
+            else:
+                input_a.extend(op)
+                input_b.extend([e["context"]] * len(op))
+            if option_num == -1:
+                option_num = len(op)
+            else:
+                assert option_num == len(op)
+
+        for e in ctx_examples:
+            positive_context = e.pop("context")
+            negative_context = e.pop("negative_context")
+            op = e.pop("condition")
+            # input_a.extend([positive_context] + negative_context)
+            # input_b.extend([op] * (len(negative_context) + 1))
+            input_a.extend([positive_context] + [random.choice(negative_context)])
+            input_b.extend([op] * 2)
+            if option_num == -1:
+                option_num = 2
+            else:
+                assert option_num == 1 + 1, option_num
+
+        option_num = min(option_num, self.max_option_num)
+
+        tokenizer_outputs = self.tokenizer(input_a, input_b, padding=PaddingStrategy.MAX_LENGTH,
+                                           truncation=TruncationStrategy.LONGEST_FIRST, max_length=self.max_seq_length,
+                                           return_tensors="pt")
+        input_ids = tokenizer_outputs["input_ids"]
+        attention_mask = tokenizer_outputs["attention_mask"]
+
+        mlm_tokenize_outputs = self.tokenizer(texts, padding=PaddingStrategy.MAX_LENGTH,
+                                              truncation=TruncationStrategy.LONGEST_FIRST, max_length=self.max_seq_length,
+                                              return_tensors="pt")
+        mlm_input_ids = mlm_tokenize_outputs["input_ids"]
+        mlm_attention_mask = mlm_tokenize_outputs["attention_mask"]
+
+        mlm_input_ids, mlm_labels = self.mask_tokens(mlm_input_ids)
+
+        labels_true = torch.ones((batch_size, 1), dtype=torch.long, device=input_ids.device)
+        labels_false = torch.zeros((batch_size, 1), dtype=torch.long, device=input_ids.device)
+        labels = torch.cat([labels_true, labels_false], dim=1).reshape(-1)
+        assert labels.size(0) == input_ids.size(0)
+
+        res = {
+            "input_ids": input_ids,
+            "attention_mask": attention_mask,
+            "labels": labels,
+            "mlm_input_ids": mlm_input_ids,
+            "mlm_attention_mask": mlm_attention_mask,
+            "mlm_labels": mlm_labels
+        }
+        if "token_type_ids" in tokenizer_outputs:
+            res["token_type_ids"] = tokenizer_outputs["token_type_ids"]
+        return res
+
+
 class WikiPathDatasetCollatorSeq2Seq:
-    def __init__(self, max_input_length: int, max_output_length: int, tokenizer: str, sent_sample_ratio: float = 0.4):
+    def __init__(self, max_input_length: int, max_output_length: int, tokenizer: str, sent_sample_ratio: float = 0.4,
+                 use_template: bool = True):
         self.max_input_length = max_input_length
         self.max_output_length = max_output_length
         self.tokenizer: PreTrainedTokenizer = AutoTokenizer.from_pretrained(tokenizer, use_fast=False)
@@ -320,6 +407,7 @@ class WikiPathDatasetCollatorSeq2Seq:
             "What would happen if {}?",
             "If {} then what would happen?",
         ]
+        self.use_template = use_template
 
         transformers.logging.set_verbosity_error()
 
@@ -331,7 +419,8 @@ class WikiPathDatasetCollatorSeq2Seq:
             example = b["example"]
             ctx = example["context"]
             condition = example["condition"] if "condition" in example else example["positive"]
-            condition = random.choice(self.templates).format(condition)
+            if self.use_template:
+                condition = random.choice(self.templates).format(condition)
 
             output_sent_num = int(len(ctx) * self.sent_sample_ratio)
             output_sent_num = max(output_sent_num, 1)
@@ -343,6 +432,59 @@ class WikiPathDatasetCollatorSeq2Seq:
 
             inputs.append(' '.join([self.prefix] + input_sents + [condition]))
             outputs.append(self.sep_token.join(output_sents))
+
+        model_inputs = self.tokenizer(inputs, return_tensors="pt",
+                                      padding=PaddingStrategy.LONGEST,
+                                      truncation=True, max_length=self.max_input_length)
+
+        with self.tokenizer.as_target_tokenizer():
+            labels = self.tokenizer(outputs, return_tensors="pt",
+                                    padding=PaddingStrategy.LONGEST,
+                                    truncation=True, max_length=self.max_output_length)["input_ids"]
+        model_inputs["labels"] = labels
+
+        return model_inputs
+
+
+class WikiPathDatasetCollatorSeq2SeqV2:
+    def __init__(self, max_input_length: int, max_output_length: int, tokenizer: str, use_template: bool = True):
+        self.max_input_length = max_input_length
+        self.max_output_length = max_output_length
+        self.tokenizer: PreTrainedTokenizer = AutoTokenizer.from_pretrained(tokenizer, use_fast=False)
+        if isinstance(self.tokenizer, T5Tokenizer):
+            self.sep_token = "<extra_id_0>"
+        elif isinstance(self.tokenizer, BartTokenizer):
+            self.sep_token = "<s>"
+        else:
+            raise RuntimeError("Unsupported tokenizer {}".format(tokenizer.__class__.__name__))
+        self.prefix = "generate logically consistent deductions: "
+        self.templates = [
+            "What would happen if {}?",
+            "If {} then what would happen?",
+        ]
+        self.use_template = use_template
+
+        transformers.logging.set_verbosity_error()
+
+    def __call__(self, batch):
+
+        inputs = []
+        outputs = []
+        for b in batch:
+            example = b["example"]
+            ctx = example["context"]
+            output = example["condition"] if "condition" in example else example["positive"]
+
+            if self.use_template:
+                question = ctx[-1]
+                question = random.choice(self.templates).format(question)
+                context = ctx[:-1]
+                assert len(context) > 0
+
+                inputs.append(' '.join([self.prefix] + context + [question]))
+            else:
+                inputs.append(' '.join([self.prefix] + ctx))
+            outputs.append(output)
 
         model_inputs = self.tokenizer(inputs, return_tensors="pt",
                                       padding=PaddingStrategy.LONGEST,

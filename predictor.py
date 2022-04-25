@@ -30,16 +30,19 @@ from tqdm import tqdm
 from transformers import (AutoTokenizer, PreTrainedTokenizer)
 
 from general_util.logger import setting_logger
-from general_util.training_utils import batch_to_device, unwrap_model, set_seed
+from general_util.training_utils import batch_to_device, unwrap_model, set_seed, load_and_cache_examples
+
+torch.backends.cuda.matmul.allow_tf32 = True
 
 logger: logging.Logger
 
 
-def evaluate(cfg, model, tokenizer: PreTrainedTokenizer, prefix="", _split="dev"):
+def evaluate(cfg, model, tokenizer: PreTrainedTokenizer, prefix="",  _split="dev"):
     dataset = load_and_cache_examples(cfg, tokenizer, _split=_split)
 
-    if cfg.local_rank in [-1, 0] and not os.path.exists(os.path.join(cfg.output_dir, prefix)):
-        os.makedirs(os.path.join(cfg.output_dir, prefix))
+    output_dir = cfg.prediction_dir if getattr(cfg, "prediction_dir", False) else os.path.join(cfg.output_dir, prefix)
+    if cfg.local_rank in [-1, 0] and not os.path.exists(output_dir):
+        os.makedirs(output_dir)
 
     cfg.eval_batch_size = cfg.per_gpu_eval_batch_size
     if _split == 'dev' and cfg.ddp_eval:
@@ -58,7 +61,7 @@ def evaluate(cfg, model, tokenizer: PreTrainedTokenizer, prefix="", _split="dev"
     single_model_gpu.get_eval_log(reset=True)
     # Eval!
     torch.cuda.empty_cache()
-    logger.info("***** Running evaluation {}.{} *****".format(_split, prefix))
+    logger.info("***** Running evaluation {} *****".format(_split))
     logger.info("  Num examples = %d", len(dataset))
     logger.info("  Batch size = %d", cfg.eval_batch_size)
     # Seems FSDP does not need to unwrap the model for evaluating.
@@ -72,37 +75,41 @@ def evaluate(cfg, model, tokenizer: PreTrainedTokenizer, prefix="", _split="dev"
             feat_index = batch.pop("index")
             index_list.append(feat_index)
         batch = batch_to_device(batch, cfg.device)
-        with torch.cuda.amp.autocast():
+        if cfg.fp16:
+            with torch.cuda.amp.autocast(dtype=(torch.bfloat16 if getattr(cfg, "fp16_bfloat16", False) else torch.float16)):
+                with torch.no_grad():
+                    outputs = model(**batch)
+        else:
             with torch.no_grad():
                 outputs = model(**batch)
-                logits = outputs["logits"].detach()
-                probs = outputs["logits"].softmax(dim=-1).detach()
-                _, pred = probs.max(dim=-1)
 
-                input_ids = batch["input_ids"]
+        logits = outputs["logits"].detach()
+        probs = outputs["logits"].softmax(dim=-1).detach()
+        _, pred = probs.max(dim=-1)
 
-                if cfg.local_rank != -1 and cfg.sync:
-                    _all_logits = [torch.zeros(logits.size()).to(logits.device) for _ in range(dist.get_world_size())]
-                    _all_preds = [torch.zeros(pred.size(), dtype=torch.long).to(probs.device) for _ in range(dist.get_world_size())]
+        input_ids = batch["input_ids"]
 
-                    dist.all_gather(_all_logits, logits)
-                    dist.all_gather(_all_preds, pred)
+        if cfg.local_rank != -1 and cfg.sync:
+            _all_logits = [torch.zeros(logits.size()).to(logits.device) for _ in range(dist.get_world_size())]
+            _all_preds = [torch.zeros(pred.size(), dtype=torch.long).to(probs.device) for _ in range(dist.get_world_size())]
 
-                    logits_list.extend([x.cpu() for x in _all_logits])
-                    pred_list.extend([x.cpu() for x in _all_preds])
+            dist.all_gather(_all_logits, logits)
+            dist.all_gather(_all_preds, pred)
 
-                    _all_input_ids = [
-                        torch.zeros(input_ids.size(), dtype=torch.long).to(input_ids.device) for _ in range(dist.get_world_size())]
-                    dist.all_gather(_all_input_ids, input_ids)
-                    input_ids_list.extend([x.cpu() for x in _all_input_ids])
-                else:
-                    logits_list.append(logits.cpu())
-                    pred_list.append(pred.cpu())
-                    input_ids_list.append(input_ids.cpu())
+            logits_list.extend([x.cpu() for x in _all_logits])
+            pred_list.extend([x.cpu() for x in _all_preds])
+
+            _all_input_ids = [
+                torch.zeros(input_ids.size(), dtype=torch.long).to(input_ids.device) for _ in range(dist.get_world_size())]
+            dist.all_gather(_all_input_ids, input_ids)
+            input_ids_list.extend([x.cpu() for x in _all_input_ids])
+        else:
+            logits_list.append(logits.cpu())
+            pred_list.append(pred.cpu())
+            input_ids_list.append(input_ids.cpu())
 
     metric_log, results = single_model_gpu.get_eval_log(reset=True, ddp=(_split == 'dev' and cfg.ddp_eval), device=cfg.device)
     logger.info("****** Evaluation Results ******")
-    logger.info(f"Global Steps: {prefix}")
     logger.info(metric_log)
 
     if cfg.local_rank in [-1, 0] or not cfg.sync:
@@ -114,32 +121,11 @@ def evaluate(cfg, model, tokenizer: PreTrainedTokenizer, prefix="", _split="dev"
         if len(index_list) > 0:
             predictions["index"] = torch.cat(index_list, dim=0)
         if cfg.local_rank == -1:
-            torch.save(predictions, os.path.join(cfg.output_dir, prefix, f"{prefix}_prediction.pth"))
+            torch.save(predictions, os.path.join(output_dir, f"prediction.pth"))
         else:
-            torch.save(predictions, os.path.join(cfg.output_dir, prefix, f"{prefix}_prediction_{cfg.local_rank}.pth"))
+            torch.save(predictions, os.path.join(output_dir, f"prediction_{cfg.local_rank}.pth"))
 
     return results
-
-
-def load_and_cache_examples(cfg, tokenizer: PreTrainedTokenizer, _split="train"):
-    if cfg.local_rank not in [-1, 0] and _split == "train":
-        dist.barrier()  # Make sure only the first process in distributed training process the dataset, and the others will use the cache
-
-    if _split == "train":
-        input_file = cfg.train_file
-    elif _split == "dev":
-        input_file = cfg.dev_file
-    elif _split == "test":
-        input_file = cfg.test_file
-    else:
-        raise RuntimeError(_split)
-
-    dataset = hydra.utils.call(cfg.read_tensor, file_path=input_file, tokenizer=tokenizer)
-
-    if cfg.local_rank == 0 and _split == "train":
-        dist.barrier()  # Make sure only the first process in distributed training process the dataset, and the others will use the cache
-
-    return dataset
 
 
 @hydra.main(config_path="conf", config_name="config")
@@ -163,22 +149,8 @@ def main(cfg: DictConfig):
     # Set seed
     set_seed(cfg)
 
-    # Load pre-trained model and tokenizer
-    if cfg.local_rank not in [-1, 0]:
-        dist.barrier()  # Make sure only the first process in distributed training will download model & vocab
-
-    tokenizer = AutoTokenizer.from_pretrained(cfg.model_name_or_path)
-    model = hydra.utils.call(cfg.model, cfg.model_name_or_path)
-
-    if cfg.local_rank == 0:
-        dist.barrier()  # Make sure only the first process in distributed training will download model & vocab
-
-    # if cfg.local_rank == -1:  # For FullyShardedDDP, place the model on cpu first.
-    #     model.to(cfg.device)
-
     # Test
     results = {}
-
     checkpoints = [cfg.output_dir]
     if cfg.save_best:
         logging.getLogger("transformers.modeling_utils").setLevel(logging.WARN)  # Reduce logging
@@ -199,12 +171,11 @@ def main(cfg: DictConfig):
 
         model = hydra.utils.call(cfg.model, checkpoint)
         model.to(device)
+        tokenizer = AutoTokenizer.from_pretrained(checkpoint)
 
         if cfg.test_file:
             prefix = f'test' + (f'-{prefix}' if prefix != "" else "")
             split = "test"
-
-        prefix = f'predict-{prefix}'
 
         result = evaluate(cfg, model, tokenizer, prefix=prefix, _split=split)
         result = dict((k + "_{}".format(global_step), v) for k, v in result.items())

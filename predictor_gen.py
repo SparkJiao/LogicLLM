@@ -32,11 +32,13 @@ from torch import distributed as dist
 from torch.utils.data import (DataLoader, SequentialSampler)
 from torch.utils.data.distributed import DistributedSampler
 from tqdm import tqdm
-from transformers import (AutoTokenizer, PreTrainedTokenizer, PreTrainedModel)
+from transformers import (AutoTokenizer, PreTrainedTokenizer, PreTrainedModel, GPT2Tokenizer, GPT2TokenizerFast)
 from transformers.generation_utils import GenerationMixin
 
 from general_util.logger import setting_logger
 from general_util.training_utils import batch_to_device, set_seed, load_and_cache_examples
+
+torch.backends.cuda.matmul.allow_tf32 = True
 
 logger: logging.Logger
 
@@ -73,11 +75,25 @@ def evaluate(cfg, model: Union[GenerationMixin, PreTrainedModel], tokenizer: Pre
             feat_index = batch.pop("index")
             index_list.extend(feat_index.tolist())
         batch = batch_to_device(batch, cfg.device)
-        with torch.cuda.amp.autocast():
-            outputs = model.generate(**batch, max_length=cfg.max_output_length,
-                                     num_beams=cfg.num_beams)
+        if cfg.fp16:
+            with torch.cuda.amp.autocast(dtype=(torch.bfloat16 if getattr(cfg, "fp16_bfloat16", False) else torch.float16)):
+                with torch.no_grad():
+                    outputs = model.generate(**batch, max_length=cfg.max_output_length,
+                                             num_beams=cfg.num_beams, num_return_sequences=cfg.num_return_sequences)
+        else:
+            with torch.no_grad():
+                outputs = model.generate(**batch, max_length=cfg.max_output_length,
+                                         num_beams=cfg.num_beams, num_return_sequences=cfg.num_return_sequences)
+        if getattr(cfg, "num_return_sequences", 1) > 1:
+            outputs = [tokenizer.batch_decode(b_output, skip_special_tokens=True) for b_output in outputs]
+            if isinstance(tokenizer, GPT2Tokenizer) or isinstance(tokenizer, GPT2TokenizerFast):
+                outputs = [list(map(lambda x: x.split("Deduction:")[-1], output)) for output in outputs]
+        else:
             outputs = tokenizer.batch_decode(outputs, skip_special_tokens=True)
-            output_list.extend(outputs)
+            if isinstance(tokenizer, GPT2Tokenizer) or isinstance(tokenizer, GPT2TokenizerFast):
+                outputs = list(map(lambda x: x.split("Deduction:")[-1], outputs))
+
+        output_list.extend(outputs)
 
     if cfg.local_rank == -1:
         torch.save((index_list, output_list), os.path.join(output_dir, "generate-predictions.pt"))

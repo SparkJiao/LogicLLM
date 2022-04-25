@@ -1,26 +1,16 @@
 from abc import ABC
-from dataclasses import dataclass
-import copy
-from typing import List, Optional, Tuple, Union, Dict
+from typing import Optional, Tuple, Union, Dict
 
 import torch
-from fairscale.nn.checkpoint.checkpoint_activations import checkpoint_wrapper
-from torch import nn, Tensor
+from nltk.translate.bleu_score import sentence_bleu
+from torch import Tensor
 from torch.nn import CrossEntropyLoss
 from transformers.models.t5.modeling_t5 import (
-    T5Model, T5PreTrainedModel, T5_START_DOCSTRING,
-    add_start_docstrings,
     T5Config,
     T5Stack,
-    PARALLELIZE_DOCSTRING,
-    get_device_map,
-    assert_device_map,
-    DEPARALLELIZE_DOCSTRING,
-    add_start_docstrings_to_model_forward,
-    replace_return_docstrings,
-    Seq2SeqLMOutput, Seq2SeqModelOutput, T5_INPUTS_DOCSTRING, T5ForConditionalGeneration, BaseModelOutput
-
+    Seq2SeqLMOutput, T5ForConditionalGeneration, BaseModelOutput
 )
+from transformers.models.t5.tokenization_t5 import T5Tokenizer
 
 from general_util.logger import get_child_logger
 from general_util.mixin import LogMixin
@@ -31,11 +21,13 @@ logger = get_child_logger("T5")
 
 class T5ForSeq2Seq(T5ForConditionalGeneration, LogMixin, ABC):
 
-    def __init__(self, config: T5Config):
+    def __init__(self, config: T5Config, tokenizer: str):
         super().__init__(config)
         self.config = config
 
-        self.init_metric("loss", "acc")
+        self.init_metric("loss", "acc", "bleu")
+
+        self.tokenizer = T5Tokenizer.from_pretrained(tokenizer, use_fast=False)
 
     def forward(
             self,
@@ -55,6 +47,7 @@ class T5ForSeq2Seq(T5ForConditionalGeneration, LogMixin, ABC):
             output_attentions: Optional[bool] = None,
             output_hidden_states: Optional[bool] = None,
             return_dict: Optional[bool] = None,
+            **kwargs
     ) -> Union[Dict[str, Tensor], T5Stack]:
         r"""
         labels (:obj:`torch.LongTensor` of shape :obj:`(batch_size, sequence_length)`, `optional`, defaults to :obj:`None`):
@@ -166,6 +159,19 @@ class T5ForSeq2Seq(T5ForConditionalGeneration, LogMixin, ABC):
             # TODO(thom): Add z_loss https://github.com/tensorflow/mesh/blob/fa19d69eafc9a482aff0b59ddd96b025c0cb207d/mesh_tensorflow/layers.py#L666
 
             if not self.training:
+                # Generate sentences for BLEU evaluation
+                max_output_length = labels.size(1)
+                # Greedy decoding.
+                eval_gen_sentences = self.generate(input_ids=input_ids, attention_mask=attention_mask, max_length=max_output_length,
+                                                   num_beams=1, do_sample=False)
+                eval_gen_sentences = self.tokenizer.batch_decode(eval_gen_sentences, skip_special_tokens=True)
+                target = self.tokenizer.batch_decode(labels.masked_fill(label_padding_mask, self.config.pad_token_id),
+                                                     skip_special_tokens=True)
+                bleu = sum(
+                    [sentence_bleu([tgt.split()], gen_sentence.split()) for tgt, gen_sentence in zip(target, eval_gen_sentences)]
+                ) / labels.size(0)
+                self.eval_metrics.update("bleu", bleu, n=labels.size(0))
+
                 acc, true_label_num = layers.get_accuracy(lm_logits, labels)
                 self.eval_metrics.update("acc", acc, n=true_label_num)
                 self.eval_metrics.update("loss", loss.item(), n=true_label_num)
