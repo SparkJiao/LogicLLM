@@ -70,3 +70,17 @@ def recursive_bfs(deduction: Union[List, Dict]):
             raise ValueError('Unknown type: {}'.format(type(node)))
 
     return res.strip()
+
+
+def dfs_enumerate_all_assign(keys: List[str], values: List[str], relation: str, res: List[str], assign: str, key_vis: Set):
+    if len(key_vis) == 0:
+        res.append(assign)
+
+    for key_id in key_vis:
+        new_key_vis = copy.deepcopy(key_vis)
+        new_key_vis.remove(key_id)
+        for value in values:
+            if value in keys[key_id]:
+                continue
+            new_assign = assign + ' ' + keys[key_id] + ' ' + relation + ' ' + value + '.'
+            dfs_enumerate_all_assign(keys, values, relation, res, new_assign, new_key_vis)

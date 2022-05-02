@@ -47,6 +47,54 @@ def generation_get_tensor_test(read_func, file_path: str, tokenizer: PreTrainedT
     return DictTensorDataset(model_inputs)
 
 
+def lsat_iterative_load_for_test(file_path: str, tokenizer: PreTrainedTokenizer, max_input_length: int, iter_id: int = 0,
+                                 predict_on_question: bool = False, prefix: str = "generate logically consistent deductions: "):
+    data = json.load(open(file_path, 'r'))
+    inputs = []
+
+    if not predict_on_question:
+        missed = 0
+        for item in data:
+            passage = item['passage']
+            predictions = []
+            for i in range(iter_id):
+                if f"prediction_{i}" in item:
+                    predictions.append(item[f"prediction_{i}"])
+                else:
+                    missed += 1
+            inputs.append(' '.join([prefix, passage] + predictions))
+        logger.info(f"Loaded {len(inputs)} passages in total.")
+        logger.info(f"Missed {missed} predictions for passage-based inference.")
+    else:
+        missed = 0
+        for item in data:
+            passage = item['passage']
+            p_predictions = []
+            p_iter_id = 0
+            while f"prediction_{p_iter_id}" in item:
+                p_predictions.append(item[f"prediction_{p_iter_id}"])
+                p_iter_id += 1
+            for q in item['questions']:
+                ques = q['question']
+                q_predictions = []
+                for i in range(iter_id):
+                    if f"prediction_{i}" in q:
+                        q_predictions.append(q[f"prediction_{i}"])
+                    else:
+                        missed += 1
+                inputs.append(' '.join([prefix, passage] + p_predictions + [ques] + q_predictions))
+        logger.info(f"Loaded {len(inputs)} questions in total.")
+        logger.info(f"Missed {missed} predictions for question-based inference.")
+
+    model_inputs = tokenizer(inputs,
+                             padding=PaddingStrategy.LONGEST,
+                             truncation=True,
+                             max_length=max_input_length,
+                             return_tensors="pt")
+
+    return DictTensorDataset(model_inputs)
+
+
 def lsat_annotation_get_tensor(file_path: str, tokenizer: PreTrainedTokenizer, max_input_length: int,
                                prefix: str = "generate logically consistent deductions: "):
     if os.path.exists(file_path):

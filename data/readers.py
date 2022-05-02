@@ -1,5 +1,6 @@
 import json
 from typing import List
+from data.data_utils import dfs_enumerate_all_assign
 
 
 class LSATReader:
@@ -18,6 +19,38 @@ class LSATReader:
                 ques = q['question']
                 all_context.append(passage)
                 all_question.append(ques)
+                all_option_list.append(q['options'])
+                all_label.append(self.label2id[q['answer']])
+
+        return all_context, all_question, all_option_list, all_label
+
+
+class LSATProofWriterReader:
+    label2id = {'A': 0, 'B': 1, 'C': 2, 'D': 3, 'E': 4}
+
+    def __call__(self, file: str):
+        data = json.load(open(file, 'r'))
+        all_context = []
+        all_question = []
+        all_option_list = []
+        all_label = []
+
+        for item in data:
+            passage = item['passage']
+            p_deductions = []
+            iter_id = 0
+            while f"prediction_{iter_id}" in item:
+                p_deductions.append(item[f"prediction_{iter_id}"])
+                iter_id += 1
+            for q in item['questions']:
+                ques = q['question']
+                q_deductions = []
+                iter_id = 0
+                while f"prediction_{iter_id}" in q:
+                    q_deductions.append(q[f"prediction_{iter_id}"])
+                    iter_id += 1
+                all_context.append(' '.join([passage] + p_deductions))
+                all_question.append(' '.join([ques] + q_deductions))
                 all_option_list.append(q['options'])
                 all_label.append(self.label2id[q['answer']])
 
@@ -164,6 +197,36 @@ class LSATReaderTriggerV2(LSATReader):
                 all_label.append(self.label2id[q['answer']])
 
         return all_context, all_question, all_option_list, all_label
+
+
+class LSATAssignmentEnumerationReader(LSATReader):
+    def __call__(self, file: str):
+        data = json.load(open(file, 'r'))
+        all_context = []
+        all_question = []
+        all_option_list = []
+        all_label = []
+        all_assignment = []
+
+        for item in data:
+            passage = item['passage']
+
+            ent_group1 = item['group1']
+            ent_group2 = item['group2']
+            relation = item['relation']
+            assignments = []
+            dfs_enumerate_all_assign(ent_group1, ent_group2, relation, assignments, '', set(range(len(ent_group1))))
+            item['all_assignment'] = assignments
+
+            for q in item['questions']:
+                ques = q['question']
+                all_context.append(passage)
+                all_question.append(ques)
+                all_option_list.append(q['options'])
+                all_label.append(self.label2id[q['answer']])
+                all_assignment.append(assignments)
+
+        return all_context, all_question, all_option_list, all_label, all_assignment
 
 
 class LogicNLILangReader:

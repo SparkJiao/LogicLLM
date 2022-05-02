@@ -1,0 +1,167 @@
+hydra:
+  run:
+    dir: ./
+
+#train_file: AR-LSAT/data/annotations/train_id_*
+#dev_file: AR-LSAT/data/annotations/train_id_*
+dev_file: AR-LSAT/data/AR_TrainingData.json
+test_file:
+
+# Model
+model:
+  _target_: models.t5.T5ForSeq2Seq.from_pretrained
+  tokenizer: pretrained-models/t5-xxl-lm-adapt
+
+# Data loading
+#read_tensor:
+#  _target_: data.seq2seq.lsat_annotation_get_tensor
+#  max_input_length: 512
+read_tensor:
+  _target_: data.prompt.prompt_for_entity_extraction
+  max_input_length: 1100
+
+
+extended_vocab:
+
+# Data collator
+collator:
+#  _target_: data.collators.wiki.WikiPathDatasetCollatorSeq2Seq
+#  max_input_length: 256
+#  max_output_length: 128
+#  tokenizer: pretrained-models/t5-base
+#  sent_sample_ratio: 0.4
+
+# Dataloader
+num_workers: 8
+prefetch_factor: 2
+
+# Wiki path pretrain v8.2
+model_name_or_path: pretrained-models/t5-xxl-lm-adapt
+#model_name_or_path: experiments/t5.large.wiki_erica_path_v9_v8.2.Gen.1aug.seq256-64-0.3-v2.1.w4.3090/checkpoint-1600
+pretrain:
+
+#output_dir: experiments/t5.base.wiki_erica_path_v9_v8.2.Gen.1aug.seq256-128-0.4.w4.2080Ti
+#output_dir: experiments/t5.base.wiki_erica_path_v9_v8.2.Gen.1aug.seq256-128-0.4.w4.2080Ti.rerun  # Fix mask id.
+
+#output_dir: experiments/t5.base.wiki_erica_path_v9_v8.2.Gen.1aug.seq256-64-v2.w4.2080Ti
+#output_dir: experiments/t5.large.wiki_erica_path_v9_v8.2.gen.1aug.seq256-64-v2.1.w4.3090.cp1600.ft_anno.v1.0.3090
+
+#output_dir: experiments/t5.large.ft_anno.v1.0.3090
+#output_dir: experiments/t5.large.ft_anno.v1.1.3090
+output_dir: pretrained-models/t5-xxl-lm-adapt
+
+do_train: True
+evaluate_during_training: True
+
+do_eval: True
+eval_sub_path:
+
+do_preprocess: False
+
+# Training hyper-parameters
+per_gpu_train_batch_size: 1
+per_gpu_eval_batch_size: 1
+#learning_rate: 1e-6  # v1.0
+learning_rate: 1e-5  # v1.1
+gradient_accumulation_steps: 1
+weight_decay: 0.01
+adam_epsilon: 1e-6
+adam_betas: "(0.9, 0.999)"
+max_grad_norm: 0.0
+num_train_epochs: 20
+max_steps: 51
+warmup_proportion: 0.1
+warmup_steps: 0
+
+# Optimizer
+optimizer:
+use_nvlamb:
+bit_training:
+
+
+logging_steps: 1
+save_best: True
+save_steps: 50
+eval_steps: 10
+ddp_eval: True
+no_cuda: False
+seed: 42
+local_rank: -1
+fp16: True
+fp16_opt_level: O1
+fp16_bfloat16: True
+
+# Prediction config
+prediction_cfg:
+  metric: "loss"
+  measure: -1
+  best_checkpoint:
+  best_result:
+max_output_length: 256
+num_return_sequences: 1
+num_beams: 10
+#prediction_dir: AR-LSAT/data/t5.large.v1.0/train/
+#prediction_dir: AR-LSAT/data/t5.large.v1.1/train/
+#prediction_dir: AR-LSAT/data/t5.xxl-lm-adapt.parsing.prompt_infer_v1.2/train/
+prediction_dir: AR-LSAT/data/t5.xxl-lm-adapt.parsing.prompt_infer_v1.3/train/
+
+# fairscale.FullyShardedDP
+fairscale_config:
+  _target_: general_util.fsdp_utils.default_initialize
+  fp16: ${fp16}
+  reshard_after_forward: False
+  move_grads_to_cpu: False
+  move_params_to_cpu: False
+
+# Deepspeed config
+ds_cfg:
+  train_micro_batch_size_per_gpu: ${per_gpu_train_batch_size}
+  gradient_accumulation_steps: ${gradient_accumulation_steps}
+  optimizer:
+    type: AdamW
+    params:
+      lr: ${learning_rate}
+      betas: [0.9, 0.999]
+      eps: ${adam_epsilon}
+      weight_decay: ${weight_decay}
+  scheduler:
+    type: WarmupDecayLR
+    params:
+      total_num_steps:
+      warmup_max_lr: ${learning_rate}
+      warmup_num_steps:
+      warmup_type: linear
+  gradient_clipping: ${max_grad_norm}
+  fp16:
+    enabled: ${fp16}
+    initial_scale_power: 12
+  zero_optimization:
+    stage: 3
+#    offload_optimizer:
+#      device: cpu
+#      pin_memory: True
+#    offload_param:
+#      device: cpu
+#      pin_memory: True
+#  activation_checkpointing:
+#    partition_activations: True
+#    cpu_checkpointing: True
+#    contiguous_memory_optimization: False
+#    number_checkpoints: False
+#    synchronize_checkpoint_boundary: False
+#    profile: False
+  steps_per_print: 1024
+
+summary_helper:
+  _target_: general_util.tensorboard_helper.SummaryWriterHelper
+  batch_index_or_keys:
+  outputs_index_or_keys:
+#    "train/mlm_loss": mlm_loss
+#    "train/cls_loss": cls_loss
+
+# Temporary variables
+n_gpu:
+device:
+train_batch_size:
+eval_batch_size:
+world_size:

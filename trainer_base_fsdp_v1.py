@@ -45,8 +45,7 @@ from general_util.training_utils import batch_to_device, unwrap_model, set_seed,
 
 logger: logging.Logger
 
-
-# transformers.logging.set_verbosity_error()
+torch.backends.cuda.matmul.allow_tf32 = True
 
 
 def save_model(model: Union[torch.nn.Module, FullyShardedDDP], cfg: DictConfig, output_dir: str, tokenizer: PreTrainedTokenizer = None):
@@ -68,7 +67,7 @@ def save_model(model: Union[torch.nn.Module, FullyShardedDDP], cfg: DictConfig, 
 
 def forward_step(model, inputs: Dict[str, torch.Tensor], cfg, scaler, return_outputs: bool = False):
     if cfg.fp16:
-        with torch.cuda.amp.autocast():
+        with torch.cuda.amp.autocast(dtype=(torch.bfloat16 if getattr(cfg, "fp16_bfloat16", False) else torch.float16)):
             outputs = model(**inputs)
     else:
         outputs = model(**inputs)
@@ -311,7 +310,7 @@ def evaluate(cfg, model, tokenizer: PreTrainedTokenizer, prefix="", _split="dev"
     prob_list = []
     for batch in tqdm(eval_dataloader, desc="Evaluating", disable=cfg.local_rank not in [-1, 0], dynamic_ncols=True):
         batch = batch_to_device(batch, cfg.device)
-        with torch.cuda.amp.autocast():
+        with torch.cuda.amp.autocast(dtype=(torch.bfloat16 if getattr(cfg, "fp16_bfloat16", False) else torch.float16)):
             with torch.no_grad():
                 outputs = model(**batch)
                 probs = outputs["logits"].softmax(dim=-1).detach().float().cpu()

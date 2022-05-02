@@ -7,6 +7,7 @@ if __name__ == '__main__':
     parser = argparse.ArgumentParser()
     parser.add_argument('--input_file', type=str, required=True)
     parser.add_argument('--predictions', type=str, required=True)
+    parser.add_argument('--pred_on_passage_only', default=False, action='store_true')
     parser.add_argument('--output', type=str, default=None)
 
     args = parser.parse_args()
@@ -18,9 +19,13 @@ if __name__ == '__main__':
     data = json.load(open(args.input_file))
     idx = 0
     for item in data:
-        for q in item['questions']:
-            q['prediction'] = index2pred[idx]
+        if args.pred_on_passage_only:
+            item['prediction'] = index2pred[idx]
             idx += 1
+        else:
+            for q in item['questions']:
+                q['prediction'] = index2pred[idx]
+                idx += 1
     if args.output is None:
         # Get the parent directory of the prediction file
         output_file = os.path.dirname(args.predictions) + '/combine.json'
