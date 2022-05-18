@@ -1,8 +1,8 @@
 import glob
 import json
 import os.path
-import jsonlines
 
+import jsonlines
 import torch
 from transformers import PreTrainedTokenizer, GPT2Tokenizer, GPT2TokenizerFast
 from transformers.tokenization_utils_base import PaddingStrategy
@@ -343,6 +343,74 @@ def proof_writer_stage_pure_loading(file_path: str, tokenizer: PreTrainedTokeniz
         model_outputs = tokenizer(outputs, padding=PaddingStrategy.LONGEST, truncation=True, max_length=max_output_length,
                                   return_tensors="pt")
         model_inputs["labels"] = model_outputs["input_ids"]
+
+    logger.info(f"Saving to {cached_file_path}.")
+    torch.save(model_inputs, cached_file_path)
+
+    return DictTensorDataset(model_inputs)
+
+
+def lsat_nl2rules_v1(file_path: str, tokenizer: PreTrainedTokenizer, max_input_length: int, max_output_length: int, skip_empty: bool = True,
+                     add_labels: bool = True, prefix: str = 'Parse the source sentence into a logical form with the given context'):
+    tokenizer_name = tokenizer_get_name(tokenizer)
+    file_suffix = f"{tokenizer_name}_{max_input_length}_{max_output_length}_{skip_empty}_{add_labels}_lsat_nl2rules_" \
+                  f"{prefix.replace(' ', '-')}_v1"
+    cached_file_path = f"{file_path}_{file_suffix}"
+    cached_file_path = cached_file_path.replace('*', '')
+    if os.path.exists(cached_file_path):
+        logger.info(f"Loading cached file from {cached_file_path}.")
+        data = torch.load(cached_file_path)
+        return DictTensorDataset(data)
+
+    data = json.load(open(file_path))
+    inputs = []
+    outputs = []
+    input_template = "{}: Context: {}\nSource: {}\n"
+    for item in data:
+        context_sentences = list(item["context"].values())
+        rules = item["rules_expression"]
+        context = ''
+        for sent, rule in zip(context_sentences, rules):
+            if not rule:
+                if not skip_empty:
+                    inputs.append(input_template.format(prefix, context, sent))
+                    outputs.append('')
+            else:
+                inputs.append(input_template.format(prefix, context, sent))
+                outputs.append(";".join(rule))
+            context += sent + ' '
+
+        for qa in item["qa"]:
+            question = qa["question"]
+            options = qa["option"]
+
+            if not qa["q_expression"] or (not qa["q_expression"][0]):
+                if not skip_empty:
+                    inputs.append(input_template.format(prefix, context, question))
+                    outputs.append('')
+            else:
+                inputs.append(input_template.format(prefix, context, question))
+                outputs.append(";".join(qa["q_expression"]))
+
+            for option, o_rule in zip(options, qa["o_expression"]):
+                if not o_rule:
+                    if not skip_empty:
+                        inputs.append(input_template.format(prefix, context + ' ' + question, option))
+                        outputs.append('')
+                else:
+                    inputs.append(input_template.format(prefix, context + ' ' + question, option))
+                    outputs.append(";".join(o_rule))
+
+    logger.info(f"Preparing {len(inputs)} examples.")
+    model_inputs = tokenizer(inputs, padding=PaddingStrategy.LONGEST, truncation=True, max_length=max_input_length, return_tensors="pt")
+    if add_labels:
+        with tokenizer.as_target_tokenizer():
+            labels = tokenizer(outputs, padding=PaddingStrategy.LONGEST, truncation=True, max_length=max_output_length, return_tensors="pt")
+        model_inputs["labels"] = labels["input_ids"]
+
+    logger.info(f"Input length {model_inputs['input_ids'].size(1)}.")
+    if add_labels:
+        logger.info(f"Output length {model_inputs['labels'].size(1)}.")
 
     logger.info(f"Saving to {cached_file_path}.")
     torch.save(model_inputs, cached_file_path)

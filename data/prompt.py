@@ -1,7 +1,7 @@
 import json
 
 from transformers import PreTrainedTokenizer
-from transformers.tokenization_utils_base import PaddingStrategy
+from transformers.tokenization_utils_base import PaddingStrategy, TruncationStrategy
 
 from data.collators.dict2dict import DictTensorDataset
 from general_util.logger import get_child_logger
@@ -290,6 +290,105 @@ def prompt_for_entity_extraction(file_path: str, tokenizer: PreTrainedTokenizer,
                              truncation=True,
                              max_length=max_input_length,
                              return_tensors="pt")
+    logger.info(f"Input length: {model_inputs['input_ids'].size(1)}")
+
+    return DictTensorDataset(model_inputs)
+
+
+def prompt_for_rule_parsing(file_path: str, tokenizer: PreTrainedTokenizer):
+    # prefix = 'Parse the sentence into logical forms using the functions: ' \
+    #          'Before, After, Last, Next, Adjacent, Different, Same, BeforeEqual, AfterEqual, To, ' \
+    #          'IfThen, IFF, And, Or, Unless, Neither, FirstPos, LastPos. ' \
+    #          'Examples: '
+    prefix = 'Parse the sentence into logical forms. Examples: '
+    prompts = 'Input: Participants: H, J, K, M, N, O, P, X, Y, Z. ' \
+              'Positions: 1, 2, 3, 4, 5, 6; Giuliani, Rodrigo, Vivaldi. ' \
+              'Sentence: Two concertos will be selected from among three concertos by Giuliani—H, J, and K; ' \
+              'two from among four concertos by Rodrigo—M, N, O, and P; ' \
+              'and two from among three concertos by Vivaldi—X, Y, and Z. ' \
+              'Output: count(select(any,Giuliani))=2 AND ' \
+              'group(H,J,K,dim=1)=Giuliani AND count(select(any,Rodrigo))=2 AND ' \
+              'group(M,N,O,P,dim=1)=Rodrigo AND count(select(any,Vivaldi))=2 AND group(X,Y,Z,dim=1)=Vivaldi, {1,2,3,4,5,6}.  ' \
+              '' \
+              'Input: Participants: H, J, K, M, N, O, P, X, Y, Z. ' \
+              'Positions: 1, 2, 3, 4, 5, 6; Giuliani, Rodrigo, Vivaldi. ' \
+              'Sentence: The following conditions apply without exception: If N is selected, then J is also selected. ' \
+              'Output: value(N)>=1 ENTAIL value(J)>=1. ' \
+              '' \
+              'Input: Participants: H, J, K, M, N, O, P, X, Y, Z. ' \
+              'Positions: 1, 2, 3, 4, 5, 6; Giuliani, Rodrigo, Vivaldi. ' \
+              'Sentence: If both J and O are selected, then J is played at some time before O. ' \
+              'X `cannot be played on the fifth Sunday unless one of Rodrigo\'s concertos is played on the first Sunday. ' \
+              'Output: (group(J,O)>=1 ENTAIL value(J)<value(O)) AND ((NOT value(any)=1, {M,N,O,P}) ENTAIL NOT value(X)=5). ' \
+              '' \
+              '' \
+              '' \
+              'Input: Participants: H, J, K, M, N, O, P, X, Y, Z. ' \
+              'Positions: 1, 2, 3, 4, 5, 6; Giuliani, Rodrigo, Vivaldi. ' \
+              'Sentence: H Z M N Y K. ' \
+              'Output: value(H)=1 AND value(Z)=2 AND value(M)=3 AND value(N)=4 AND value(Y)=5 AND value(K)=6. ' \
+              '' \
+              'Input: Participants: H, J, K, M, N, O, P, X, Y, Z. ' \
+              'Positions: 1, 2, 3, 4, 5, 6; Giuliani, Rodrigo, Vivaldi. ' \
+              'Sentence: If the six concertos to be played are J, K, N, O, Y, and Z and if N is to be played on the first Sunday, ' \
+              'then which one of the following concertos CANNOT be played on the second Sunday? ' \
+              'Output: value(any)>=1 AND value(N)=1, {J,K,N,O,Y,Z}, NOT. ' \
+              '' \
+              'Input: ' \
+              'Participants: Fran, George, Henry, Joan, Kathy, Lewis, Nathan, Olga. ' \
+              'Positions: swimming, tennis, volleyball. ' \
+              'Sentence: The assignment of counselors must conform to the following conditions: ' \
+              'Each activity is supervised by at least two, but not more than three, of the eight counselors. ' \
+              'Output: count(select(any))>=2 AND count(select(any))<=3, {swimming, tennis, volleyball}. ' \
+              '' \
+              'Input: ' \
+              'Participants: Fran, George, Henry, Joan, Kathy, Lewis, Nathan, Olga. ' \
+              'Positions: swimming, tennis, volleyball. ' \
+              'Sentence: Henry supervises swimming. ' \
+              'Output: value(Henry)=swimming. ' \
+              '' \
+              'Input: ' \
+              'Participants: Fran, George, Henry, Joan, Kathy, Lewis, Nathan, Olga. ' \
+              'Positions: swimming, tennis, volleyball. ' \
+              'Sentence: Neither Kathy nor Olga supervises tennis. ' \
+              'Output: NOT (value(Kathy)=tennis) AND NOT (value(Olga)=tennis). ' \
+              '' \
+              'Input: ' \
+              'Participants: Fran, George, Henry, Joan, Kathy, Lewis, Nathan, Olga. ' \
+              'Positions: swimming, tennis, volleyball. ' \
+              'Sentence: Neither Kathy nor Nathan supervises the same activity as Joan. ' \
+              'Output: NOT (value(Kathy)=value(Joan)) AND NOT (value(Nathan)=value(Joan)). ' \
+              '' \
+              # 'Input: ' \
+              # 'Participants: Fran, George, Henry, Joan, Kathy, Lewis, Nathan, Olga. ' \
+              # 'Positions: swimming, tennis, volleyball. ' \
+              # 'Sentence: Swimming: Fran, George, Henry; Tennis: Joan, Lewis; Volleyball: Kathy, Nathan, Olga. ' \
+              # 'Output: swimming=group(Fran, George, Henry) AND tennis=group(Joan, Lewis) AND volleyball=group(Kathy, Nathan, Olga). ' \
+              # ''
+
+    prompt_len = len(tokenizer.tokenize(prefix + prompts))
+    logger.info('prompt_len: %d', prompt_len)
+
+    data = json.load(open(file_path, "r"))
+    inputs = []
+    for item in data:
+        context_sentences = list(item["context"].values())
+        participants = ";".join(item["participants"])
+        positions = ";".join(item["positions"])
+
+        for sent in context_sentences:
+            inputs.append(prefix + prompts + f"Input: Participants: {participants}. Positions: {positions}. Sentence: {sent} Output:")
+
+        for qa in item["qa"]:
+            question = qa["question"]
+            options = qa["option"]
+
+            inputs.append(prefix + prompts + f"Input: Participants: {participants}. Positions: {positions}. Sentence: {question} Output:")
+            for option in options:
+                inputs.append(prefix + prompts + f"Input: Participants: {participants}. Positions: {positions}. Sentence: {option} Output:")
+
+    model_inputs = tokenizer(inputs, padding=PaddingStrategy.LONGEST, truncation=TruncationStrategy.DO_NOT_TRUNCATE, return_tensors="pt")
+
     logger.info(f"Input length: {model_inputs['input_ids'].size(1)}")
 
     return DictTensorDataset(model_inputs)

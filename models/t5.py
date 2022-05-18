@@ -2,6 +2,7 @@ from abc import ABC
 from typing import Optional, Tuple, Union, Dict
 
 import torch
+from nltk import word_tokenize
 from nltk.translate.bleu_score import sentence_bleu
 from torch import Tensor
 from torch.nn import CrossEntropyLoss
@@ -54,9 +55,9 @@ class T5ForSeq2Seq(T5ForConditionalGeneration, LogMixin, ABC):
             Labels for computing the cross entropy classification loss.
             Indices should be in ``[0, ..., config.vocab_size - 1]``.
 
-    Returns:
+        Returns:
 
-    Examples::
+        Examples::
 
         >>> from transformers import T5Tokenizer, T5ForConditionalGeneration
         >>> import torch
@@ -156,7 +157,8 @@ class T5ForSeq2Seq(T5ForConditionalGeneration, LogMixin, ABC):
             labels[label_padding_mask] = -1
             loss_fct = CrossEntropyLoss(ignore_index=-1)
             loss = loss_fct(lm_logits.view(-1, lm_logits.size(-1)), labels.view(-1))
-            # TODO(thom): Add z_loss https://github.com/tensorflow/mesh/blob/fa19d69eafc9a482aff0b59ddd96b025c0cb207d/mesh_tensorflow/layers.py#L666
+            # TODO(thom):
+            #  Add z_loss https://github.com/tensorflow/mesh/blob/fa19d69eafc9a482aff0b59ddd96b025c0cb207d/mesh_tensorflow/layers.py#L666
 
             if not self.training:
                 # Generate sentences for BLEU evaluation
@@ -167,9 +169,13 @@ class T5ForSeq2Seq(T5ForConditionalGeneration, LogMixin, ABC):
                 eval_gen_sentences = self.tokenizer.batch_decode(eval_gen_sentences, skip_special_tokens=True)
                 target = self.tokenizer.batch_decode(labels.masked_fill(label_padding_mask, self.config.pad_token_id),
                                                      skip_special_tokens=True)
+                # bleu = sum(
+                #     [sentence_bleu([tgt.split()], gen_sentence.split()) for tgt, gen_sentence in zip(target, eval_gen_sentences)]
+                # ) / labels.size(0)
                 bleu = sum(
-                    [sentence_bleu([tgt.split()], gen_sentence.split()) for tgt, gen_sentence in zip(target, eval_gen_sentences)]
-                ) / labels.size(0)
+                    [sentence_bleu([word_tokenize(tgt)], word_tokenize(gen_sentence))
+                     for tgt, gen_sentence in zip(target, eval_gen_sentences)]
+                )
                 self.eval_metrics.update("bleu", bleu, n=labels.size(0))
 
                 acc, true_label_num = layers.get_accuracy(lm_logits, labels)

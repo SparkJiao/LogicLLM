@@ -1,12 +1,16 @@
 import random
 from typing import Dict, List
 
+import hydra
 import numpy as np
 import torch
-from omegaconf import DictConfig
 import torch.distributed as dist
+from omegaconf import DictConfig
 from transformers import PreTrainedTokenizer
-import hydra
+
+from general_util.logger import get_child_logger
+
+logger = get_child_logger("TrainingUtils")
 
 
 def set_seed(args):
@@ -63,7 +67,7 @@ def load_and_cache_examples(cfg, tokenizer: PreTrainedTokenizer, _split="train")
 
     sub_config = f"read_tensor_{_split}"
     if sub_config in cfg:
-        dataset = hydra.utils.instantiate(cfg[sub_config], file_path=input_file, tokenizer=tokenizer)
+        dataset = hydra.utils.call(cfg[sub_config], file_path=input_file, tokenizer=tokenizer)
     else:
         dataset = hydra.utils.call(cfg.read_tensor, file_path=input_file, tokenizer=tokenizer)
 

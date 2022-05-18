@@ -1,5 +1,5 @@
 import copy
-from typing import List, Set, Union, Dict
+from typing import List, Set, Union, Dict, Tuple
 
 from transformers import PreTrainedTokenizer
 
@@ -84,3 +84,16 @@ def dfs_enumerate_all_assign(keys: List[str], values: List[str], relation: str, 
                 continue
             new_assign = assign + ' ' + keys[key_id] + ' ' + relation + ' ' + value + '.'
             dfs_enumerate_all_assign(keys, values, relation, res, new_assign, new_key_vis)
+
+
+def dfs_load_assignment(assignment_list, res: List[Tuple[str, str]], cur_assign: str):
+    for assignment in assignment_list:
+        if assignment['flag'] is False:
+            continue
+        if assignment['flag'] is None:
+            res.append((cur_assign + ' ' + assignment['deduction'], assignment['id']))
+        elif assignment['flag'] is True:
+            dfs_load_assignment(assignment['assignment'], res, cur_assign + ' ' + assignment['deduction'])
+        else:
+            raise ValueError('Unknown flag: {}'.format(assignment['flag']))
+

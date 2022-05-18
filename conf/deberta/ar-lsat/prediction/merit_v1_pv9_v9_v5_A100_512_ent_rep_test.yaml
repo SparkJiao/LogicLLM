@@ -1,0 +1,148 @@
+hydra:
+  run:
+    dir: ./
+
+train_file: LogicNLI/train_language.json
+dev_file: LogicNLI/dev_language.json
+test_file: LogicNLI/test_language.json
+
+# Model
+model:
+  _target_: models.deberta_v1.DebertaForSequenceClassification.from_pretrained
+  override_pooler: True
+  num_labels: 2
+
+# Data loading
+#read_tensor:
+#  _target_: data.nli.nli_get_tensor
+#  read_func:
+#    _target_: data.readers.LogicNLILangReader
+#  max_seq_length: 256
+read_tensor:
+  _target_: data.seq_cls.deduction_cls_for_loginli_from_examples
+  max_seq_length: 512
+
+extended_vocab:
+
+# Data collator
+collator:
+#  _target_: data.collators.NLITuple2DictCollator
+
+# Dataloader
+num_workers: 4
+prefetch_factor: 2
+
+# Wiki path pretrain v8.2
+#model_name_or_path: pretrained-models/merit-roberta-large-v2/checkpoint-500
+#model_name_or_path: experiments/deberta-v1.large.wiki_erica_path_v9_v9.0.1aug.ent_rep_all_train.seq512.w4.adamw.A100/checkpoint-500
+model_name_or_path: experiments/ar-lsat.deberta-v1-large.merit-v1.logic-nli-ft.weak_sup.v1.0.A100
+pretrain:
+
+#output_dir: experiments/logic-nli.roberta.merit-v1.cp500.v1.1
+#output_dir: experiments/ar-lsat.weak_sup.roberta.merit-v1-pv9v9-ent_rep_all_train.logitc-nli-ft.seq512.cp500.norm_1.w2.A100.v1.0
+output_dir: experiments/ar-lsat.deberta-v1-large.merit-v1.logic-nli-ft.weak_sup.v1.0.A100
+
+do_train: True
+evaluate_during_training: True
+
+do_eval: True
+eval_sub_path:
+
+# Training hyper-parameters
+per_gpu_train_batch_size: 16
+per_gpu_eval_batch_size: 16
+#learning_rate: 1e-5
+learning_rate: 2e-5
+#learning_rate: 5e-6
+gradient_accumulation_steps: 1
+weight_decay: 0.01
+adam_epsilon: 1e-6
+#adam_betas: "(0.9, 0.98)"
+adam_betas: "(0.9, 0.999)"
+#max_grad_norm: 0.0
+max_grad_norm: 1.0
+num_train_epochs: 20
+max_steps: 0
+warmup_proportion: 0.1
+warmup_steps: 0
+
+
+logging_steps: 5
+save_steps: -1
+save_best: True
+eval_steps: 200
+ddp_eval: True
+no_cuda: False
+seed: 42
+local_rank: -1
+fp16: True
+fp16_opt_level: O1
+fp16_bfloat16: True
+
+# Prediction config
+prediction_cfg:
+  metric: "acc"
+  measure: 1
+  best_checkpoint:
+  best_result:
+#prediction_dir: AR-LSAT/data/logic-nli.deberta-v1-large.merit-v1-pv9v9-ent_rep_all_train.seq512.cp500.norm_1.w2.A100.v1.0/examples/
+prediction_dir: AR-LSAT/data/ar-lsat.weak_sup.roberta.merit-v1-pv9v9-ent_rep_all_train.logitc-nli-ft.seq512.cp500.norm_1.w2.A100.v1.0/examples/
+
+# fairscale.FullyShardedDP
+fairscale_config:
+  _target_: general_util.fsdp_utils.default_initialize
+  fp16: ${fp16}
+  reshard_after_forward: False
+  move_grads_to_cpu: False
+  move_params_to_cpu: False
+
+# Deepspeed config
+ds_cfg:
+  train_micro_batch_size_per_gpu: ${per_gpu_train_batch_size}
+  gradient_accumulation_steps: ${gradient_accumulation_steps}
+  optimizer:
+    type: AdamW
+    params:
+      lr: ${learning_rate}
+      betas: [0.9, 0.999]
+      eps: ${adam_epsilon}
+      weight_decay: ${weight_decay}
+  scheduler:
+    type: WarmupDecayLR
+    params:
+      total_num_steps:
+      warmup_max_lr: ${learning_rate}
+      warmup_num_steps:
+      warmup_type: linear
+  gradient_clipping: ${max_grad_norm}
+  fp16:
+    enabled: ${fp16}
+    initial_scale_power: 12
+  zero_optimization:
+    stage: 3
+#    offload_optimizer:
+#      device: cpu
+#      pin_memory: True
+#    offload_param:
+#      device: cpu
+#      pin_memory: True
+#  activation_checkpointing:
+#    partition_activations: True
+#    cpu_checkpointing: True
+#    contiguous_memory_optimization: False
+#    number_checkpoints: False
+#    synchronize_checkpoint_boundary: False
+#    profile: False
+  steps_per_print: 1024
+
+summary_helper:
+  _target_: general_util.tensorboard_helper.SummaryWriterHelper
+  batch_index_or_keys:
+  outputs_index_or_keys:
+
+# Temporary variables
+n_gpu:
+device:
+train_batch_size:
+eval_batch_size:
+world_size:

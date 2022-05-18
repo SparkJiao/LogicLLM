@@ -8,16 +8,14 @@ test_file:
 
 # Model
 model:
-  _target_: models.roberta.RobertaForMultipleChoiceForPreTrain.from_pretrained
+  _target_: models.deberta_v1.DebertaForMultipleChoicePreTrain.from_pretrained
   mlp_hidden_size: 2048
-  mlm_alpha: 1.0
 
 # Data loading
 read_tensor:
   _target_: data.wiki_entity_path_v9_ent_replace_test.convert_examples_into_features
   max_neg_num: 3
   aug_num: 1
-#  max_seq_length: 384
   max_seq_length: 512
   shuffle_context: True
   min_rep_num: 5
@@ -35,45 +33,42 @@ extended_vocab:
 collator:
   _target_: data.collators.WikiPathDatasetCollatorWithContext
   max_seq_length: 512
-  tokenizer: pretrained-models/roberta-large
+  tokenizer: pretrained-models/deberta-large
   mlm_probability: 0.15
   max_option_num: 4
   swap: True
 
 # Dataloader
-num_workers: 0
+num_workers: 0  # Memory leakage during multiprocessing.
 prefetch_factor: 2
 
 # Wiki path pretrain v8.2
-model_name_or_path: pretrained-models/roberta-large
+model_name_or_path: pretrained-models/deberta-large
 pretrain:
 
 #output_dir: experiments/roberta.large.wiki_erica_path_v9_v9.0.1aug.seq320.w4.2080Ti
 #output_dir: experiments/roberta.large.wiki_erica_path_v9_v9.0.1aug.seq320.w4.2080Ti.rerun
 #output_dir: experiments/roberta.large.wiki_erica_path_v9_v9.0.1aug.seq384.w4.adamw.mlm_0.5.2080Ti
-#output_dir: experiments/roberta.large.wiki_erica_path_v9_v9.0.1aug.ent_rep_all_train.seq384.w4.adamw.mlm_1.0.3090
-output_dir: experiments/roberta.large.wiki_erica_path_v9_v9.0.1aug.ent_rep_all_train.seq512.w4.adamw.mlm_1.0.3090
+output_dir: experiments/deberta-v1.large.wiki_erica_path_v9_v9.0.1aug.ent_rep_all_train.seq512.w4.adamw.A100
 #output_dir: experiments/roberta.large.wiki_erica_path_v9_v9.0.1aug.seq384.w4.adamw.mlm_0.5.500steps.8bit.2080Ti
 
 do_train: True
 evaluate_during_training: True
 
-do_eval: True
-eval_sub_path: checkpoint-500
+do_eval: False
+eval_sub_path:
 
 do_preprocess: False
 
 # Training hyper-parameters
-#per_gpu_train_batch_size: 2
-#per_gpu_eval_batch_size: 4
-per_gpu_train_batch_size: 1
-per_gpu_eval_batch_size: 2
-learning_rate: 1e-5
-gradient_accumulation_steps: 1024
+per_gpu_train_batch_size: 4
+per_gpu_eval_batch_size: 8
+learning_rate: 1e-4
+gradient_accumulation_steps: 256
 weight_decay: 0.01
 adam_epsilon: 1e-6
-adam_betas: "(0.9, 0.98)"
-max_grad_norm: 5.0
+adam_betas: "(0.9, 0.999)"
+max_grad_norm: 1.0
 num_train_epochs: 10
 max_steps: 500
 warmup_proportion: 0.1
@@ -95,6 +90,7 @@ seed: 42
 local_rank: -1
 fp16: True
 fp16_opt_level: O1
+fp16_bfloat16: True
 
 # Prediction config
 prediction_cfg:
@@ -110,6 +106,9 @@ fairscale_config:
   fp16: ${fp16}
   move_grads_to_cpu: False
   move_params_to_cpu: False
+
+fsdp_config:
+  _target_: general_util.torch_fsdp_utils.torch_fsdp_initialize_default
 
 # Lightseq config
 with_lightseq: False

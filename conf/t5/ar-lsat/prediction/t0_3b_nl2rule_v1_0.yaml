@@ -2,80 +2,79 @@ hydra:
   run:
     dir: ./
 
-train_file: wiki_erica_path/v9.0/train_distant.path_v9.train.0.pkl
-dev_file: wiki_erica_path/v9.0/train_distant.path_v9.dev.pkl
+train_file: AR-LSAT/data/train_ar_label_0507.json
+dev_file: AR-LSAT/data/val_ar_label.json
+#test_file: AR-LSAT/data/test_ar_label.json
 test_file:
 
 # Model
 model:
-  _target_: models.roberta.RobertaForMultipleChoiceForPreTrain.from_pretrained
-  mlp_hidden_size: 2048
-  mlm_alpha: 1.0
+  _target_: models.t5.T5ForSeq2Seq.from_pretrained
+  tokenizer: pretrained-models/T0_3B
 
 # Data loading
-read_tensor:
-  _target_: data.wiki_entity_path_v9_ent_replace_test.convert_examples_into_features
-  max_neg_num: 3
-  aug_num: 1
-#  max_seq_length: 384
-  max_seq_length: 512
-  shuffle_context: True
-  min_rep_num: 5
-  geo_p: 0.4
-  deduct_ratio: 1.0
-  context_ratio: 1.0
-  noise_sent_ratio: 0.5
-  num_workers: 48
-#read_tensor_dev:
-#  _target_: data.wiki_entity_path_v9_ent_replace_test._quick_loading_keep_aug_only
+read_tensor_dev:
+  _target_: data.seq2seq.lsat_nl2rules_v1
+  max_input_length: 512
+  max_output_length: 64
+  skip_empty: False
+  add_labels: False
+
+read_tensor_test:
+  _target_: data.seq2seq.lsat_nl2rules_v1
+  max_input_length: 512
+  max_output_length: 64
+  skip_empty: False
+  add_labels: False
 
 extended_vocab:
 
 # Data collator
 collator:
-  _target_: data.collators.WikiPathDatasetCollatorWithContext
-  max_seq_length: 512
-  tokenizer: pretrained-models/roberta-large
-  mlm_probability: 0.15
-  max_option_num: 4
-  swap: True
+#  _target_: data.collators.wiki.WikiPathDatasetCollatorSeq2Seq
+#  max_input_length: 256
+#  max_output_length: 128
+#  tokenizer: pretrained-models/t5-base
+#  sent_sample_ratio: 0.4
 
 # Dataloader
-num_workers: 0
+num_workers: 4
 prefetch_factor: 2
 
 # Wiki path pretrain v8.2
-model_name_or_path: pretrained-models/roberta-large
+model_name_or_path: pretrained-models/T0_3B
+#model_name_or_path: experiments/t5.large.wiki_erica_path_v9_v8.2.Gen.1aug.seq256-64-0.3-v2.1.w4.3090/checkpoint-1600
 pretrain:
 
-#output_dir: experiments/roberta.large.wiki_erica_path_v9_v9.0.1aug.seq320.w4.2080Ti
-#output_dir: experiments/roberta.large.wiki_erica_path_v9_v9.0.1aug.seq320.w4.2080Ti.rerun
-#output_dir: experiments/roberta.large.wiki_erica_path_v9_v9.0.1aug.seq384.w4.adamw.mlm_0.5.2080Ti
-#output_dir: experiments/roberta.large.wiki_erica_path_v9_v9.0.1aug.ent_rep_all_train.seq384.w4.adamw.mlm_1.0.3090
-output_dir: experiments/roberta.large.wiki_erica_path_v9_v9.0.1aug.ent_rep_all_train.seq512.w4.adamw.mlm_1.0.3090
-#output_dir: experiments/roberta.large.wiki_erica_path_v9_v9.0.1aug.seq384.w4.adamw.mlm_0.5.500steps.8bit.2080Ti
+#output_dir: experiments/t5.base.wiki_erica_path_v9_v8.2.Gen.1aug.seq256-128-0.4.w4.2080Ti
+#output_dir: experiments/t5.base.wiki_erica_path_v9_v8.2.Gen.1aug.seq256-128-0.4.w4.2080Ti.rerun  # Fix mask id.
+
+#output_dir: experiments/t5.base.wiki_erica_path_v9_v8.2.Gen.1aug.seq256-64-v2.w4.2080Ti
+#output_dir: experiments/t5.large.wiki_erica_path_v9_v8.2.gen.1aug.seq256-64-v2.1.w4.3090.cp1600.ft_anno.v1.0.3090
+
+#output_dir: experiments/t5.large.ft_anno.v1.0.3090
+output_dir: experiments/T0.3B.nl2rule.ft.v1.1.w1.A100-80
+#output_dir: experiments/T0.3B.nl2rule.ft.v1.0.w2.A100-80
 
 do_train: True
 evaluate_during_training: True
 
 do_eval: True
-eval_sub_path: checkpoint-500
+eval_sub_path:
 
 do_preprocess: False
 
 # Training hyper-parameters
-#per_gpu_train_batch_size: 2
-#per_gpu_eval_batch_size: 4
-per_gpu_train_batch_size: 1
-per_gpu_eval_batch_size: 2
+per_gpu_train_batch_size: 2
+per_gpu_eval_batch_size: 32
 learning_rate: 1e-5
-gradient_accumulation_steps: 1024
+gradient_accumulation_steps: 8
 weight_decay: 0.01
 adam_epsilon: 1e-6
-adam_betas: "(0.9, 0.98)"
-max_grad_norm: 5.0
+adam_betas: "(0.9, 0.999)"
+max_grad_norm: 0.0
 num_train_epochs: 10
-max_steps: 500
+max_steps: 0
 warmup_proportion: 0.1
 warmup_steps: 0
 
@@ -86,15 +85,16 @@ bit_training:
 
 
 logging_steps: 1
-save_best: False
-save_steps: 100
-eval_steps: 100
+save_best: True
+save_steps: -1
+eval_steps: 200
 ddp_eval: True
 no_cuda: False
 seed: 42
 local_rank: -1
 fp16: True
 fp16_opt_level: O1
+fp16_bfloat16: True
 
 # Prediction config
 prediction_cfg:
@@ -102,17 +102,18 @@ prediction_cfg:
   measure: 1
   best_checkpoint:
   best_result:
+max_output_length: 64
+num_beams: 10
+num_return_sequences: 1
+prediction_dir: AR-LSAT/data/T0.3B.nl2rule.ft.v1.1.w1.A100-80.best_acc/dev/
 
 # fairscale.FullyShardedDP
 fairscale_config:
-#  _target_: general_util.fsdp_utils.recursive_initialize
   _target_: general_util.fsdp_utils.default_initialize
   fp16: ${fp16}
+  reshard_after_forward: False
   move_grads_to_cpu: False
   move_params_to_cpu: False
-
-# Lightseq config
-with_lightseq: False
 
 # Deepspeed config
 ds_cfg:
@@ -157,8 +158,8 @@ summary_helper:
   _target_: general_util.tensorboard_helper.SummaryWriterHelper
   batch_index_or_keys:
   outputs_index_or_keys:
-    "train/mlm_loss": mlm_loss
-    "train/cls_loss": cls_loss
+#    "train/mlm_loss": mlm_loss
+#    "train/cls_loss": cls_loss
 
 # Temporary variables
 n_gpu:

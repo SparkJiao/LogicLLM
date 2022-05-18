@@ -266,6 +266,9 @@ def train(cfg, train_dataset, model, tokenizer, continue_from_global_step=0):
                                 OmegaConf.save(cfg, os.path.join(cfg.output_dir, "training_config.yaml"))
                                 logger.info("Saving best model checkpoint to %s", cfg.output_dir)
 
+                del batch
+                del last_outputs
+
             if 0 < cfg.max_steps < global_step:
                 epoch_iterator.close()
                 break
@@ -397,6 +400,10 @@ def main(cfg: DictConfig):
         #         model.to(args.device)
 
         train_dataset = load_and_cache_examples(cfg, tokenizer, _split="train")
+
+        if getattr(cfg, "do_preprocess", False):
+            return
+
         global_step, tr_loss = train(cfg, train_dataset, model, tokenizer, continue_from_global_step)
         logger.info(" global_step = %s, average loss = %s", global_step, tr_loss)
 

@@ -37,6 +37,7 @@ if __name__ == '__main__':
 
     args = parser.parse_args()
 
+    # The number of combination exploded.
     data = json.load(open(args.input_file))
     with Pool(args.num_workers) as p:
         _results = list(tqdm(p.imap(func, data), total=len(data), desc="Enumerating all assignments"))

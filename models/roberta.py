@@ -1,3 +1,4 @@
+import copy
 from abc import ABC
 from dataclasses import dataclass
 
@@ -7,7 +8,8 @@ from torch import nn, Tensor
 from torch.nn import CrossEntropyLoss
 from transformers.modeling_outputs import MultipleChoiceModelOutput
 from transformers.models.roberta.modeling_roberta import RobertaModel, RobertaPreTrainedModel, RobertaConfig, RobertaLMHead, \
-    MaskedLMOutput, SequenceClassifierOutput
+    MaskedLMOutput, SequenceClassifierOutput, RobertaEncoder
+from transformers.models.t5.modeling_t5 import T5Stack, T5Config
 
 from general_util.logger import get_child_logger
 from general_util.mixin import LogMixin
@@ -904,3 +906,532 @@ class RobertaForSequenceClassification(RobertaPreTrainedModel, LogMixin, ABC):
             hidden_states=outputs.hidden_states,
             attentions=outputs.attentions,
         )
+
+
+class RobertaForMultipleChoicePath(RobertaForMultipleChoice, ABC):
+    def __init__(self, config: RobertaConfig, num_decoder_layers):
+        super().__init__(config)
+
+        self.t5_config = T5Config()
+        self.t5_config.is_decoder = True
+        self.t5_config.is_encoder_decoder = False
+        self.t5_config.num_layers = num_decoder_layers
+
+        self.enc_proj = nn.Linear(config.hidden_size, self.t5_config.d_model)
+
+        self.decoder = T5Stack(self.t5_config)
+        self.decoder.post_init()
+
+        self.c = nn.Parameter(torch.Tensor(1, 1, 1, self.t5_config.d_model))
+        self.c.data.normal_(mean=0.0, std=self.config.initializer_range)
+        self.register_buffer("embed_pad", torch.zeros(1, 1, 1, self.t5_config.d_model))
+
+        self.weight_q = nn.Linear(self.t5_config.d_model, self.t5_config.d_model, bias=False)
+        self.weight_k = nn.Linear(self.t5_config.d_model, self.t5_config.d_model, bias=False)
+        self.weight_o = nn.Linear(self.t5_config.d_model, self.t5_config.d_model, bias=False)
+
+        self.classifier = nn.Linear(self.t5_config.d_model, 1)
+
+        self.model_parallel = False
+        self.device_map = None
+
+        self.init_weights()
+
+    def forward(self,
+                input_ids: Tensor,
+                attention_mask: Tensor = None,
+                token_type_ids: Tensor = None,
+                op_mask: Tensor = None,
+                labels: Tensor = None,
+                part_index: Tensor = None,
+                part_token_mask: Tensor = None,
+                part_occur_mask: Tensor = None,
+                part_mask: Tensor = None,
+                pos_index: Tensor = None,
+                pos_token_mask: Tensor = None,
+                pos_occur_mask: Tensor = None,
+                pos_mask: Tensor = None,
+                part_decoder_input_ids: Tensor = None,
+                output_attentions=None,
+                output_hidden_states=None,
+                return_dict=None,
+                use_cache=None,
+                ):
+        return_dict = return_dict if return_dict is not None else self.config.use_return_dict
+        use_cache = use_cache if use_cache is not None else self.t5_config.use_cache
+        num_choices = input_ids.shape[1]
+        batch_size = input_ids.size(0)
+        seq_len = input_ids.size(2)
+
+        input_ids = self.fold_tensor(input_ids)
+        attention_mask = self.fold_tensor(attention_mask)
+        token_type_ids = self.fold_tensor(token_type_ids)
+
+        outputs = self.roberta(
+            input_ids,
+            token_type_ids=token_type_ids,
+            attention_mask=attention_mask,
+            output_attentions=output_attentions,
+            output_hidden_states=output_hidden_states,
+            return_dict=return_dict,
+        )
+        seq_outputs = self.enc_proj(outputs[0].reshape(batch_size, num_choices, seq_len, -1))
+
+        part_hidden = self.parse_span_rep(seq_outputs, part_index, part_token_mask, part_occur_mask)
+        pos_hidden = self.parse_span_rep(seq_outputs, pos_index, pos_token_mask, pos_occur_mask)
+
+        sample_num = part_decoder_input_ids.size(2)
+        part_num = part_mask.size(2)
+        part_decoder_input_ids = part_decoder_input_ids.reshape(batch_size, num_choices, sample_num * part_num)
+
+        part_decoder_input_embeds = torch.gather(part_hidden, dim=2,
+                                                 index=part_decoder_input_ids.unsqueeze(-1).expand(-1, -1, -1, seq_outputs.size(-1)))
+        part_decoder_input_embeds = part_decoder_input_embeds.reshape(batch_size, num_choices * sample_num, part_num, -1)
+
+        embed_pad = self.embed_pad.expand(batch_size, num_choices * sample_num, -1, -1)
+        part_decoder_input_embeds = torch.cat([part_decoder_input_embeds, embed_pad], dim=2)
+
+        part_c_index = part_mask.sum(dim=2)[:, :, None, None, None].expand(
+            -1, -1, sample_num, 1, seq_outputs.size(-1)).reshape(batch_size, num_choices * sample_num, 1, seq_outputs.size(-1))
+        c = self.c.expand(batch_size, num_choices * sample_num, 1, -1)
+
+        part_decoder_input_embeds = torch.scatter(part_decoder_input_embeds, dim=2,
+                                                  index=part_c_index,
+                                                  src=c)
+
+        part_decoder_input_embeds = part_decoder_input_embeds.reshape(batch_size * num_choices * sample_num, part_num + 1, -1)
+
+        pos_num = pos_mask.size(2)
+        pos_hidden = pos_hidden.unsqueeze(2).expand(-1, -1, sample_num, -1, -1).reshape(batch_size * num_choices * sample_num,
+                                                                                        pos_num, self.t5_config.d_model)
+        pos_mask = pos_mask.unsqueeze(2).expand(-1, -1, sample_num, -1).reshape(batch_size * num_choices * sample_num, pos_num)
+
+        decoder_outputs = self.decoder(
+            input_ids=None,
+            inputs_embeds=part_decoder_input_embeds,
+            encoder_hidden_states=pos_hidden,
+            encoder_attention_mask=pos_mask,
+            use_cache=use_cache,
+            return_dict=return_dict,
+        )
+
+        hidden = torch.gather(decoder_outputs[0].reshape(batch_size, num_choices * sample_num, part_num + 1, self.t5_config.d_model),
+                              dim=2, index=part_c_index).reshape(batch_size, num_choices, sample_num, self.t5_config.d_model)
+
+        w_q = self.weight_q(seq_outputs[:, :, 0])
+        w_k = self.weight_k(hidden)
+        sim = torch.einsum("bnd,bnsd->bns", w_q, w_k).softmax(dim=-1)
+        hidden = self.weight_o(torch.einsum("bns,bnsd->bnd", sim, hidden))
+
+        pooled_output = self.dropout(hidden)
+
+        logits = self.classifier(pooled_output)
+        reshaped_logits = logits.view(-1, num_choices) + (1.0 - op_mask.to(logits.dtype)) * -1e4
+
+        loss = None
+        if labels is not None:
+            loss_fct = CrossEntropyLoss(ignore_index=-1)
+            loss = loss_fct(reshaped_logits, labels)
+
+            if not self.training:
+                acc, true_label_num = layers.get_accuracy(reshaped_logits, labels)
+                self.eval_metrics.update("acc", val=acc, n=true_label_num)
+                self.eval_metrics.update("loss", val=loss.item(), n=true_label_num)
+
+        if not return_dict:
+            output = (reshaped_logits,) + outputs[2:]
+            return ((loss,) + output) if loss is not None else output
+
+        return MultipleChoiceModelOutput(
+            loss=loss,
+            logits=reshaped_logits,
+            hidden_states=outputs.hidden_states,
+            attentions=outputs.attentions,
+        )
+
+    @staticmethod
+    def parse_span_rep(seq_outputs: Tensor, index: Tensor, token_mask: Tensor, occur_mask: Tensor):
+
+        # print(f"Index: {index.size()}")
+        # print(f"Token mask: {token_mask.size()}")
+        # print(f"Occur mask: {occur_mask.size()}")
+        # print(f"Seq outputs: {seq_outputs.size()}")
+
+        batch_size, option_num, max_span_num, max_span_occur_num, max_span_len = index.size()
+        assert batch_size == seq_outputs.size(0)
+        assert option_num == seq_outputs.size(1)
+        h = seq_outputs.size(-1)
+
+        flat_index = index.reshape(batch_size, option_num, -1, 1)
+        flat_rep = torch.gather(seq_outputs, dim=2, index=flat_index.expand(-1, -1, -1, h))
+        flat_rep = flat_rep.reshape(batch_size, option_num, max_span_num, max_span_occur_num, max_span_len, h)
+
+        # print(f"Flat rep: {flat_rep.size()}")
+
+        # Sub-work pooling
+        true_token_num = token_mask.sum(dim=4, keepdim=True).to(flat_rep.dtype)
+        true_token_num[true_token_num == 0] = 1.
+        flat_rep = flat_rep.sum(dim=4) / true_token_num  # (batch_size, option_num, max_span_num, max_span_occur_num, h)
+
+        # Occurrence pooling
+        true_occur_num = occur_mask.sum(dim=3, keepdim=True).to(flat_rep.dtype)
+        true_occur_num[true_occur_num == 0] = 1.
+        flat_rep = flat_rep.sum(dim=3) / true_occur_num  # (batch_size, option_num, max_span_num, h)
+
+        return flat_rep
+
+
+class RobertaForMultipleChoicePathV2(RobertaForMultipleChoice, ABC):
+    def __init__(self, config: RobertaConfig, num_decoder_layers: int, num_extra_encoder_layers: int):
+        super().__init__(config)
+
+        self.t5_config = T5Config()
+        self.t5_config.is_decoder = True
+        self.t5_config.is_encoder_decoder = False
+        self.t5_config.num_layers = num_decoder_layers
+
+        self.enc_proj = nn.Linear(config.hidden_size, self.t5_config.d_model)
+
+        self.decoder = T5Stack(self.t5_config)
+        self.decoder.post_init()
+
+        self.dec_proj = nn.Linear(self.t5_config.d_model, config.hidden_size)
+
+        ex_enc_config = copy.deepcopy(config)
+        ex_enc_config.num_hidden_layers = num_extra_encoder_layers
+        self.ex_enc_config = ex_enc_config
+        self.ex_enc = RobertaEncoder(self.ex_enc_config)
+
+        self.classifier = nn.Linear(config.hidden_size, 1)
+
+        self.model_parallel = False
+        self.device_map = None
+
+        self.init_weights()
+
+    def forward(self,
+                input_ids: Tensor,
+                attention_mask: Tensor = None,
+                token_type_ids: Tensor = None,
+                op_mask: Tensor = None,
+                labels: Tensor = None,
+                part_index: Tensor = None,
+                part_token_mask: Tensor = None,
+                part_occur_mask: Tensor = None,
+                part_mask: Tensor = None,
+                pos_index: Tensor = None,
+                pos_token_mask: Tensor = None,
+                pos_occur_mask: Tensor = None,
+                pos_mask: Tensor = None,
+                part_decoder_input_ids: Tensor = None,
+                output_attentions=None,
+                output_hidden_states=None,
+                return_dict=None,
+                use_cache=None,
+                ):
+        return_dict = return_dict if return_dict is not None else self.config.use_return_dict
+        use_cache = use_cache if use_cache is not None else self.t5_config.use_cache
+        num_choices = input_ids.shape[1]
+        batch_size = input_ids.size(0)
+        seq_len = input_ids.size(2)
+
+        input_ids = self.fold_tensor(input_ids)
+        attention_mask = self.fold_tensor(attention_mask)
+        token_type_ids = self.fold_tensor(token_type_ids)
+
+        outputs = self.roberta(
+            input_ids,
+            token_type_ids=token_type_ids,
+            attention_mask=attention_mask,
+            output_attentions=output_attentions,
+            output_hidden_states=output_hidden_states,
+            return_dict=return_dict,
+        )
+        seq_outputs = self.enc_proj(outputs[0].reshape(batch_size, num_choices, seq_len, -1))
+
+        # (batch_size, option_num, max_span_num, h)
+        part_hidden = self.parse_span_rep(seq_outputs, part_index, part_token_mask, part_occur_mask)
+        pos_hidden = self.parse_span_rep(seq_outputs, pos_index, pos_token_mask, pos_occur_mask)
+
+        sample_num = part_decoder_input_ids.size(2)
+        part_num = part_mask.size(2)
+        part_decoder_input_ids = part_decoder_input_ids.reshape(batch_size, num_choices, sample_num * part_num)
+
+        part_decoder_input_embeds = torch.gather(part_hidden, dim=2,
+                                                 index=part_decoder_input_ids.unsqueeze(-1).expand(-1, -1, -1, seq_outputs.size(-1)))
+        part_decoder_input_embeds = part_decoder_input_embeds.reshape(batch_size * num_choices * sample_num, part_num, -1)
+
+        pos_num = pos_mask.size(2)
+        pos_hidden = pos_hidden.unsqueeze(2).expand(-1, -1, sample_num, -1, -1).reshape(batch_size * num_choices * sample_num,
+                                                                                        pos_num, self.t5_config.d_model)
+        pos_mask = pos_mask.unsqueeze(2).expand(-1, -1, sample_num, -1).reshape(batch_size * num_choices * sample_num, pos_num)
+
+        decoder_outputs = self.decoder(
+            input_ids=None,
+            inputs_embeds=part_decoder_input_embeds,
+            encoder_hidden_states=pos_hidden,
+            encoder_attention_mask=pos_mask,
+            use_cache=use_cache,
+            return_dict=return_dict,
+        )
+        part_assign_hidden = self.dec_proj(decoder_outputs[0].reshape(batch_size * num_choices, sample_num * part_num, -1))
+
+        hidden_states = torch.cat([outputs[0], part_assign_hidden], dim=1)
+        attention_mask = torch.cat([
+            attention_mask,
+            attention_mask.new_ones(batch_size * num_choices, sample_num * part_num)
+        ], dim=1)
+        extended_attention_mask: torch.Tensor = self.get_extended_attention_mask(attention_mask, hidden_states.size()[:-1],
+                                                                                 hidden_states.device)
+        head_mask = self.get_head_mask(None, self.ex_enc_config.num_hidden_layers)
+
+        ex_encoder_outputs = self.ex_enc(
+            hidden_states,
+            attention_mask=extended_attention_mask,
+            head_mask=head_mask,
+            output_attentions=output_attentions,
+            output_hidden_states=output_hidden_states,
+            return_dict=return_dict,
+        )
+
+        pooled_output = self.dropout(ex_encoder_outputs[0][:, 0])
+        logits = self.classifier(pooled_output)
+        reshaped_logits = logits.view(-1, num_choices) + (1.0 - op_mask.to(logits.dtype)) * -1e4
+
+        loss = None
+        if labels is not None:
+            loss_fct = CrossEntropyLoss(ignore_index=-1)
+            loss = loss_fct(reshaped_logits, labels)
+
+            if not self.training:
+                acc, true_label_num = layers.get_accuracy(reshaped_logits, labels)
+                self.eval_metrics.update("acc", val=acc, n=true_label_num)
+                self.eval_metrics.update("loss", val=loss.item(), n=true_label_num)
+
+        if not return_dict:
+            output = (reshaped_logits,) + outputs[2:]
+            return ((loss,) + output) if loss is not None else output
+
+        return MultipleChoiceModelOutput(
+            loss=loss,
+            logits=reshaped_logits,
+            hidden_states=outputs.hidden_states,
+            attentions=outputs.attentions,
+        )
+
+    @staticmethod
+    def parse_span_rep(seq_outputs: Tensor, index: Tensor, token_mask: Tensor, occur_mask: Tensor):
+
+        # print(f"Index: {index.size()}")
+        # print(f"Token mask: {token_mask.size()}")
+        # print(f"Occur mask: {occur_mask.size()}")
+        # print(f"Seq outputs: {seq_outputs.size()}")
+
+        batch_size, option_num, max_span_num, max_span_occur_num, max_span_len = index.size()
+        assert batch_size == seq_outputs.size(0)
+        assert option_num == seq_outputs.size(1)
+        h = seq_outputs.size(-1)
+
+        flat_index = index.reshape(batch_size, option_num, -1, 1)
+        flat_rep = torch.gather(seq_outputs, dim=2, index=flat_index.expand(-1, -1, -1, h))
+        flat_rep = flat_rep.reshape(batch_size, option_num, max_span_num, max_span_occur_num, max_span_len, h)
+
+        # print(f"Flat rep: {flat_rep.size()}")
+
+        # Sub-work pooling
+        true_token_num = token_mask.sum(dim=4, keepdim=True).to(flat_rep.dtype)
+        true_token_num[true_token_num == 0] = 1.
+        flat_rep = flat_rep.sum(dim=4) / true_token_num  # (batch_size, option_num, max_span_num, max_span_occur_num, h)
+
+        # Occurrence pooling
+        true_occur_num = occur_mask.sum(dim=3, keepdim=True).to(flat_rep.dtype)
+        true_occur_num[true_occur_num == 0] = 1.
+        flat_rep = flat_rep.sum(dim=3) / true_occur_num  # (batch_size, option_num, max_span_num, h)
+
+        return flat_rep
+
+
+class RobertaForMultipleChoicePathV3(RobertaForMultipleChoice, ABC):
+    def __init__(self, config: RobertaConfig, num_decoder_layers: int, num_extra_encoder_layers: int):
+        super().__init__(config)
+
+        self.t5_config = T5Config()
+        self.t5_config.is_decoder = True
+        self.t5_config.is_encoder_decoder = False
+        self.t5_config.num_layers = num_decoder_layers
+
+        self.enc_proj = nn.Linear(config.hidden_size, self.t5_config.d_model)
+
+        self.decoder = T5Stack(self.t5_config)
+        self.decoder.post_init()
+
+        self.dec_proj = nn.Linear(self.t5_config.d_model, config.hidden_size)
+
+        ex_enc_config = copy.deepcopy(config)
+        ex_enc_config.num_hidden_layers = num_extra_encoder_layers
+        self.ex_enc_config = ex_enc_config
+        self.ex_enc = RobertaEncoder(self.ex_enc_config)
+
+        self.linear1 = nn.Linear(config.hidden_size, 1)
+
+        # self.classifier = nn.Linear(config.hidden_size, 1)
+        self.classifier = nn.Sequential(
+            nn.Linear(config.hidden_size, config.hidden_size),
+            nn.GELU(),
+            nn.Linear(config.hidden_size, 1),
+        )
+
+        self.model_parallel = False
+        self.device_map = None
+
+        self.init_weights()
+
+    def forward(self,
+                input_ids: Tensor,
+                attention_mask: Tensor = None,
+                token_type_ids: Tensor = None,
+                op_mask: Tensor = None,
+                labels: Tensor = None,
+                part_index: Tensor = None,
+                part_token_mask: Tensor = None,
+                part_occur_mask: Tensor = None,
+                part_mask: Tensor = None,
+                pos_index: Tensor = None,
+                pos_token_mask: Tensor = None,
+                pos_occur_mask: Tensor = None,
+                pos_mask: Tensor = None,
+                part_decoder_input_ids: Tensor = None,
+                output_attentions=None,
+                output_hidden_states=None,
+                return_dict=None,
+                use_cache=None,
+                ):
+        return_dict = return_dict if return_dict is not None else self.config.use_return_dict
+        use_cache = use_cache if use_cache is not None else self.t5_config.use_cache
+        num_choices = input_ids.shape[1]
+        batch_size = input_ids.size(0)
+        seq_len = input_ids.size(2)
+
+        input_ids = self.fold_tensor(input_ids)
+        attention_mask = self.fold_tensor(attention_mask)
+        token_type_ids = self.fold_tensor(token_type_ids)
+
+        outputs = self.roberta(
+            input_ids,
+            token_type_ids=token_type_ids,
+            attention_mask=attention_mask,
+            output_attentions=output_attentions,
+            output_hidden_states=output_hidden_states,
+            return_dict=return_dict,
+        )
+        seq_outputs = self.enc_proj(outputs[0].reshape(batch_size, num_choices, seq_len, -1))
+
+        # (batch_size, option_num, max_span_num, h)
+        part_hidden = self.parse_span_rep(seq_outputs, part_index, part_token_mask, part_occur_mask)
+        pos_hidden = self.parse_span_rep(seq_outputs, pos_index, pos_token_mask, pos_occur_mask)
+
+        sample_num = part_decoder_input_ids.size(2)
+        part_num = part_mask.size(2)
+        part_decoder_input_ids = part_decoder_input_ids.reshape(batch_size, num_choices, sample_num * part_num)
+
+        part_decoder_input_embeds = torch.gather(part_hidden, dim=2,
+                                                 index=part_decoder_input_ids.unsqueeze(-1).expand(-1, -1, -1, seq_outputs.size(-1)))
+        part_decoder_input_embeds = part_decoder_input_embeds.reshape(batch_size * num_choices * sample_num, part_num, -1)
+
+        pos_num = pos_mask.size(2)
+        pos_hidden = pos_hidden.unsqueeze(2).expand(-1, -1, sample_num, -1, -1).reshape(batch_size * num_choices * sample_num,
+                                                                                        pos_num, self.t5_config.d_model)
+        pos_mask = pos_mask.unsqueeze(2).expand(-1, -1, sample_num, -1).reshape(batch_size * num_choices * sample_num, pos_num)
+
+        decoder_outputs = self.decoder(
+            input_ids=None,
+            inputs_embeds=part_decoder_input_embeds,
+            encoder_hidden_states=pos_hidden,
+            encoder_attention_mask=pos_mask,
+            use_cache=use_cache,
+            return_dict=return_dict,
+        )
+        # part_assign_hidden = self.dec_proj(decoder_outputs[0].reshape(batch_size * num_choices, sample_num * part_num, -1))
+        part_assign_hidden = self.dec_proj(decoder_outputs[0])
+        extended_hidden_states = outputs[0].unsqueeze(1).expand(-1, sample_num, -1, -1).reshape(-1, seq_len, outputs[0].size(-1))
+        extended_hidden_states = torch.cat([extended_hidden_states, part_assign_hidden], dim=1)
+
+        # hidden_states = torch.cat([outputs[0], part_assign_hidden], dim=1)
+        attention_mask = torch.cat([
+            attention_mask.unsqueeze(1).expand(-1, sample_num, -1).reshape(-1, seq_len),
+            attention_mask.new_ones(batch_size * num_choices * sample_num, part_num)
+        ], dim=1)
+        extended_attention_mask: torch.Tensor = self.get_extended_attention_mask(attention_mask, extended_hidden_states.size()[:-1],
+                                                                                 extended_hidden_states.device)
+        head_mask = self.get_head_mask(None, self.ex_enc_config.num_hidden_layers)
+
+        ex_encoder_outputs = self.ex_enc(
+            extended_hidden_states,
+            attention_mask=extended_attention_mask,
+            head_mask=head_mask,
+            output_attentions=output_attentions,
+            output_hidden_states=output_hidden_states,
+            return_dict=return_dict,
+        )
+
+        alpha = torch.softmax(self.linear1(ex_encoder_outputs[0][:, 0]).reshape(batch_size * num_choices, sample_num), dim=-1)
+        weighted_hidden = torch.einsum("bs,bsh->bh", alpha, ex_encoder_outputs[0][:, 0])
+
+        pooled_output = self.dropout(weighted_hidden)
+        logits = self.classifier(pooled_output)
+        reshaped_logits = logits.view(-1, num_choices) + (1.0 - op_mask.to(logits.dtype)) * -1e4
+
+        loss = None
+        if labels is not None:
+            loss_fct = CrossEntropyLoss(ignore_index=-1)
+            loss = loss_fct(reshaped_logits, labels)
+
+            if not self.training:
+                acc, true_label_num = layers.get_accuracy(reshaped_logits, labels)
+                self.eval_metrics.update("acc", val=acc, n=true_label_num)
+                self.eval_metrics.update("loss", val=loss.item(), n=true_label_num)
+
+        if not return_dict:
+            output = (reshaped_logits,) + outputs[2:]
+            return ((loss,) + output) if loss is not None else output
+
+        return MultipleChoiceModelOutput(
+            loss=loss,
+            logits=reshaped_logits,
+            hidden_states=outputs.hidden_states,
+            attentions=outputs.attentions,
+        )
+
+    @staticmethod
+    def parse_span_rep(seq_outputs: Tensor, index: Tensor, token_mask: Tensor, occur_mask: Tensor):
+
+        # print(f"Index: {index.size()}")
+        # print(f"Token mask: {token_mask.size()}")
+        # print(f"Occur mask: {occur_mask.size()}")
+        # print(f"Seq outputs: {seq_outputs.size()}")
+
+        batch_size, option_num, max_span_num, max_span_occur_num, max_span_len = index.size()
+        assert batch_size == seq_outputs.size(0)
+        assert option_num == seq_outputs.size(1)
+        h = seq_outputs.size(-1)
+
+        flat_index = index.reshape(batch_size, option_num, -1, 1)
+        flat_rep = torch.gather(seq_outputs, dim=2, index=flat_index.expand(-1, -1, -1, h))
+        flat_rep = flat_rep.reshape(batch_size, option_num, max_span_num, max_span_occur_num, max_span_len, h)
+
+        # print(f"Flat rep: {flat_rep.size()}")
+
+        # Sub-work pooling
+        true_token_num = token_mask.sum(dim=4, keepdim=True).to(flat_rep.dtype)
+        true_token_num[true_token_num == 0] = 1.
+        flat_rep = flat_rep.sum(dim=4) / true_token_num  # (batch_size, option_num, max_span_num, max_span_occur_num, h)
+
+        # Occurrence pooling
+        true_occur_num = occur_mask.sum(dim=3, keepdim=True).to(flat_rep.dtype)
+        true_occur_num[true_occur_num == 0] = 1.
+        flat_rep = flat_rep.sum(dim=3) / true_occur_num  # (batch_size, option_num, max_span_num, h)
+
+        return flat_rep
+
+
+

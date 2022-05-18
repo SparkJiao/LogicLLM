@@ -45,7 +45,7 @@ def evaluate(cfg, model, tokenizer: PreTrainedTokenizer, prefix="",  _split="dev
         os.makedirs(output_dir)
 
     cfg.eval_batch_size = cfg.per_gpu_eval_batch_size
-    if _split == 'dev' and cfg.ddp_eval:
+    if _split == 'dev' and cfg.ddp_eval and cfg.local_rank != -1:
         eval_sampler = DistributedSampler(dataset, shuffle=False)
     else:
         eval_sampler = SequentialSampler(dataset)  # Note that DistributedSampler samples randomly
@@ -73,7 +73,10 @@ def evaluate(cfg, model, tokenizer: PreTrainedTokenizer, prefix="",  _split="dev
     for batch in tqdm(eval_dataloader, desc="Evaluating", disable=cfg.local_rank not in [-1, 0], dynamic_ncols=True):
         if "index" in batch:
             feat_index = batch.pop("index")
-            index_list.append(feat_index)
+            if isinstance(feat_index, torch.Tensor):
+                index_list.append(feat_index)
+            else:
+                index_list.extend(feat_index)
         batch = batch_to_device(batch, cfg.device)
         if cfg.fp16:
             with torch.cuda.amp.autocast(dtype=(torch.bfloat16 if getattr(cfg, "fp16_bfloat16", False) else torch.float16)):
@@ -116,10 +119,14 @@ def evaluate(cfg, model, tokenizer: PreTrainedTokenizer, prefix="",  _split="dev
         predictions = {
             "logits": torch.cat(logits_list, dim=0),
             "preds": torch.cat(pred_list, dim=0),
-            "input_ids": torch.cat(input_ids_list, dim=0),
+            # "input_ids": torch.cat(input_ids_list, dim=0),
         }
         if len(index_list) > 0:
-            predictions["index"] = torch.cat(index_list, dim=0)
+            # predictions["index"] = torch.cat(index_list, dim=0)
+            if isinstance(index_list[0], torch.Tensor):
+                predictions["index"] = torch.cat(index_list, dim=0)
+            else:
+                predictions["index"] = index_list
         if cfg.local_rank == -1:
             torch.save(predictions, os.path.join(output_dir, f"prediction.pth"))
         else:
