@@ -1,10 +1,11 @@
 import json
-from tqdm import tqdm
 import os
-import torch
 
+import torch
+from tqdm import tqdm
 from transformers import PreTrainedTokenizer
 from transformers.tokenization_utils_base import PaddingStrategy
+from nltk import sent_tokenize
 
 from data.collators.dict2dict import DictTensorDataset
 from data.data_utils import dfs_load_assignment, tokenizer_get_name
@@ -86,34 +87,47 @@ def deduction_classification_for_infer_by_depth(file_path: str, tokenizer: PreTr
     return DictTensorDataset(model_inputs)
 
 
-def deduction_cls_for_loginli_from_examples(file_path: str, tokenizer: PreTrainedTokenizer, max_seq_length: int):
-    from data.examples import LSATDeductionExamples
+def deduction_cls_for_loginli_from_examples(file_path: str, tokenizer: PreTrainedTokenizer, max_seq_length: int, add_labels: bool = False,
+                                            examples=None):
+    if examples is None:
+        from data.examples import LSATDeductionExamples
+        examples = LSATDeductionExamples()
 
     all_input_a = []
     all_input_b = []
-    examples = LSATDeductionExamples()
+    labels = []
     for item in examples.data:
         passage = item["passage"]
         if item["positive_deductions"] and item["negative_deductions"]:
             for pos in item["positive_deductions"]:
                 all_input_a.append(passage)
                 all_input_b.append(pos)
+                if add_labels:
+                    labels.append(1)
             for neg in item["negative_deductions"]:
                 all_input_a.append(passage)
                 all_input_b.append(neg)
+                if add_labels:
+                    labels.append(0)
         for q in item["questions"]:
             question = q["question"]
             if q["positive_deductions"] and q["negative_deductions"]:
                 for pos in q["positive_deductions"]:
                     all_input_a.append(passage + ' ' + question)
                     all_input_b.append(pos)
+                    if add_labels:
+                        labels.append(1)
                 for neg in q["negative_deductions"]:
                     all_input_a.append(passage + ' ' + question)
                     all_input_b.append(neg)
+                    if add_labels:
+                        labels.append(0)
 
     model_inputs = tokenizer(all_input_a, text_pair=all_input_b,
                              max_length=max_seq_length, return_tensors="pt",
                              padding=PaddingStrategy.LONGEST, truncation=True)
+    if add_labels:
+        model_inputs["labels"] = torch.tensor(labels, dtype=torch.long)
 
     return DictTensorDataset(model_inputs)
 
@@ -163,3 +177,135 @@ def lsat_weak_supervision_cls(file_path: str, tokenizer: PreTrainedTokenizer, ma
     model_inputs["labels"] = torch.tensor(labels, dtype=torch.long)
 
     return DictTensorDataset(model_inputs)
+
+
+def lsat_triplet_binary_cls(file_path: str, tokenizer: PreTrainedTokenizer, max_input_length: int):
+    data = json.load(open(file_path, 'r'))
+    inputs_a = []
+    inputs_b = []
+    labels = []
+    for item in data:
+        if "examples" not in item:
+            continue
+        for ex in item["examples"]:
+            if isinstance(ex["neg_sent"], str):
+                inputs_a.append(" ".join(ex["rest_sentences"]))
+                inputs_b.append(ex["ori_sent"])
+                labels.append(1)
+
+                inputs_a.append(" ".join(ex["rest_sentences"]))
+                inputs_b.append(ex["neg_sent"])
+                labels.append(0)
+            elif isinstance(ex["neg_sent"], list):
+                for neg_sent in ex["neg_sent"]:
+                    inputs_a.append(" ".join(ex["rest_sentences"]))
+                    inputs_b.append(ex["ori_sent"])
+                    labels.append(1)
+
+                    inputs_a.append(" ".join(ex["rest_sentences"]))
+                    inputs_b.append(neg_sent)
+                    labels.append(0)
+            else:
+                raise ValueError("neg_sent is not str or list")
+
+    assert len(inputs_a) == len(inputs_b) == len(labels)
+    logger.info(f"Preparing {len(labels)} samples...")
+    model_inputs = tokenizer(inputs_a, text_pair=inputs_b,
+                             padding=PaddingStrategy.LONGEST,
+                             truncation=True,
+                             max_length=max_input_length,
+                             return_tensors="pt")
+    model_inputs["labels"] = torch.tensor(labels, dtype=torch.long)
+    return DictTensorDataset(model_inputs)
+
+
+def lsat_sentence_pair_binary_cls_from_examples(file_path: str, tokenizer: PreTrainedTokenizer, max_seq_length: int):
+    from data.examples import LSATDeductionExamples
+
+    all_input_a = []
+    all_input_b = []
+    examples = LSATDeductionExamples()
+    for item in examples.data:
+        passage = item["passage"]
+        sentences = sent_tokenize(passage)
+        if item["positive_deductions"] and item["negative_deductions"]:
+            for pos in item["positive_deductions"]:
+                # all_input_a.append(passage)
+                # all_input_b.append(pos)
+                all_input_a.extend(sentences)
+                all_input_b.extend([pos] * len(sentences))
+            for neg in item["negative_deductions"]:
+                # all_input_a.append(passage)
+                # all_input_b.append(neg)
+                all_input_a.extend(sentences)
+                all_input_b.extend([neg] * len(sentences))
+        for q in item["questions"]:
+            question = q["question"]
+            if q["positive_deductions"] and q["negative_deductions"]:
+                for pos in q["positive_deductions"]:
+                    # all_input_a.append(passage + ' ' + question)
+                    # all_input_b.append(pos)
+                    all_input_a.extend([sent + ' ' + question for sent in sentences])
+                    all_input_b.extend([pos] * len(sentences))
+                for neg in q["negative_deductions"]:
+                    # all_input_a.append(passage + ' ' + question)
+                    # all_input_b.append(neg)
+                    all_input_a.extend([sent + ' ' + question for sent in sentences])
+                    all_input_b.extend([neg] * len(sentences))
+
+    model_inputs = tokenizer(all_input_a, text_pair=all_input_b,
+                             max_length=max_seq_length, return_tensors="pt",
+                             padding=PaddingStrategy.LONGEST, truncation=True)
+
+    return DictTensorDataset(model_inputs)
+
+
+def mcqa_to_binary_cls(read_func, file_path: str, tokenizer: PreTrainedTokenizer, max_seq_length: int, expand: bool = True):
+    tokenizer_name = tokenizer_get_name(tokenizer)
+
+    file_suffix = f"{tokenizer_name}_{max_seq_length}_{read_func.__class__.__name__}{'_no_expand' if not expand else ''}_seq_cls"
+    cached_file_path = f"{file_path}_{file_suffix}"
+    if os.path.exists(cached_file_path):
+        logger.info(f"Loading cached file from {cached_file_path}.")
+        data = torch.load(cached_file_path)
+        return DictTensorDataset(data)
+
+    all_context, all_question, all_option_list, all_label = read_func(file_path)
+
+    max_option_num = max(map(len, all_option_list))
+    logger.info(f"Max option num: {max_option_num}")
+
+    all_inputs_a = []
+    all_inputs_b = []
+    labels = []
+
+    for c, q, op_ls, label in zip(all_context, all_question, all_option_list, all_label):
+        c_q = c + ' ' + q
+        for op_id, op in enumerate(op_ls):
+            if op_id == label:
+                if expand:
+                    all_inputs_a.extend([c_q] * (max_option_num - 1))
+                    all_inputs_b.extend([op] * (max_option_num - 1))
+                    labels.extend([1] * (max_option_num - 1))
+                else:
+                    all_inputs_a.append(c_q)
+                    all_inputs_b.append(op)
+                    labels.append(1)
+            else:
+                all_inputs_a.append(c_q)
+                all_inputs_b.append(op)
+                labels.append(0)
+
+    model_inputs = tokenizer(all_inputs_a,
+                             text_pair=all_inputs_b,
+                             max_length=max_seq_length,
+                             padding=PaddingStrategy.LONGEST,
+                             return_tensors="pt")
+
+    model_inputs["labels"] = torch.tensor(labels, dtype=torch.long)
+
+    logger.info(f"Saving processed tensors into {cached_file_path}.")
+    torch.save(model_inputs, cached_file_path)
+
+    dataset = DictTensorDataset(model_inputs)
+    return dataset

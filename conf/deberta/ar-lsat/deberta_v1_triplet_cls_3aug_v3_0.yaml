@@ -1,0 +1,163 @@
+hydra:
+  run:
+    dir: ./
+
+train_file: ../AR-LSAT-Fangkai/data/new_data/ar_train_analyze_condition_triplets_v3_type_1_neg1_aug3_examples_42.json
+dev_file: ../AR-LSAT-Fangkai/data/new_data/ar_dev_analyze_condition_triplets_v3_type_1_neg1_aug3_examples_42.json
+test_file:
+
+# Model
+model:
+  _target_: models.deberta_v1.DebertaForSequenceClassification.from_pretrained
+  override_pooler: True
+  ignore_mismatched_sizes: True
+  num_labels: 2
+
+# Data loading
+read_tensor:
+  _target_: data.seq_cls.lsat_triplet_binary_cls
+  max_input_length: 512
+
+
+extended_vocab:
+
+# Data collator
+collator:
+#  _target_: data.collators.wiki.WikiPathDatasetCollatorSeq2Seq
+#  max_input_length: 256
+#  max_output_length: 128
+#  tokenizer: pretrained-models/t5-base
+#  sent_sample_ratio: 0.4
+
+# Dataloader
+num_workers: 8
+prefetch_factor: 2
+
+# Wiki path pretrain v8.2
+#model_name_or_path: pretrained-models/deberta-large
+model_name_or_path: experiments/deberta-v1.large.wiki_erica_path_v9_v9.0.1aug.ent_rep_all_train.seq512.w4.adamw.A100/checkpoint-500
+#model_name_or_path: experiments/logic-nli.roberta.merit-v1-pv9v9-ent_rep_all_train.seq512.cp500.norm_1.w2.A100.v1.0
+#model_name_or_path: experiments/t5.base.wiki_erica_path_v9_v8.2.Gen.1aug.seq320-64-v2.2.w2.2080Ti/checkpoint-3000
+#pretrain: experiments/logic-nli.roberta.merit-v1-pv9v9-ent_rep_all_train.seq512.cp500.norm_1.w2.A100.v1.0/pytorch_model.bin
+pretrain:
+
+#output_dir: experiments/t5.base.wiki_erica_path_v9_v8.2.Gen.1aug.seq256-128-0.4.w4.2080Ti
+#output_dir: experiments/t5.base.wiki_erica_path_v9_v8.2.Gen.1aug.seq256-128-0.4.w4.2080Ti.rerun  # Fix mask id.
+
+#output_dir: experiments/t5.base.wiki_erica_path_v9_v8.2.Gen.1aug.seq256-64-v2.w4.2080Ti
+#output_dir: experiments/t5.base.wiki_erica_path_v9_v8.2.Gen.1aug.seq320-64-v2.2.w2.2080Ti.cp3k.ft_anno.v1.1.2080Ti
+
+#output_dir: experiments/t5.base.weak_sup.ft.v1.0.2080Ti
+output_dir: experiments/ar-lsat.deberta-v1-large.merit-v1.triplet-v3-type-1-aug3.v1.0.A100
+
+do_train: True
+evaluate_during_training: True
+
+do_eval: True
+eval_sub_path:
+
+do_preprocess: False
+
+# Training hyper-parameters
+per_gpu_train_batch_size: 16
+per_gpu_eval_batch_size: 32
+learning_rate: 1e-5
+#learning_rate: 8e-6
+gradient_accumulation_steps: 1
+weight_decay: 0.01
+adam_epsilon: 1e-6
+adam_betas: "(0.9, 0.999)"
+max_grad_norm: 0.0
+num_train_epochs: 20
+max_steps: 0
+warmup_proportion: 0.1
+warmup_steps: 0
+
+# Optimizer
+optimizer:
+use_nvlamb:
+bit_training:
+
+
+logging_steps: 1
+save_best: True
+save_steps: -1
+eval_steps: 100
+ddp_eval: True
+no_cuda: False
+seed: 42
+local_rank: -1
+fp16: False
+fp16_opt_level: O1
+fp16_bfloat16: True
+
+# Prediction config
+prediction_cfg:
+  metric: "acc"
+  measure: 1
+  best_checkpoint:
+  best_result:
+#max_output_length: 64
+#num_beams: 5
+#prediction_dir: AR-LSAT/data/t5.base.merit_v1.gen_v2.2-step2200/dev/
+
+# fairscale.FullyShardedDP
+fairscale_config:
+  _target_: general_util.fsdp_utils.default_initialize
+  fp16: ${fp16}
+  reshard_after_forward: False
+  move_grads_to_cpu: False
+  move_params_to_cpu: False
+
+# Deepspeed config
+ds_cfg:
+  train_micro_batch_size_per_gpu: ${per_gpu_train_batch_size}
+  gradient_accumulation_steps: ${gradient_accumulation_steps}
+  optimizer:
+    type: AdamW
+    params:
+      lr: ${learning_rate}
+      betas: [0.9, 0.999]
+      eps: ${adam_epsilon}
+      weight_decay: ${weight_decay}
+  scheduler:
+    type: WarmupDecayLR
+    params:
+      total_num_steps:
+      warmup_max_lr: ${learning_rate}
+      warmup_num_steps:
+      warmup_type: linear
+  gradient_clipping: ${max_grad_norm}
+  fp16:
+    enabled: ${fp16}
+    initial_scale_power: 12
+  zero_optimization:
+    stage: 3
+#    offload_optimizer:
+#      device: cpu
+#      pin_memory: True
+#    offload_param:
+#      device: cpu
+#      pin_memory: True
+#  activation_checkpointing:
+#    partition_activations: True
+#    cpu_checkpointing: True
+#    contiguous_memory_optimization: False
+#    number_checkpoints: False
+#    synchronize_checkpoint_boundary: False
+#    profile: False
+  steps_per_print: 1024
+
+summary_helper:
+  _target_: general_util.tensorboard_helper.SummaryWriterHelper
+  batch_index_or_keys:
+  outputs_index_or_keys:
+#    "train/mlm_loss": mlm_loss
+#    "train/cls_loss": cls_loss
+
+# Temporary variables
+n_gpu:
+device:
+train_batch_size:
+eval_batch_size:
+world_size:

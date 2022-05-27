@@ -1,0 +1,152 @@
+hydra:
+  run:
+    dir: ./
+
+train_file: LogiQA/train-reclor-form.json
+dev_file: LogiQA/val-reclor-form.json
+test_file: LogiQA/test-reclor-form.json
+
+# Model
+model:
+  _target_: models.deberta_v1.DebertaForMultipleChoice.from_pretrained
+  override_pooler: True
+
+# Data loading
+read_tensor:
+  _target_: data.mcqa.multiple_choice_get_tensor
+  read_func:
+    _target_: data.readers.ReClorReader
+  max_seq_length: 512
+
+extended_vocab:
+
+# Data collator
+collator:
+  _target_: data.collators.Tuple2DictCollator
+
+# Dataloader
+num_workers: 0  # Memory leakage during multiprocessing.
+prefetch_factor: 2
+
+# Wiki path pretrain v8.2
+#model_name_or_path: pretrained-models/deberta-large
+model_name_or_path: experiments/deberta-v1.large.wiki_erica_path_v9_v9.0.1aug.ent_rep_all_train.seq512.w4.adamw.A100/checkpoint-500
+pretrain:
+
+#output_dir: experiments/roberta.large.wiki_erica_path_v9_v9.0.1aug.seq320.w4.2080Ti
+#output_dir: experiments/roberta.large.wiki_erica_path_v9_v9.0.1aug.seq320.w4.2080Ti.rerun
+#output_dir: experiments/roberta.large.wiki_erica_path_v9_v9.0.1aug.seq384.w4.adamw.mlm_0.5.2080Ti
+output_dir: experiments/logiqa.deberta-v1.large.wiki_erica_path_v9_v9.0.1aug.ent_rep_all_train.seq512.step500.v1.0.w2.s${seed}
+#output_dir: experiments/roberta.large.wiki_erica_path_v9_v9.0.1aug.seq384.w4.adamw.mlm_0.5.500steps.8bit.2080Ti
+
+do_train: True
+evaluate_during_training: True
+
+do_eval: True
+eval_sub_path:
+
+do_preprocess: False
+
+# Training hyper-parameters
+per_gpu_train_batch_size: 8
+per_gpu_eval_batch_size: 32
+learning_rate: 1e-5
+gradient_accumulation_steps: 1
+weight_decay: 0.01
+adam_epsilon: 1e-6
+adam_betas: "(0.9, 0.999)"
+max_grad_norm: 1.0
+num_train_epochs: 10
+max_steps: 0
+warmup_proportion: 0.1
+warmup_steps: 0
+
+# Optimizer
+optimizer:
+use_nvlamb:
+bit_training:
+
+
+logging_steps: 5
+save_best: True
+save_steps: -1
+eval_steps: 200
+ddp_eval: True
+no_cuda: False
+seed: 42
+local_rank: -1
+fp16: True
+fp16_opt_level: O1
+fp16_bfloat16: True
+
+# Prediction config
+prediction_cfg:
+  metric: "acc"
+  measure: 1
+  best_checkpoint:
+  best_result:
+
+# fairscale.FullyShardedDP
+fairscale_config:
+#  _target_: general_util.fsdp_utils.recursive_initialize
+  _target_: general_util.fsdp_utils.default_initialize
+  fp16: ${fp16}
+  move_grads_to_cpu: False
+  move_params_to_cpu: False
+
+fsdp_config:
+  _target_: general_util.torch_fsdp_utils.torch_fsdp_initialize_default
+
+# Lightseq config
+with_lightseq: False
+
+# Deepspeed config
+ds_cfg:
+  train_micro_batch_size_per_gpu: ${per_gpu_train_batch_size}
+  gradient_accumulation_steps: ${gradient_accumulation_steps}
+  optimizer:
+    type: AdamW
+    params:
+      lr: ${learning_rate}
+      betas: [0.9, 0.999]
+      eps: ${adam_epsilon}
+      weight_decay: ${weight_decay}
+  scheduler:
+    type: WarmupDecayLR
+    params:
+      total_num_steps:
+      warmup_max_lr: ${learning_rate}
+      warmup_num_steps:
+      warmup_type: linear
+  gradient_clipping: ${max_grad_norm}
+  fp16:
+    enabled: ${fp16}
+    initial_scale_power: 12
+  zero_optimization:
+    stage: 3
+#    offload_optimizer:
+#      device: cpu
+#      pin_memory: True
+#    offload_param:
+#      device: cpu
+#      pin_memory: True
+#  activation_checkpointing:
+#    partition_activations: True
+#    cpu_checkpointing: True
+#    contiguous_memory_optimization: False
+#    number_checkpoints: False
+#    synchronize_checkpoint_boundary: False
+#    profile: False
+  steps_per_print: 1024
+
+summary_helper:
+  _target_: general_util.tensorboard_helper.SummaryWriterHelper
+  batch_index_or_keys:
+  outputs_index_or_keys:
+
+# Temporary variables
+n_gpu:
+device:
+train_batch_size:
+eval_batch_size:
+world_size:

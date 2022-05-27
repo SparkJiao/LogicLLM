@@ -51,9 +51,10 @@ def multiple_choice_get_tensor(read_func, file_path: str, tokenizer: PreTrainedT
     tokenizer_outputs = tokenizer(context,
                                   text_pair=q_op,
                                   max_length=max_seq_length,
-                                  padding=PaddingStrategy.MAX_LENGTH,
+                                  padding=PaddingStrategy.LONGEST,
                                   truncation=TruncationStrategy.LONGEST_FIRST,
                                   return_tensors=TensorType.PYTORCH)
+    max_seq_length = min(max_seq_length, tokenizer_outputs["input_ids"].size(-1))
 
     data_num = len(all_context)
 

@@ -98,3 +98,31 @@ class LSATDeductionExamples:
     ]
 
 
+@dataclass
+class LSATDeductionExamplesV2:
+    data = [
+        {
+            "passage": "This morning, a bakery makes exactly one delivery, consisting of exactly six loaves of bread. "
+                       "Each of the loaves is exactly one of three kinds: oatmeal, rye, or wheat, and each is either sliced or unsliced. "
+                       "The loaves that the bakery delivers this morning must be consistent with the following: "
+                       "There are at least two kinds of loaves. There are no more than three rye loaves. There is no unsliced wheat loaf. "
+                       "There is at least one unsliced oatmeal loaf. "
+                       "If two or more of the loaves are unsliced, then at least one of the unsliced loaves is rye.",
+            "questions": [
+                {
+                    "question": "If the bakery makes exactly one delivery, which of the following is true?",
+                    "positive_deductions": [
+                        "There is a sliced oatmeal loaf.",
+                        "There is a sliced rye loaf.",
+                        "The four wheat loaves are unsliced.",
+                    ],
+                    "negative_deductions": [
+                        "There are two unsliced oatmeal loaves.",
+                        "There are two sliced oatmeal loaves.",
+                    ],
+                }
+            ],
+            "positive_deductions": [],
+            "negative_deductions": [],
+        },
+    ]

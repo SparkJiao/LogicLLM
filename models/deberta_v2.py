@@ -9,7 +9,7 @@ from torch import nn, Tensor, _softmax_backward_data
 from torch.nn import CrossEntropyLoss, LayerNorm
 from transformers.modeling_outputs import MultipleChoiceModelOutput
 from transformers.models.deberta_v2.modeling_deberta_v2 import DebertaV2PreTrainedModel, DebertaV2Model, DebertaV2Config, \
-    ContextPooler, StableDropout, ACT2FN, DebertaV2Encoder, build_relative_position
+    ContextPooler, StableDropout, ACT2FN, DebertaV2Encoder, build_relative_position, SequenceClassifierOutput
 
 from general_util.logger import get_child_logger
 from general_util.mixin import LogMixin
@@ -718,4 +718,106 @@ class DebertaV2ForMultipleChoice(DebertaV2PreTrainedModel, LogMixin, ABC):
                 logits=logits,
                 hidden_states=outputs.hidden_states,
                 attentions=outputs.attentions,
+            )
+
+
+class DebertaV2ForSequenceClassification(DebertaV2PreTrainedModel, LogMixin, ABC):
+    def __init__(self, config: DebertaV2Config, override_pooler: bool = False,
+                 activation_checkpoint: bool = False,
+                 fs_checkpoint: bool = False,
+                 fs_checkpoint_cpu_offload: bool = False):
+        super().__init__(config)
+
+        num_labels = getattr(config, "num_labels", 2)
+        self.config = config
+        self.num_labels = num_labels
+        self.override_pooler = override_pooler
+
+        self.deberta = DebertaV2Model(config)
+        self.deberta.encoder = wrap_activation_checkpoint(self.deberta.encoder, config, checkpoint=activation_checkpoint,
+                                                          fs_checkpoint=fs_checkpoint, fs_checkpoint_cpu_offload=fs_checkpoint_cpu_offload)
+
+        for layer in self.deberta.encoder.layer:
+            layer.attention.self = DisentangledSelfAttention(config)
+
+        if self.override_pooler:
+            mlp_hidden_size = getattr(config, "mlp_hidden_size", config.hidden_size)
+            self.pooler = ContextPoolerE(config, mlp_hidden_size=mlp_hidden_size)
+            output_dim = mlp_hidden_size
+        else:
+            self.n_pooler = ContextPooler(config)
+            output_dim = self.n_pooler.output_dim
+
+        self.classifier = nn.Linear(output_dim, config.num_labels)
+        drop_out = getattr(config, "cls_dropout", None)
+        drop_out = self.config.hidden_dropout_prob if drop_out is None else drop_out
+        self.dropout = StableDropout(drop_out)
+
+        self.init_weights()
+
+        self.init_metric("loss", "acc")
+
+    def get_input_embeddings(self):
+        return self.deberta.get_input_embeddings()
+
+    def set_input_embeddings(self, new_embeddings):
+        self.deberta.set_input_embeddings(new_embeddings)
+
+    @staticmethod
+    def fold_tensor(x: Tensor):
+        if x is None:
+            return x
+        return x.reshape(-1, x.size(-1))
+
+    def forward(
+            self,
+            input_ids=None,
+            attention_mask=None,
+            token_type_ids=None,
+            labels=None,
+            output_attentions=None,
+            output_hidden_states=None,
+            return_dict=None,
+            **kwargs
+    ):
+        r"""
+        labels (:obj:`torch.LongTensor` of shape :obj:`(batch_size,)`, `optional`):
+            Labels for computing the sequence classification/regression loss. Indices should be in :obj:`[0, ...,
+            config.num_labels - 1]`. If :obj:`config.num_labels == 1` a regression loss is computed (Mean-Square loss),
+            If :obj:`config.num_labels > 1` a classification loss is computed (Cross-Entropy).
+        """
+        return_dict = return_dict if return_dict is not None else self.config.use_return_dict
+
+        outputs = self.deberta(
+            input_ids,
+            token_type_ids=token_type_ids,
+            attention_mask=attention_mask,
+            output_attentions=output_attentions,
+            output_hidden_states=output_hidden_states,
+            return_dict=return_dict,
+        )
+
+        encoder_layer = outputs[0]
+        if self.override_pooler:
+            pooled_output = self.dropout(self.pooler(encoder_layer))
+        else:
+            pooled_output = self.dropout(self.n_pooler(encoder_layer))
+        logits = self.classifier(pooled_output)
+
+        loss = None
+        if labels is not None:
+            loss_fct = CrossEntropyLoss(ignore_index=-1)
+            loss = loss_fct(logits.view(-1, self.num_labels), labels.view(-1))
+
+            if not self.training:
+                acc, true_label_num = layers.get_accuracy(logits, labels)
+                self.eval_metrics.update("acc", val=acc, n=true_label_num)
+                self.eval_metrics.update("loss", val=loss.item(), n=true_label_num)
+
+        if not return_dict:
+            output = (logits,) + outputs[1:]
+            return ((loss,) + output) if loss is not None else output
+        else:
+            return SequenceClassifierOutput(
+                loss=loss, logits=logits, hidden_states=outputs.hidden_states, attentions=outputs.attentions
             )

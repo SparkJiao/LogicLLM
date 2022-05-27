@@ -635,7 +635,7 @@ class DebertaForMultipleChoice(DebertaPreTrainedModel, LogMixin, ABC):
 
 
 class DebertaForSequenceClassification(DebertaPreTrainedModel, LogMixin, ABC):
-    def __init__(self, config: DebertaConfig, override_pooler: bool = False):
+    def __init__(self, config: DebertaConfig, override_pooler: bool = False, freeze_encoder: bool = False):
         super().__init__(config)
 
         num_labels = getattr(config, "num_labels", 2)
@@ -648,6 +648,11 @@ class DebertaForSequenceClassification(DebertaPreTrainedModel, LogMixin, ABC):
             layer.attention.self = DisentangledSelfAttention(config)
         # self.pooler = ContextPooler(config)
         # output_dim = self.pooler.output_dim
+
+        self.freeze_encoder = freeze_encoder
+        if self.freeze_encoder:
+            for param in self.deberta.encoder.parameters():
+                param.requires_grad = False
 
         if self.override_pooler:
             mlp_hidden_size = getattr(config, "mlp_hidden_size", config.hidden_size)
