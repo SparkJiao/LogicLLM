@@ -612,6 +612,7 @@ class DebertaV2ForMultipleChoicePreTrain(DebertaV2PreTrainedModel, LogMixin, ABC
 
 class DebertaV2ForMultipleChoice(DebertaV2PreTrainedModel, LogMixin, ABC):
     def __init__(self, config: DebertaV2Config, override_pooler: bool = False,
+                 freeze_encoder: bool = False,
                  activation_checkpoint: bool = False,
                  fs_checkpoint: bool = False,
                  fs_checkpoint_cpu_offload: bool = False):
@@ -626,6 +627,11 @@ class DebertaV2ForMultipleChoice(DebertaV2PreTrainedModel, LogMixin, ABC):
 
         for layer in self.deberta.encoder.layer:
             layer.attention.self = DisentangledSelfAttention(config)
+
+        self.freeze_encoder = freeze_encoder
+        if self.freeze_encoder:
+            for param in self.deberta.encoder.parameters():
+                param.requires_grad = False
 
         if self.override_pooler:
             mlp_hidden_size = getattr(config, "mlp_hidden_size", config.hidden_size)

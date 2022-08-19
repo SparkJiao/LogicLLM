@@ -10,17 +10,46 @@ from tqdm import tqdm
 from transformers import PreTrainedTokenizer
 from transformers.tokenization_utils_base import PaddingStrategy, TruncationStrategy, TensorType
 
-from data.data_utils import tokenizer_get_name, get_sep_tokens
+from data.data_utils import tokenizer_get_name, get_sep_tokens, get_unused_tokens
 from data.collators.lsat_span import LSATSpanDataset
 from general_util.logger import get_child_logger
 
 logger = get_child_logger("MCQA")
 
 
-def multiple_choice_get_tensor(read_func, file_path: str, tokenizer: PreTrainedTokenizer, max_seq_length: int):
+def is_alphabet(char):
+    res = ord('a') <= ord(char) <= ord('z') or ord('A') <= ord(char) <= ord('Z')
+    return res
+
+
+def replace_entity(sentence: str, entity: str, replacement: str):
+    if len(entity) == 1:  # Process single character entity uniquely.
+        s = sentence.find(entity)
+        while s != -1:
+            a = not is_alphabet(sentence[s - 1]) if s > 0 else 'jump'
+            b = not is_alphabet(sentence[s + 1]) if s + 1 < len(sentence) else 'jump'
+            # print(f"DEBUG: {s} [{sentence[s]}] {a} {b}")
+            # if a and a != 'jump':
+            #     print(f"DEBUG: {sentence[s - 1]}")
+            # if b and b != 'jump':
+            #     print(f"DEBUG: {sentence[s + 1]}")
+            if a and b:
+                # print(a, b)
+                sentence = sentence[:s] + replacement + sentence[s + 1:]
+                s = sentence.find(entity, s + len(replacement))
+            else:
+                s = sentence.find(entity, s + 1)
+        return sentence
+
+    assert replacement.strip() != ""
+    return sentence.replace(entity, replacement)
+
+
+def multiple_choice_get_tensor(read_func, file_path: str, tokenizer: PreTrainedTokenizer, max_seq_length: int, prefix_token_num: int = 0):
     tokenizer_name = tokenizer_get_name(tokenizer)
 
-    file_suffix = f"{tokenizer_name}_{max_seq_length}_{read_func.__class__.__name__}_mc"
+    file_suffix = f"{tokenizer_name}_{max_seq_length}_{read_func.__class__.__name__}" \
+                  f"{'_prefix{}'.format(str(prefix_token_num)) if prefix_token_num > 0 else ''}_mc"
     cached_file_path = f"{file_path}_{file_suffix}"
     if os.path.exists(cached_file_path):
         logger.info(f"Loading cached file from {cached_file_path}.")
@@ -35,6 +64,7 @@ def multiple_choice_get_tensor(read_func, file_path: str, tokenizer: PreTrainedT
     q_op = []
     c_q_op_mask = []
 
+    _prefix = ' '.join(get_unused_tokens(tokenizer, prefix_token_num)) if prefix_token_num > 0 else ''
     for c, q, op_ls, label in zip(all_context, all_question, all_option_list, all_label):
         c_q_op_mask.extend([1] * len(op_ls))
 
@@ -45,7 +75,8 @@ def multiple_choice_get_tensor(read_func, file_path: str, tokenizer: PreTrainedT
         assert len(op_ls) == max_option_num
 
         context.extend([c] * len(op_ls))
-        q_op.extend(list(map(lambda x: q + ' '.join(get_sep_tokens(tokenizer)) + x, op_ls)))
+
+        q_op.extend(list(map(lambda x: _prefix + q + ' '.join(get_sep_tokens(tokenizer)) + x, op_ls)))
         assert len(context) == len(q_op), (len(context), len(q_op))
 
     tokenizer_outputs = tokenizer(context,
@@ -75,16 +106,28 @@ def multiple_choice_get_tensor(read_func, file_path: str, tokenizer: PreTrainedT
     return dataset
 
 
+# def _parse_span_position(span: str, text: str) -> List[int]:
+#     span_ls = []
+#     s = 0
+#     while True:
+#         index = text.find(span, s)
+#         if index != -1:
+#             span_ls.append(index)
+#             s = index + len(span)
+#         else:
+#             break
+#     return span_ls
 def _parse_span_position(span: str, text: str) -> List[int]:
     span_ls = []
-    s = 0
-    while True:
-        index = text.find(span, s)
-        if index != -1:
-            span_ls.append(index)
-            s = index + len(span)
+    s = text.find(span)
+    while s != -1:
+        a = not is_alphabet(text[s - 1]) if s > 0 else True
+        b = not is_alphabet(text[s + len(span)]) if s + len(span) < len(text) else True
+        if a and b:
+            span_ls.append(s)
+            s = text.find(span, s + len(span))
         else:
-            break
+            s = text.find(span, s + 1)
     return span_ls
 
 
