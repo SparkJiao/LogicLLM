@@ -39,6 +39,11 @@ def unwrap_model(model: torch.nn.Module) -> torch.nn.Module:
 
 
 def batch_to_device(batch: Dict[str, torch.Tensor], device):
+    if "meta_data" in batch:
+        batch.pop("meta_data")
+    if "index" in batch:
+        batch.pop("index")
+
     batch_on_device = {}
     for k, v in batch.items():
         batch_on_device[k] = v.to(device)

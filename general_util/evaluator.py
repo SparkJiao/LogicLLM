@@ -127,6 +127,7 @@ def evaluate(cfg, model, tokenizer: PreTrainedTokenizer, prefix="", _split="dev"
                                                             device=cfg.device)
     else:
         results = {}
+        metric_log = ""
 
     if post_processor is not None:
         post_results, post_predictions = post_processor.get_results()
