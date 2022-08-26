@@ -58,6 +58,7 @@ def align_sentences_with_triplet(triplet: Tuple[str, ...]):
             "corpus": []
         }
 
+    # FIXME: there maybe repeat sentences for <s, rel, t> and <t, rel, s>
     results = []
     for doc in s_document + t_document:
         results.extend(extract_common_sent(s, t, doc))
