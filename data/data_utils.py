@@ -4,6 +4,11 @@ from typing import List, Set, Union, Dict, Tuple
 from transformers import PreTrainedTokenizer
 from transformers import RobertaTokenizer, RobertaTokenizerFast, AlbertTokenizer, AlbertTokenizerFast, DebertaTokenizer, \
     DebertaTokenizerFast, DebertaV2Tokenizer
+from transformers.models.bert.tokenization_bert import whitespace_tokenize
+
+from general_util.logger import get_child_logger
+
+logger = get_child_logger(__name__)
 
 
 def tokenizer_get_name(_tokenizer: PreTrainedTokenizer):
@@ -15,6 +20,57 @@ def tokenizer_get_name(_tokenizer: PreTrainedTokenizer):
 
 def get_sep_tokens(_tokenizer: PreTrainedTokenizer):
     return [_tokenizer.sep_token] * (_tokenizer.max_len_single_sentence - _tokenizer.max_len_sentences_pair)
+
+
+def find_span(text: str, span: str, start: int = 0):
+    pos = text.find(span, start)
+    if pos == -1:
+        return []
+    _e = pos + len(span)
+    return [(pos, _e)] + find_span(text, span, start=_e)
+
+
+def span_chunk(text: str, span_ls: List[str], space_tokenize: bool = False) -> Tuple[List[str], List[int]]:
+    pos_ls = []
+    for span in span_ls:
+        span_pos_ls = find_span(text, span)
+        pos_ls.extend(span_pos_ls)
+    pos_ls = sorted(pos_ls, key=lambda x: x[0])
+
+    text_spans = []
+    indicate_mask = []
+    last_e = 0
+    for s, e in pos_ls:
+        if last_e > s:
+            logger.warning(f"Overlapped span: {text_spans[-1]}\t{text[s: e]}\t{text}")
+            print(f"Overlapped span: {text_spans[-1]}\t{text[s: e]}\t{text}")
+            continue
+        if s > last_e:
+            if space_tokenize:
+                text_spans.extend(whitespace_tokenize(text[last_e: s]))
+            else:
+                tmp = text[last_e: s]
+                if tmp.strip():
+                    text_spans.append(tmp)
+        indicate_mask = indicate_mask + [0] * (len(text_spans) - len(indicate_mask))
+
+        text_spans.append(text[s: e])
+        indicate_mask = indicate_mask + [1] * (len(text_spans) - len(indicate_mask))
+        last_e = e
+
+    rest = text[last_e:].strip()
+    if rest:
+        if space_tokenize:
+            text_spans.extend(whitespace_tokenize(rest))
+        else:
+            text_spans.append(rest)
+
+    _recovered_text = " ".join(text_spans)
+    if _recovered_text != text:
+        logger.warning(f"In consistent text during chunk:\n{_recovered_text}\n{text}")
+        print(f"In consistent text during chunk:\n{_recovered_text}\n{text}")
+
+    return text_spans, indicate_mask
 
 
 def get_unused_tokens(_tokenizer: PreTrainedTokenizer, token_num: int = 4):
@@ -98,7 +154,8 @@ def recursive_bfs(deduction: Union[List, Dict]):
     return res.strip()
 
 
-def dfs_enumerate_all_assign(keys: List[str], values: List[str], relation: str, res: List[str], assign: str, key_vis: Set):
+def dfs_enumerate_all_assign(keys: List[str], values: List[str], relation: str, res: List[str], assign: str,
+                             key_vis: Set):
     if len(key_vis) == 0:
         res.append(assign)
 
@@ -122,4 +179,3 @@ def dfs_load_assignment(assignment_list, res: List[Tuple[str, str]], cur_assign:
             dfs_load_assignment(assignment['assignment'], res, cur_assign + ' ' + assignment['deduction'])
         else:
             raise ValueError('Unknown flag: {}'.format(assignment['flag']))
-

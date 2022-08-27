@@ -6,6 +6,17 @@ import collections
 import argparse
 import numpy as np
 import torch
+from transformers.models.bert.tokenization_bert import whitespace_tokenize
+from transformers import PreTrainedTokenizer
+from transformers.models.roberta.tokenization_roberta import RobertaTokenizer
+from data.data_utils import find_span, span_chunk
+
+_tokenizer: PreTrainedTokenizer
+
+
+def init(tokenizer: PreTrainedTokenizer):
+    global _tokenizer
+    _tokenizer = tokenizer
 
 
 class LogicCircleDataset(Dataset):
@@ -73,9 +84,112 @@ def triplet2texts(s, rel, t, triplet2sent, id2ent, id2rel) -> List[Dict[str, str
     return texts
 
 
-def circle2text(path: List[Tuple[str, str, str]], id2ent: Dict[str, List[str]], id2rel: Dict[str, List[str]],
-                triplet2sent: Dict[str, List[str]]):
-    pass
+def circle2text_mlm(path: List[Tuple[str, str, str]],
+                    id2ent: Dict[str, List[str]],
+                    id2rel: Dict[str, List[str]],
+                    triplet2sent: Dict[str, List[str]],
+                    edge2rel: Dict[str, List[str]],
+                    shuffle_sentence: bool = True):
+    assert len(path) >= 2
+
+    # Obtain the relation with the given entity pair
+    s = path[0][0]
+    t = path[-1][-1]
+    key = f"{s}\t{t}"
+
+    assert len(edge2rel[key])
+    rel = random.choice(edge2rel[key])
+
+    # Symbols to text
+    context = [triplet2texts(*_triplet, triplet2sent, id2ent, id2rel) for _triplet in path]
+    anchor = triplet2texts(s, rel, t, triplet2sent, id2ent, id2rel)
+
+    # Sample a text group
+    context = [random.choice(sent_dict) for sent_dict in context]
+    anchor = random.choice(anchor)
+
+    sentences = context + [anchor]
+    if shuffle_sentence:
+        random.shuffle(sentences)
+
+    # Annotate the span (of entities) and obtain de indicating mask (for which word belongs to an entity)
+    text = ""
+    spans = []
+    indicate_mask = []
+    for sent_dict in sentences:
+        tgt_spans = [sent_dict["s_alias"], sent_dict["t_alias"], ]
+        if sent_dict["rel_alias"]:
+            # Usually multiple words. So, pass.
+            pass
+        sent_spans, sent_indicate_mask = span_chunk(sent_dict["text"],
+                                                    tgt_spans,
+                                                    space_tokenize=True)
+        spans.extend(sent_spans)
+        indicate_mask.extend(sent_indicate_mask)
+        text += sent_dict["text"]
+
+    """
+                    ================== MLM =====================
+    - Whole word mask is needed to avoid information leakage (right?)
+    - For each triplet, different processing procedure for entity and relation (may be implicit) may be needed.
+     
+    - For MLM, we can only pre-process the token mask for each word and annotate the scope of entities,
+      so that the we can perform online dynamic whole word masking during training.
+    
+    - The significance of masking entity and relation:
+        - For entity, entity masking requires the model to predict correct subject and object within a triplet
+          based on the context understanding.
+          If there are more than one sentence involving entity masking, it will also propose the challenge about
+          intermediate relations within a reasoning path.
+        - For relation, relation masking makes the model learn the correct mapping (computation) in reasoning.
+    """
+
+    flag, recovered_text, tokens, _, token2word_index = generate_whole_word_index_mapping(text,
+                                                                                          _tokenizer,
+                                                                                          spans)
+
+    return flag, text, tokens, spans, token2word_index, indicate_mask
+
+
+def generate_whole_word_index_mapping(text: str, tokenizer: PreTrainedTokenizer, spans: List[str] = None):
+    """
+
+    Note: If `text` is indeed an input pair, the separator token, e.g., `[SEP]`, should be inserted into the text first.
+    """
+    if spans is None:
+        words = whitespace_tokenize(text)
+    else:
+        # Using spans at the input to support span masking, e.g., treat an entity (phrase) as a single word.
+        words = spans
+
+    tokens = []
+    # Used for `torch.scatter` method
+    # i.e., `token_mask = torch.scatter(word_mask, dim=0, index=token2word_index)`,
+    # where `word_mask` is a 0/1 tensor indicating whether a word should be masked.
+    # word_mask: [word_num], token2word_index: [token_num]
+    token2word_index = []
+    for idx, word in enumerate(words):
+        if idx > 0:
+            sub_tokens = tokenizer.tokenize(' ' + word)
+        else:
+            sub_tokens = tokenizer.tokenize(word)
+
+        tokens.extend(sub_tokens)
+        token2word_index.extend([idx] * len(sub_tokens))
+
+    # Consistency check
+    target_tokens = tokenizer.tokenize(text)
+    recovered_text = tokenizer.convert_tokens_to_string(tokens)
+    flag = True
+    if target_tokens != tokens or recovered_text != text:
+        print("Warning: Inconsistent tokenization: ")
+        print(f"Original:\t{target_tokens}")
+        print(f"Pre-tokenized:\t{tokens}")
+        print(f"Original text:\t{text}")
+        print(f"Recovered text:\t{recovered_text}")
+        flag = False
+
+    return flag, recovered_text, tokens, words, token2word_index
 
 
 def main():
