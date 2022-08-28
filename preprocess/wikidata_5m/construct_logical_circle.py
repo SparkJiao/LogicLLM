@@ -373,8 +373,8 @@ def main():
 
     all_paths = []
     with Pool(args.num_workers, initializer=init, initargs=(graph, edge2rel, triplet2id)) as p:
-        # _annotate = partial(bfs, min_depth=2, max_depth=args.max_depth)
-        _annotate = partial(bfs_memory, min_depth=2, max_depth=args.max_depth)
+        _annotate = partial(bfs, min_depth=2, max_depth=args.max_depth)
+        # _annotate = partial(bfs_memory, min_depth=2, max_depth=args.max_depth)  # TODO: Fix bug.
         # _annotate = partial(dfs_proxy, min_depth=2, max_depth=args.max_depth)
         # _annotate = partial(memorized_bfs, min_depth=2, max_depth=args.max_depth)
         _results = list(tqdm(
@@ -391,7 +391,7 @@ def main():
 
     file_name = f"logic_circle_d{args.max_depth}_v1.json"
     if split:
-        file_name = file_name[:-4] + f"_{split}_{split_id}.json"
+        file_name = file_name[:-5] + f"_{split}_{split_id}.json"
 
     if not os.path.exists(args.output_dir):
         os.makedirs(args.output_dir, exist_ok=False)
