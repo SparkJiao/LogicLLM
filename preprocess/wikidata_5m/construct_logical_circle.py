@@ -1,4 +1,6 @@
 import argparse
+import collections
+import copy
 import json
 import os
 import os.path
@@ -76,13 +78,65 @@ def path_check(path: List[Tuple[str, str, str]], min_length: int, max_length: in
     return False
 
 
-def dfs(s: str, t: str, depth: int, vis: Set[str]):
-    pass
+def dfs(s: str, t: str, max_depth: int, cur_depth: int,
+        path_node_vis: Set[str],
+        res: Dict[str, Dict[str, List[List[Tuple[str, str, str]]]]]):
+    """
+    :param:
+        `res`: Maintain the path with length `k` from `s` to `t` as res[s][k]
+    """
+
+    if s == t:
+        # res[s] = {}
+        # res[s]["0"] = [[]]  # Padding: [] + [prev_triplet] = [prev_triplet] // 0 + 1 = 1
+        return
+
+    if cur_depth >= max_depth:
+        return
+
+    for rel, next_n in _edges[s]:
+        next_triplet = (s, rel, next_n)
+
+        if next_n not in res:
+            if next_n not in res:
+                new_path_node_vis = copy.deepcopy(path_node_vis)
+                new_path_node_vis.add(next_n)
+                dfs(next_n, t, max_depth, cur_depth + 1, new_path_node_vis, res)
+
+        if next_n not in res:
+            return
+
+        for path_len, next_n_path_ls in res[next_n].items():
+            # new_len = depth + 1 + int(path_len)
+            new_len = 1 + int(path_len)
+            if new_len <= max_depth:
+                if str(new_len) not in res[s]:
+                    res[s][str(new_len)] = []
+                for next_n_path in next_n_path_ls:
+                    res[s][str(new_len)].append([next_triplet] + next_n_path)
+
+
+def dfs_proxy(s: str, min_depth: int, max_depth: int):
+    res = collections.defaultdict(dict)
+    for _, ending in _edges[s]:
+        assert ending != s
+        res[ending]["0"] = [[]]  # Padding: [] + [prev_triplet] = [prev_triplet] // 0 + 1 = 1
+        node_vis = {s}
+        dfs(s, ending, max_depth, 0, node_vis, res)
+
+    all_path = []
+    for path_len, path_ls in res[s].items():
+        if int(path_len) < min_depth or int(path_len) > max_depth:
+            continue
+        for path in path_ls:
+            assert path_check(path, min_depth, max_depth)
+            all_path.append(path)
+    # print(len(all_path))
+    return all_path
 
 
 def bfs(s: str, min_depth: int, max_depth: int):
     queue = [(s, 0, [])]
-    node_vis = set(s)
 
     all_paths = []
     while queue:
@@ -91,9 +145,18 @@ def bfs(s: str, min_depth: int, max_depth: int):
         if len(cur_path) > max_depth:
             break
 
+        path_nodes = set()
+        for _triplet in cur_path:
+            path_nodes.add(_triplet[0])
+            path_nodes.add(_triplet[2])
+
         for edge, next_n in _edges[n]:
-            if next_n not in node_vis:
-                node_vis.add(next_n)
+            # if next_n not in node_vis:
+            if next_n not in path_nodes:
+                # node_vis.add(next_n)  # This is not searching for a shorted path, so is this step correct? or we should use dfs instead?
+                # We shouldn't maintain the set of all visited nodes, which causes that all 1-hop nodes are visited at first
+                # and no path will end at the 1-hop nodes,
+                # meaning that no direct relation can be as the bridge (`path_check` method always return `False`).
 
                 next_triplet = (n, edge, next_n)
                 new_path = cur_path + [next_triplet]
@@ -108,6 +171,7 @@ def bfs(s: str, min_depth: int, max_depth: int):
                     #     path_vis.add(new_path_unique_id)
                     all_paths.append(new_path)
 
+    # print(len(all_paths))
     return all_paths
 
 
@@ -122,13 +186,15 @@ def main():
     args = parser.parse_args()
 
     graph, triplet2id, edge2rel = load_kg_to_edge(args.kg, args.id2ent)
+    print(len(graph), len(triplet2id), len(edge2rel))
 
     nodes = list(graph.keys())
     # path_visit = set()
 
     all_paths = []
     with Pool(args.num_workers, initializer=init, initargs=(graph, edge2rel, triplet2id)) as p:
-        _annotate = partial(bfs, min_depth=2, max_depth=args.max_depth)
+        # _annotate = partial(bfs, min_depth=2, max_depth=args.max_depth)
+        _annotate = partial(dfs_proxy, min_depth=2, max_depth=args.max_depth)
         _results = list(tqdm(
             p.imap(_annotate, nodes, chunksize=32),
             total=len(nodes),

@@ -24,4 +24,10 @@ Currently unnecessary? Since two sentence for each triplet at most (may not prop
 
 **Construct logical circle**
 
+```bash
+>>> python preprocess/wikidata_5m/construct_logical_circle.py \
+      --kg wikidata5m/wikidata5m_transductive_train.txt \
+      --id2ent wikidata5m/triplet_text_align_v1.0/id2ent.json \
+      --max_depth 4 --num_workers 24 --output_dir wikidata5m/triplet_text_align_v1.0    
+```
 

@@ -1,22 +1,47 @@
-from torch.utils.data import Dataset, DataLoader
-import json
-import random
-from typing import List, Dict, Tuple
-import collections
 import argparse
+import collections
+import json
+import os
+import sys
+import random
+from functools import partial
+from multiprocessing import Pool
+from typing import List, Dict, Tuple
+
 import numpy as np
 import torch
+from torch.utils.data import Dataset
+from tqdm import tqdm
+from transformers import PreTrainedTokenizer, AutoTokenizer
 from transformers.models.bert.tokenization_bert import whitespace_tokenize
-from transformers import PreTrainedTokenizer
-from transformers.models.roberta.tokenization_roberta import RobertaTokenizer
-from data.data_utils import find_span, span_chunk
+
+# pwd = os.getcwd()
+# f_pwd = os.path.abspath(os.path.dirname(pwd) + os.path.sep + ".." + os.path.sep + "..")
+
+# sys.path.append(f_pwd)
+sys.path.append("../../")
+
+from data.data_utils import span_chunk, tokenizer_get_name
 
 _tokenizer: PreTrainedTokenizer
+_id2ent: Dict[str, List[str]]
+_id2rel: Dict[str, List[str]]
+_triplet2sent: Dict[str, List[str]]
+_edge2rel: Dict[str, List[str]]
 
 
-def init(tokenizer: PreTrainedTokenizer):
+def init(tokenizer: PreTrainedTokenizer,
+         id2ent, id2rel, triplet2sent, edge2rel):
     global _tokenizer
+    global _id2ent
+    global _id2rel
+    global _triplet2sent
+    global _edge2rel
     _tokenizer = tokenizer
+    _id2ent = id2ent
+    _id2rel = id2rel
+    _triplet2sent = triplet2sent
+    _edge2rel = edge2rel
 
 
 class LogicCircleDataset(Dataset):
@@ -66,29 +91,29 @@ def triplet2texts(s, rel, t, triplet2sent, id2ent, id2rel) -> List[Dict[str, str
                 "rel_alias": "",
                 "text": text,
             })
-    else:
-        s_alias = random.choice(id2ent[s])
-        t_alias = random.choice(id2ent[t])
-        rel_alias = random.choice(id2rel[rel])
-        text = ' '.join([s_alias, rel_alias, t_alias])
-        texts.append({
-            "s": s,
-            "t": t,
-            "rel": rel,
-            "s_alias": s_alias,
-            "t_alias": t_alias,
-            "rel_alias": rel_alias,
-            "text": text
-        })
+
+    s_alias = random.choice(id2ent[s])
+    t_alias = random.choice(id2ent[t])
+    rel_alias = random.choice(id2rel[rel])
+    text = ' '.join([s_alias, rel_alias, t_alias])
+    texts.append({
+        "s": s,
+        "t": t,
+        "rel": rel,
+        "s_alias": s_alias,
+        "t_alias": t_alias,
+        "rel_alias": rel_alias,
+        "text": text
+    })
 
     return texts
 
 
 def circle2text_mlm(path: List[Tuple[str, str, str]],
-                    id2ent: Dict[str, List[str]],
-                    id2rel: Dict[str, List[str]],
-                    triplet2sent: Dict[str, List[str]],
-                    edge2rel: Dict[str, List[str]],
+                    # id2ent: Dict[str, List[str]],
+                    # id2rel: Dict[str, List[str]],
+                    # triplet2sent: Dict[str, List[str]],
+                    # edge2rel: Dict[str, List[str]],
                     shuffle_sentence: bool = True):
     assert len(path) >= 2
 
@@ -97,12 +122,12 @@ def circle2text_mlm(path: List[Tuple[str, str, str]],
     t = path[-1][-1]
     key = f"{s}\t{t}"
 
-    assert len(edge2rel[key])
-    rel = random.choice(edge2rel[key])
+    assert len(_edge2rel[key])
+    rel = random.choice(_edge2rel[key])
 
     # Symbols to text
-    context = [triplet2texts(*_triplet, triplet2sent, id2ent, id2rel) for _triplet in path]
-    anchor = triplet2texts(s, rel, t, triplet2sent, id2ent, id2rel)
+    context = [triplet2texts(*_triplet, _triplet2sent, _id2ent, _id2rel) for _triplet in path]
+    anchor = triplet2texts(s, rel, t, _triplet2sent, _id2ent, _id2rel)
 
     # Sample a text group
     context = [random.choice(sent_dict) for sent_dict in context]
@@ -195,10 +220,56 @@ def generate_whole_word_index_mapping(text: str, tokenizer: PreTrainedTokenizer,
 def main():
     parser = argparse.ArgumentParser()
     parser.add_argument("--seed", type=int, default=42)
-    parser.add_argument("--mode", type=str, help="Options: mlm, ctr, seq2seq")
+    parser.add_argument("--mode", type=str, default="mlm", help="Options: mlm, ctr, seq2seq")
+    parser.add_argument("--path", type=str)
+    parser.add_argument("--id2ent", type=str)
+    parser.add_argument("--id2rel", type=str)
+    parser.add_argument("--triplet2sent", type=str)
+    parser.add_argument("--edge2rel", type=str)
+    parser.add_argument("--tokenizer", type=str)
+    # parser.add_argument("--shuffle_sentence", )
+    parser.add_argument("--debug", default=False, action="store_true")
+    parser.add_argument("--num_workers", type=int, default=8)
+    parser.add_argument("--output_dir", type=str)
 
     args = parser.parse_args()
 
     random.seed(args.seed)
     np.random.seed(args.seed)
     torch.manual_seed(args.seed)
+
+    all_path = json.load(open(args.path))
+    id2ent = json.load(open(args.id2ent))
+    id2rel = json.load(open(args.id2rel))
+    triplet2sent = load_triplet2sent(args.triplet2sent)
+    edge2rel = json.load(open(args.edge2rel))
+    tokenizer = AutoTokenizer.from_pretrained(args.tokenizer)
+
+    if args.debug:
+        all_path = all_path[:1000]
+
+    print(len(all_path))
+
+    if args.mode == "mlm":
+        with Pool(args.num_workers, initializer=init, initargs=(tokenizer, id2ent, id2rel, triplet2sent, edge2rel)) as p:
+            _annotate = partial(circle2text_mlm)
+            _results = list(tqdm(
+                p.imap(_annotate, all_path, chunksize=32),
+                total=len(all_path),
+                desc="constructing dataset",
+                dynamic_ncols=True,
+            ))
+
+        tokenizer_name = tokenizer_get_name(tokenizer)
+        output_file = os.path.join(args.output_dir, f"logic_circle_data_v1_{tokenizer_name}_s{args.seed}_{args.mode}.json")
+
+        if not os.path.exists(args.output_dir):
+            os.makedirs(args.output_dir, exist_ok=False)
+
+        json.dump(_results, open(output_file, 'w'))
+    else:
+        raise NotImplementedError()
+
+
+if __name__ == '__main__':
+    main()
