@@ -10,7 +10,6 @@ from typing import List, Dict, Tuple
 
 import numpy as np
 import torch
-from torch.utils.data import Dataset
 from tqdm import tqdm
 from transformers import PreTrainedTokenizer, AutoTokenizer
 from transformers.models.bert.tokenization_bert import whitespace_tokenize
@@ -42,22 +41,6 @@ def init(tokenizer: PreTrainedTokenizer,
     _id2rel = id2rel
     _triplet2sent = triplet2sent
     _edge2rel = edge2rel
-
-
-class LogicCircleDataset(Dataset):
-    def __init__(self, logical_circle: str, id2ent: str, id2rel: str, triplet2sent: str):
-        super(self).__init__()
-
-        self.logical_circle = json.load(open(logical_circle, 'r'))
-        self.id2ent = json.load(open(id2ent, 'r'))
-        self.id2rel = json.load(open(id2rel, 'r'))
-        self.triplet2sent = json.load(open(triplet2sent, 'r'))
-
-    def __iter__(self):
-        pass
-
-    def __len__(self):
-        pass
 
 
 def load_triplet2sent(triplet2sent: str):
@@ -251,7 +234,8 @@ def main():
     print(len(all_path))
 
     if args.mode == "mlm":
-        with Pool(args.num_workers, initializer=init, initargs=(tokenizer, id2ent, id2rel, triplet2sent, edge2rel)) as p:
+        with Pool(args.num_workers, initializer=init,
+                  initargs=(tokenizer, id2ent, id2rel, triplet2sent, edge2rel)) as p:
             _annotate = partial(circle2text_mlm)
             _results = list(tqdm(
                 p.imap(_annotate, all_path, chunksize=32),
@@ -261,7 +245,8 @@ def main():
             ))
 
         tokenizer_name = tokenizer_get_name(tokenizer)
-        output_file = os.path.join(args.output_dir, f"logic_circle_data_v1_{tokenizer_name}_s{args.seed}_{args.mode}.json")
+        output_file = os.path.join(args.output_dir,
+                                   f"logic_circle_data_v1_{tokenizer_name}_s{args.seed}_{args.mode}.json")
 
         if not os.path.exists(args.output_dir):
             os.makedirs(args.output_dir, exist_ok=False)
