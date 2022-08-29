@@ -20,7 +20,7 @@ from transformers.models.bert.tokenization_bert import whitespace_tokenize
 # sys.path.append(f_pwd)
 sys.path.append("../../")
 
-from data.data_utils import span_chunk, tokenizer_get_name
+from data.data_utils import span_chunk, tokenizer_get_name, find_span
 
 _tokenizer: PreTrainedTokenizer
 _id2ent: Dict[str, List[str]]
@@ -121,7 +121,7 @@ def circle2text_mlm(path: List[Tuple[str, str, str]],
         random.shuffle(sentences)
 
     # Annotate the span (of entities) and obtain de indicating mask (for which word belongs to an entity)
-    text = ""
+    text = []
     spans = []
     indicate_mask = []
     for sent_dict in sentences:
@@ -134,7 +134,9 @@ def circle2text_mlm(path: List[Tuple[str, str, str]],
                                                     space_tokenize=True)
         spans.extend(sent_spans)
         indicate_mask.extend(sent_indicate_mask)
-        text += sent_dict["text"]
+        text.append(sent_dict["text"])
+    text = " ".join(text)
+    tokens = _tokenizer.tokenize(text)
 
     """
                     ================== MLM =====================
@@ -152,11 +154,24 @@ def circle2text_mlm(path: List[Tuple[str, str, str]],
         - For relation, relation masking makes the model learn the correct mapping (computation) in reasoning.
     """
 
-    flag, recovered_text, tokens, _, token2word_index = generate_whole_word_index_mapping(text,
-                                                                                          _tokenizer,
-                                                                                          spans)
+    # FIXED: This method may generate inconsistency since different tokenization methods are used.
+    #   Instead, we use another method where the words are matched to the subwords sequence one-by-one.
+    #   And the unmatched words are processed separately.
+    #   See following for details.
+    # flag, recovered_text, tokens, _, token2word_index = generate_whole_word_index_mapping(text,
+    #                                                                                       _tokenizer,
+    #                                                                                       spans)
+    # return flag, text, tokens, spans, token2word_index, indicate_mask
 
-    return flag, text, tokens, spans, token2word_index, indicate_mask
+    # `token2word_index`: List[int], token num
+    # `extended_word_cnt`: int, extended word num
+    # `extended_indicate_mask`: List[int], `0` for non-entity word and `1` for entity word, extended word num
+    flag = token2word_index, extended_word_cnt, extended_indicate_mask = annotate_span(tokens,
+                                                                                       spans,
+                                                                                       indicate_mask,
+                                                                                       _tokenizer)
+
+    return flag, text, spans, token2word_index, extended_indicate_mask
 
 
 def generate_whole_word_index_mapping(text: str, tokenizer: PreTrainedTokenizer, spans: List[str] = None):
@@ -189,15 +204,118 @@ def generate_whole_word_index_mapping(text: str, tokenizer: PreTrainedTokenizer,
     target_tokens = tokenizer.tokenize(text)
     recovered_text = tokenizer.convert_tokens_to_string(tokens)
     flag = True
-    if target_tokens != tokens or recovered_text != text:
+    if target_tokens != tokens:
         print("Warning: Inconsistent tokenization: ")
         print(f"Original:\t{target_tokens}")
         print(f"Pre-tokenized:\t{tokens}")
+        flag = False
+    if recovered_text != text:
+        print("Warning: Inconsistent text: ")
         print(f"Original text:\t{text}")
         print(f"Recovered text:\t{recovered_text}")
         flag = False
 
     return flag, recovered_text, tokens, words, token2word_index
+
+
+def annotate_span(subwords: List[str], words: List[str], indicate_mask: List[int], tokenizer: PreTrainedTokenizer):
+    """
+    The core idea:
+
+
+    """
+    subword_span_pos_ls = []
+    last_e = 0
+
+    def span_iterator(start, length):
+        for a in range(start, length):
+            for b in range(a + 1, length + 1):
+                yield a, b
+
+    for word_i, word in enumerate(words):
+        # for i in range(last_e, len(subwords)):
+        #     for j in range(i + 1, len(subwords) + 1):
+        for i, j in span_iterator(last_e, len(subwords)):
+            tmp = tokenizer.convert_tokens_to_string(subwords[i: j]).strip()
+            if tmp == word:
+                subword_span_pos_ls.append((i, j, word_i))
+                last_e = j
+                break
+
+    word_p = 0
+    subword_p = 0
+    extended_word_cnt = 0
+    extended_indicate_mask = []
+    token2word_index = []
+    for span_s, span_e, word_idx in subword_span_pos_ls:
+        # Ideally, the spans are continuous
+        if span_s > subword_p:  # If the spans are not continuous:
+            skipped_word_num = word_idx - word_p
+            # skipped_span = (subword_p, span_s)
+            skipped_len = span_s - subword_p
+
+            if skipped_word_num == 1:  # If there are only one word not matched:
+                # Treat the skipped subwords as single word.
+                token2word_index.extend([extended_word_cnt] * skipped_len)
+                extended_indicate_mask.append(indicate_mask[word_p])
+                extended_word_cnt += 1
+                word_p += 1
+            elif skipped_word_num > 1:  # If there are multiple words not matched:
+                # Treat the each skipped subword as single word.
+                split_idx_seq = list(range(extended_word_cnt, extended_word_cnt + skipped_len))
+                token2word_index.extend(split_idx_seq)
+                extended_word_cnt += skipped_len
+
+                # If any skipped word is entity, set all skipped subwords as entity.
+                if any(symbol == 1 for symbol in indicate_mask[word_p: word_idx]):
+                    extended_indicate_mask.extend([1] * skipped_len)
+                else:
+                    extended_indicate_mask.extend([0] * skipped_len)
+
+                word_p += skipped_word_num
+
+                print(f"Multiple skipped span warning: {words[word_p: word_idx]}\t"
+                      f"{tokenizer.convert_tokens_to_string(subwords[subword_p: span_s])}")
+            else:
+                raise ValueError(skipped_word_num)
+
+        subword_p = span_e
+
+        token2word_index.extend([extended_word_cnt] * (span_e - span_s))
+        extended_indicate_mask.append(indicate_mask[word_idx])
+        extended_word_cnt += 1
+        assert word_p == word_idx
+        word_p += 1
+
+    skipped_word_num = len(words) - word_p
+    skipped_len = len(subwords) - subword_p
+    if skipped_word_num == 1:  # Left one word exactly
+        token2word_index.extend([extended_word_cnt] * skipped_len)
+        extended_indicate_mask.append(indicate_mask[word_p])
+        extended_word_cnt += 1
+    elif skipped_word_num > 1:
+        split_idx_seq = list(range(extended_word_cnt, extended_word_cnt + skipped_len))
+        token2word_index.extend(split_idx_seq)
+
+        if any(symbol == 1 for symbol in indicate_mask[word_p: len(words)]):
+            extended_indicate_mask.extend([1] * skipped_len)
+        else:
+            extended_indicate_mask.extend([0] * skipped_len)
+
+        extended_word_cnt += skipped_len
+
+    assert len(token2word_index) == len(subwords)
+    assert len(extended_indicate_mask) == extended_word_cnt
+    assert all(idx < extended_word_cnt for idx in token2word_index)
+    assert any(idx == extended_word_cnt - 1 for idx in token2word_index)
+    assert word_p + skipped_word_num == len(words)
+
+    if extended_word_cnt != len(words):
+        flag = False
+    else:
+        flag = True
+
+    return flag, token2word_index, extended_word_cnt, extended_indicate_mask
 
 
 def main():

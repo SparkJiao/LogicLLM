@@ -203,11 +203,18 @@ def bfs(s: str, min_depth: int, max_depth: int):
 
 
 def bfs_memory(s: str, min_depth: int, max_depth: int):
+    """
+    The speed is similar to ``bfs``.
+    """
     queue = [(s, [])]
 
     all_paths = []
     prefix_memory = []
     suffix_memory = defaultdict(list)
+
+    for _, t in _edges[s]:
+        suffix_memory[t].append([])  # Add padding to all one-hop nodes so that the model can use this to concat path.
+
     queue_vis = set()
 
     path_id_set = set()
@@ -239,8 +246,8 @@ def bfs_memory(s: str, min_depth: int, max_depth: int):
                     prefix_memory.append((new_path, next_n))
                     continue
 
-                if len(new_path) > 1:  # A new rule to process the one-hop nodes during using memory.
-                    queue_vis.add(next_n)
+                # if len(new_path) > 1:  # A new rule to process the one-hop nodes during using memory.
+                queue_vis.add(next_n)
 
                 if len(new_path) < max_depth:
                     queue.append((next_n, new_path))  # Not a path but can be further extended.
@@ -251,11 +258,13 @@ def bfs_memory(s: str, min_depth: int, max_depth: int):
                     #     all_paths.append(new_path)
                     #     path_vis.add(new_path_unique_id)
 
-                    all_paths.append(new_path)
+                    # all_paths.append(new_path)
                     new_path_id = get_path_unique_id(new_path)
                     if new_path_id in path_id_set:
                         print(f"Warning: repeat path during bfs: {cur_path}")
-                    path_id_set.add(new_path_id)
+                    else:
+                        all_paths.append(new_path)
+                        path_id_set.add(new_path_id)
 
                     for triplet_id, triplet in enumerate(new_path):
                         if triplet_id == 0:
@@ -269,6 +278,9 @@ def bfs_memory(s: str, min_depth: int, max_depth: int):
         prefix_node = set([triplet[2] for triplet in prefix])
         for suffix in suffix_memory[next_n]:
             if len(prefix) + len(suffix) > max_depth:
+                continue
+
+            if len(prefix) + len(suffix) < min_depth:
                 continue
 
             suffix_node = set([triplet[2] for triplet in suffix])
@@ -351,6 +363,7 @@ def main():
     parser.add_argument("--kg", type=str)
     # parser.add_argument("--triplet2sent", type=str)
     parser.add_argument("--id2ent", type=str)
+    parser.add_argument("--min_depth", type=int, default=2)
     parser.add_argument("--max_depth", type=int, default=4)
     parser.add_argument("--num_workers", type=int, default=8)
     parser.add_argument("--output_dir", type=str, default=None)
@@ -374,8 +387,8 @@ def main():
 
     all_paths = []
     with Pool(args.num_workers, initializer=init, initargs=(graph, edge2rel, triplet2id)) as p:
-        # _annotate = partial(bfs, min_depth=2, max_depth=args.max_depth)
-        _annotate = partial(bfs_memory, min_depth=2, max_depth=args.max_depth)  # TODO: Fix bug.
+        # _annotate = partial(bfs, min_depth=args.min_depth, max_depth=args.max_depth)
+        _annotate = partial(bfs_memory, min_depth=args.min_depth, max_depth=args.max_depth)  # TODO: Fix bug.
         # _annotate = partial(dfs_proxy, min_depth=2, max_depth=args.max_depth)
         # _annotate = partial(memorized_bfs, min_depth=2, max_depth=args.max_depth)
         _results = list(tqdm(
@@ -391,7 +404,7 @@ def main():
             all_paths.extend(res)
     print(f"Generate {len(all_paths)} paths.")
 
-    file_name = f"logic_circle_d{args.max_depth}_v1.json"
+    file_name = f"logic_circle_d{args.min_depth}_{args.max_depth}_v1.json"
     if split:
         file_name = file_name[:-5] + f"_{split}_{split_id}.json"
 

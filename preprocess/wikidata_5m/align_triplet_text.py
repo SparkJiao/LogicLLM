@@ -1,12 +1,17 @@
 import argparse
 import json
 import os
+import sys
 from functools import partial
 from multiprocessing import Pool
 from typing import Dict, List, Tuple
 
 from nltk import sent_tokenize
 from tqdm import tqdm
+
+sys.path.append("../../")
+
+from data.data_utils import find_span
 
 id2ent: Dict[str, List[str]]
 id2rel: Dict[str, List[str]]
@@ -33,7 +38,8 @@ def extract_common_sent(ent_a, ent_b, document):
     sentences = sent_tokenize(document)
     for sent in sentences:
         for a_alias, b_alias in entity_iterator(ent_a, ent_b):
-            if a_alias in sent and b_alias in sent:
+            # if a_alias in sent and b_alias in sent:  # FIXED: May find a span within a single word.
+            if find_span(sent, a_alias) and find_span(sent, b_alias):
                 res.append({
                     "text": sent,
                     "s": a_alias,

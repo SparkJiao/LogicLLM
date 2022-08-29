@@ -1,5 +1,6 @@
 import copy
 from typing import List, Set, Union, Dict, Tuple
+from nltk import word_tokenize
 
 from transformers import PreTrainedTokenizer
 from transformers import RobertaTokenizer, RobertaTokenizerFast, AlbertTokenizer, AlbertTokenizerFast, DebertaTokenizer, \
@@ -22,20 +23,88 @@ def get_sep_tokens(_tokenizer: PreTrainedTokenizer):
     return [_tokenizer.sep_token] * (_tokenizer.max_len_single_sentence - _tokenizer.max_len_sentences_pair)
 
 
-def find_span(text: str, span: str, start: int = 0):
-    pos = text.find(span, start)
-    if pos == -1:
+# FIXED: This method may find a span within a single word.
+# def find_span(text: str, span: str, start: int = 0):
+#     pos = text.find(span, start)
+#     if pos == -1:
+#         return []
+#     _e = pos + len(span)
+#     return [(pos, _e)] + find_span(text, span, start=_e)
+
+
+def is_alphabet(char):
+    res = ord('a') <= ord(char) <= ord('z') or ord('A') <= ord(char) <= ord('Z')
+    return res
+
+def whitespace_tokenize_w_punctuation_ends(text):
+    """
+    Bad case:
+    >>> whitespace_tokenize_w_punctuation_ends("\" My name is Fangkai Jiao.\"")
+    >>> ['"', 'My', 'name', 'is', 'Fangkai', 'Jiao.', '"']
+
+    >>> word_tokenize("\" My name is Fangkai Jiao.\"")
+    >>> ['``', 'My', 'name', 'is', 'Fangkai', 'Jiao', '.', "''"]
+    """
+    words = whitespace_tokenize(text)
+    new_words = []
+    for word in words:
+        if len(word) == 1:
+            new_words.append(word)
+            continue
+
+        if not is_alphabet(word[0]):
+            new_words.append(word[0])
+            word = word[1:]
+
+        if len(word) == 1:
+            new_words.append(word)
+            continue
+
+        if not is_alphabet(word[-1]):
+            new_words.append(word[:-1])
+            new_words.append(word[-1])
+        else:
+            new_words.append(word)
+
+    return new_words
+
+def find_span(sentence: str, span: str, start: int = 0):
+    span = span.strip()
+
+    s = sentence.find(span, start)
+    if s == -1:
         return []
-    _e = pos + len(span)
-    return [(pos, _e)] + find_span(text, span, start=_e)
+
+    e = s + len(span)
+
+    a = not is_alphabet(sentence[s - 1]) if s > 0 else True
+    b = not is_alphabet(sentence[e]) if e < len(sentence) else True
+    if a and b:
+        return [(s, e)] + find_span(sentence, span, start=e)
+    else:
+        return find_span(sentence, span, start=e)
 
 
 def span_chunk(text: str, span_ls: List[str], space_tokenize: bool = False) -> Tuple[List[str], List[int]]:
+    """
+    Word based span indicating.
+    The method is based on whitespace tokenization, which may lead to inconsistent with BPE or Wordpiece.
+
+    FIXME:
+        1. The warnings are to be fixed. There is some consistency can be address through proper text normalization.
+        2. The `whitespace_tokenize` aims to not split the words such as "don't",
+            but may cause the punctuations not split correctly.
+    """
     pos_ls = []
     for span in span_ls:
         span_pos_ls = find_span(text, span)
         pos_ls.extend(span_pos_ls)
     pos_ls = sorted(pos_ls, key=lambda x: x[0])
+    # No within word span check.
+    for pos_id, pos in enumerate(pos_ls):
+        if pos_id == 0:
+            continue
+        assert pos[0] >= pos_ls[pos_id - 1][1], (text[pos[0]: pos[1]], text[pos[pos_id - 1][0]: pos[pos_id - 1][1]])
 
     text_spans = []
     indicate_mask = []
@@ -47,30 +116,44 @@ def span_chunk(text: str, span_ls: List[str], space_tokenize: bool = False) -> T
             continue
         if s > last_e:
             if space_tokenize:
-                text_spans.extend(whitespace_tokenize(text[last_e: s]))
+                # text_spans.extend(whitespace_tokenize(text[last_e: s]))
+                # text_spans.extend(whitespace_tokenize_w_punctuation_ends(text[last_e: s]))
+                text_spans.extend(word_tokenize(text[last_e: s]))
             else:
-                tmp = text[last_e: s]
-                if tmp.strip():
+                tmp = text[last_e: s].strip()
+                if tmp:
                     text_spans.append(tmp)
         indicate_mask = indicate_mask + [0] * (len(text_spans) - len(indicate_mask))
 
-        text_spans.append(text[s: e])
+        text_spans.append(text[s: e].strip())
         indicate_mask = indicate_mask + [1] * (len(text_spans) - len(indicate_mask))
         last_e = e
 
     rest = text[last_e:].strip()
     if rest:
         if space_tokenize:
-            text_spans.extend(whitespace_tokenize(rest))
+            # text_spans.extend(whitespace_tokenize(rest))
+            # text_spans.extend(whitespace_tokenize_w_punctuation_ends(rest))
+            text_spans.extend(word_tokenize(rest))
         else:
             text_spans.append(rest)
 
-    _recovered_text = " ".join(text_spans)
-    if _recovered_text != text:
-        logger.warning(f"In consistent text during chunk:\n{_recovered_text}\n{text}")
-        print(f"In consistent text during chunk:\n{_recovered_text}\n{text}")
+    # recovered_text = " ".join(text_spans)
+    # if recovered_text != text:
+    #     logger.warning(f"In consistent text during chunk:\n{recovered_text}\n{text}")
+    #     print(f"In consistent text during chunk:\n{recovered_text}\n{text}")
+    #     print(span_ls)
+    #     print("======================")
 
     return text_spans, indicate_mask
+
+
+def span_chunk_subword(text: str, span_ls: List[str]) -> Tuple[List[str], List[int]]:
+    """
+    Using the subword tokenization algorithm, e.g., BPR or wordpiece, to tokenize the sentence first,
+    and find the span through recovery, which may have high time complexity.
+    """
+    pass
 
 
 def get_unused_tokens(_tokenizer: PreTrainedTokenizer, token_num: int = 4):
