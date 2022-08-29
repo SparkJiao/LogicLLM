@@ -203,7 +203,7 @@ def bfs(s: str, min_depth: int, max_depth: int):
 
 
 def bfs_memory(s: str, min_depth: int, max_depth: int):
-    queue = [(s, 0, [])]
+    queue = [(s, [])]
 
     all_paths = []
     prefix_memory = []
@@ -213,7 +213,7 @@ def bfs_memory(s: str, min_depth: int, max_depth: int):
     path_id_set = set()
 
     while queue:
-        n, cur_depth, cur_path = queue.pop(0)
+        n, cur_path = queue.pop(0)
 
         if len(cur_path) >= max_depth:
             break
@@ -232,17 +232,18 @@ def bfs_memory(s: str, min_depth: int, max_depth: int):
                 # and no path will end at the 1-hop nodes,
                 # meaning that no direct relation can be as the bridge (`path_check` method always return `False`).
 
-                if next_n in queue_vis:
-                    prefix_memory.append((cur_path, next_n))
-                    continue
-
-                queue_vis.add(next_n)
-
                 next_triplet = (n, edge, next_n)
                 new_path = cur_path + [next_triplet]
 
+                if next_n in queue_vis:
+                    prefix_memory.append((new_path, next_n))
+                    continue
+
+                if len(new_path) > 1:  # A new rule to process the one-hop nodes during using memory.
+                    queue_vis.add(next_n)
+
                 if len(new_path) < max_depth:
-                    queue.append((next_n, cur_depth + 1, new_path))  # Not a path but can be further extended.
+                    queue.append((next_n, new_path))  # Not a path but can be further extended.
 
                 if path_check(new_path, min_depth, max_depth):
                     # new_path_unique_id = get_path_unique_id(new_path)
@@ -373,8 +374,8 @@ def main():
 
     all_paths = []
     with Pool(args.num_workers, initializer=init, initargs=(graph, edge2rel, triplet2id)) as p:
-        _annotate = partial(bfs, min_depth=2, max_depth=args.max_depth)
-        # _annotate = partial(bfs_memory, min_depth=2, max_depth=args.max_depth)  # TODO: Fix bug.
+        # _annotate = partial(bfs, min_depth=2, max_depth=args.max_depth)
+        _annotate = partial(bfs_memory, min_depth=2, max_depth=args.max_depth)  # TODO: Fix bug.
         # _annotate = partial(dfs_proxy, min_depth=2, max_depth=args.max_depth)
         # _annotate = partial(memorized_bfs, min_depth=2, max_depth=args.max_depth)
         _results = list(tqdm(
@@ -388,6 +389,7 @@ def main():
 
         for res in _results:
             all_paths.extend(res)
+    print(f"Generate {len(all_paths)} paths.")
 
     file_name = f"logic_circle_d{args.max_depth}_v1.json"
     if split:
