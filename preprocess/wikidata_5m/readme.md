@@ -5,16 +5,16 @@
 
 ```bash
 >>> python align_triplet_text.py \
-      --kg ../../wikidata5m/wikidata5m_transductive_train.txt \
-      --entity_vocab ../../wikidata5m/wikidata5m_entity.txt \
-      --relation_vocab ../../wikidata5m/wikidata5m_relation.txt \
-      --corpus ../../wikidata5m/wikidata5m_text.txt \
-      --num_workers 16 --output_dir ../../wikidata5m/triplet_text_align_v1.0
+    --kg ../../wikidata5m/wikidata5m_transductive_train.txt \
+    --entity_vocab ../../wikidata5m/wikidata5m_entity.txt \
+    --relation_vocab ../../wikidata5m/wikidata5m_relation.txt \
+    --corpus ../../wikidata5m/wikidata5m_text.txt \
+    --num_workers 32 --output_dir ../../wikidata5m/triplet_text_align_v1.0
 >>> Entity amount: 4813491
 >>> Relation amount: 825
->>> aligning sentences: 100%|████████████████████| 20614279/20614279 [38:20<00:00, 8962.38it/s]
->>> Generated 4778788 text-triplet pairs with 15835491 samples overlooked.
->>> Total 5272402 aligned sentences with 1.1032927177351244 per triplet.
+>>> aligning sentences: 100%|███████████████████████| 20614279/20614279 [23:37<00:00, 14546.94it/s]
+Generated 15323472 text-triplet pairs with 5290807 samples overlooked.
+Total 21042188 aligned sentences with 1.3731997552512902 per triplet.
   
 #>>> Entity amount: 4813491
 #>>> Relation amount: 825
@@ -31,12 +31,12 @@ Currently unnecessary? Since two sentence for each triplet at most (may not prop
 
 ```bash
 >>> python preprocess/wikidata_5m/construct_logical_circle.py \
-      --kg wikidata5m/wikidata5m_transductive_train.txt \
-      --id2ent wikidata5m/triplet_text_align_v1.0/id2ent.json \
-      --max_depth 4 --num_workers 16 --output_dir wikidata5m/triplet_text_align_v1.0 \
-      --split_chunk 5,0
+    --kg wikidata5m/wikidata5m_transductive_train.txt \
+    --id2ent wikidata5m/triplet_text_align_v1.0/id2ent.json \
+    --min_depth 3 --max_depth 4 --num_workers 16 \
+    --output_dir wikidata5m/triplet_text_align_v1.0/logical_circle/ --split_chunk 25,0
 >>> 4568492 20600156 20600156
->>> Searching path: 100%|███████████████████████████████| 913698/913698 [4:42:50<00:00, 53.84it/s]
->>> Generate 22994740 paths.
+>>> Searching path: 100%|██████████████████████| 182739/182739 [1:03:46<00:00, 47.76it/s]
+>>> Generate 147498326 paths.
 ```
 

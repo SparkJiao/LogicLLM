@@ -6,13 +6,14 @@ import sys
 import random
 from functools import partial
 from multiprocessing import Pool
-from typing import List, Dict, Tuple
+from typing import List, Dict, Tuple, Union
 
 import numpy as np
 import torch
 from tqdm import tqdm
 from transformers import PreTrainedTokenizer, AutoTokenizer
 from transformers.models.bert.tokenization_bert import whitespace_tokenize
+from nltk import word_tokenize
 
 # pwd = os.getcwd()
 # f_pwd = os.path.abspath(os.path.dirname(pwd) + os.path.sep + ".." + os.path.sep + "..")
@@ -55,7 +56,7 @@ def load_triplet2sent(triplet2sent: str):
     return triplet2sent
 
 
-def triplet2texts(s, rel, t, triplet2sent, id2ent, id2rel) -> List[Dict[str, str]]:
+def triplet2texts(s, rel, t, triplet2sent, id2ent, id2rel) -> Union[List[Dict[str, str]], None]:
     key = "\t".join([s, rel, t])
     texts = []
     if key in triplet2sent:
@@ -65,6 +66,9 @@ def triplet2texts(s, rel, t, triplet2sent, id2ent, id2rel) -> List[Dict[str, str
             text = item["text"]
             assert s_alias in text, (s_alias, text)
             assert t_alias in text, (t_alias, text)
+            if len(set(word_tokenize(s_alias)) & set(
+                    word_tokenize(t_alias))):  # FIXED in `align_triplet_text.py`: This case should be removed during text-triplet aligning.
+                continue
             texts.append({
                 "s": s,
                 "t": t,
@@ -77,7 +81,13 @@ def triplet2texts(s, rel, t, triplet2sent, id2ent, id2rel) -> List[Dict[str, str
 
     s_alias = random.choice(id2ent[s])
     t_alias = random.choice(id2ent[t])
+    # FIXED: KeyError here. Should be checked in `align_triplet_text.py`.
+    # if rel not in id2rel:
+    #     if texts:
+    #         return texts
+    #     return None
     rel_alias = random.choice(id2rel[rel])
+
     text = ' '.join([s_alias, rel_alias, t_alias])
     texts.append({
         "s": s,
@@ -90,6 +100,29 @@ def triplet2texts(s, rel, t, triplet2sent, id2ent, id2rel) -> List[Dict[str, str
     })
 
     return texts
+
+
+def doc_span_chunk(sentences: List[Dict[str, str]]):
+    text = []
+    spans = []
+    indicate_mask = []
+    for sent_dict in sentences:
+        tgt_spans = [sent_dict["s_alias"], sent_dict["t_alias"]]
+        if sent_dict["rel_alias"]:
+            # Usually multiple words. So, pass.
+            pass
+        sent_spans, sent_indicate_mask = span_chunk(sent_dict["text"],
+                                                    tgt_spans,
+                                                    space_tokenize=True)
+
+        spans.extend(sent_spans)
+        indicate_mask.extend(sent_indicate_mask)
+        text.append(sent_dict["text"])
+
+        assert len(spans) == len(indicate_mask)
+
+    text = " ".join(text)
+    return text, spans, indicate_mask
 
 
 def circle2text_mlm(path: List[Tuple[str, str, str]],
@@ -112,6 +145,9 @@ def circle2text_mlm(path: List[Tuple[str, str, str]],
     context = [triplet2texts(*_triplet, _triplet2sent, _id2ent, _id2rel) for _triplet in path]
     anchor = triplet2texts(s, rel, t, _triplet2sent, _id2ent, _id2rel)
 
+    if any(sent_dict is None for sent_dict in context + [anchor]):
+        return None
+
     # Sample a text group
     context = [random.choice(sent_dict) for sent_dict in context]
     anchor = random.choice(anchor)
@@ -120,22 +156,8 @@ def circle2text_mlm(path: List[Tuple[str, str, str]],
     if shuffle_sentence:
         random.shuffle(sentences)
 
-    # Annotate the span (of entities) and obtain de indicating mask (for which word belongs to an entity)
-    text = []
-    spans = []
-    indicate_mask = []
-    for sent_dict in sentences:
-        tgt_spans = [sent_dict["s_alias"], sent_dict["t_alias"], ]
-        if sent_dict["rel_alias"]:
-            # Usually multiple words. So, pass.
-            pass
-        sent_spans, sent_indicate_mask = span_chunk(sent_dict["text"],
-                                                    tgt_spans,
-                                                    space_tokenize=True)
-        spans.extend(sent_spans)
-        indicate_mask.extend(sent_indicate_mask)
-        text.append(sent_dict["text"])
-    text = " ".join(text)
+    # Annotate the span (of entities) and obtain the indicating mask (for which word belongs to an entity)
+    text, spans, indicate_mask = doc_span_chunk(sentences)
     tokens = _tokenizer.tokenize(text)
 
     """
@@ -166,12 +188,96 @@ def circle2text_mlm(path: List[Tuple[str, str, str]],
     # `token2word_index`: List[int], token num
     # `extended_word_cnt`: int, extended word num
     # `extended_indicate_mask`: List[int], `0` for non-entity word and `1` for entity word, extended word num
-    flag = token2word_index, extended_word_cnt, extended_indicate_mask = annotate_span(tokens,
-                                                                                       spans,
-                                                                                       indicate_mask,
-                                                                                       _tokenizer)
+    res = annotate_span(tokens, spans, indicate_mask, _tokenizer)
+
+    if res is None:
+        return None
+
+    flag, token2word_index, extended_word_cnt, extended_indicate_mask = res
 
     return flag, text, spans, token2word_index, extended_indicate_mask
+
+
+def circle2text_seq2seq_v1(path: List[Tuple[str, str, str]],
+                           context_len: int = 0):
+    assert len(path) >= 2
+
+    # Obtain the relation with the given entity pair
+    s = path[0][0]
+    t = path[-1][-1]
+    key = f"{s}\t{t}"
+
+    assert len(_edge2rel[key])
+    rel = random.choice(_edge2rel[key])
+
+    # Symbols to text
+    context = [triplet2texts(*_triplet, _triplet2sent, _id2ent, _id2rel) for _triplet in path]
+    anchor = triplet2texts(s, rel, t, _triplet2sent, _id2ent, _id2rel)
+
+    if any(sent_dict is None for sent_dict in context + [anchor]):
+        return None
+
+    # Sample a text group
+    context = [random.choice(sent_dict) for sent_dict in context]
+    anchor = random.choice(anchor)
+
+    random.shuffle(context)
+
+    input_seq = [anchor] + context[:context_len]
+    output_seq = context[context_len:]
+
+    """
+    ============================ Seq2Seq ================================
+    
+    For sequence-to-sequence task, currently, I think we only require indicating the entities (and relations)
+    in output sequence, since we only compute the LM loss on the decoder side.
+    """
+    src_text = " ".join([sent_dict["text"] for sent_dict in input_seq])
+
+    tgt_text, tgt_spans, tgt_indicate_mask = doc_span_chunk(output_seq)
+    tgt_tokens = _tokenizer.tokenize(tgt_text)
+
+    res = annotate_span(tgt_tokens, tgt_spans, tgt_indicate_mask, _tokenizer)
+    if res is None:
+        return None
+
+    flag, token2word_index, extended_word_cnt, extended_indicate_mask = res
+
+    return flag, src_text, tgt_spans, token2word_index, extended_indicate_mask
+
+
+def circle2text_seq2seq_simple_v1(path: List[Tuple[str, str, str]],
+                                  context_len: int = 0):
+    assert len(path) >= 2
+
+    # Obtain the relation with the given entity pair
+    s = path[0][0]
+    t = path[-1][-1]
+    key = f"{s}\t{t}"
+
+    assert len(_edge2rel[key])
+    rel = random.choice(_edge2rel[key])
+
+    # Symbols to text
+    context = [triplet2texts(*_triplet, _triplet2sent, _id2ent, _id2rel) for _triplet in path]
+    anchor = triplet2texts(s, rel, t, _triplet2sent, _id2ent, _id2rel)
+
+    if any(sent_dict is None for sent_dict in context + [anchor]):
+        return None
+
+    # Sample a text group
+    context = [random.choice(sent_dict) for sent_dict in context]
+    anchor = random.choice(anchor)
+
+    random.shuffle(context)
+
+    input_seq = [anchor] + context[:context_len]
+    output_seq = context[context_len:]
+
+    src_text = " ".join([sent_dict["text"] for sent_dict in input_seq])
+    tgt_text = " ".join([sent_dict["text"] for sent_dict in output_seq])
+
+    return src_text, tgt_text
 
 
 def generate_whole_word_index_mapping(text: str, tokenizer: PreTrainedTokenizer, spans: List[str] = None):
@@ -232,15 +338,23 @@ def annotate_span(subwords: List[str], words: List[str], indicate_mask: List[int
             for b in range(a + 1, length + 1):
                 yield a, b
 
+    unmatch = 0
     for word_i, word in enumerate(words):
         # for i in range(last_e, len(subwords)):
         #     for j in range(i + 1, len(subwords) + 1):
+        find = False
         for i, j in span_iterator(last_e, len(subwords)):
             tmp = tokenizer.convert_tokens_to_string(subwords[i: j]).strip()
             if tmp == word:
                 subword_span_pos_ls.append((i, j, word_i))
                 last_e = j
+                find = True
                 break
+        if not find:
+            # last_e += 1
+            unmatch += 1
+    if unmatch / len(words) > 0.2:
+        return None
 
     word_p = 0
     subword_p = 0
@@ -255,12 +369,22 @@ def annotate_span(subwords: List[str], words: List[str], indicate_mask: List[int
             skipped_len = span_s - subword_p
 
             if skipped_word_num == 1:  # If there are only one word not matched:
+                # print("1111111111111111111")
+                # print(words[word_p: word_idx])
                 # Treat the skipped subwords as single word.
                 token2word_index.extend([extended_word_cnt] * skipped_len)
                 extended_indicate_mask.append(indicate_mask[word_p])
                 extended_word_cnt += 1
                 word_p += 1
+                # print(words)
+                # print(subwords)
             elif skipped_word_num > 1:  # If there are multiple words not matched:
+                """
+                A bad case here:
+                The skipped subwords are ')' and ';', while the corresponding skipped subword is only single ');',
+                but it seems do not matter?
+                
+                """
                 # Treat the each skipped subword as single word.
                 split_idx_seq = list(range(extended_word_cnt, extended_word_cnt + skipped_len))
                 token2word_index.extend(split_idx_seq)
@@ -272,19 +396,33 @@ def annotate_span(subwords: List[str], words: List[str], indicate_mask: List[int
                 else:
                     extended_indicate_mask.extend([0] * skipped_len)
 
-                word_p += skipped_word_num
+                # print(words)
+                # print(subwords)
+                # print(f"Multiple skipped span warning: {words[word_p: word_idx]}\t"
+                #       f"{tokenizer.convert_tokens_to_string(subwords[subword_p: span_s])}")
 
-                print(f"Multiple skipped span warning: {words[word_p: word_idx]}\t"
-                      f"{tokenizer.convert_tokens_to_string(subwords[subword_p: span_s])}")
+                word_p += skipped_word_num
             else:
-                raise ValueError(skipped_word_num)
+                """
+                The error case is usually caused by that multiple words cannot be find but the following words are
+                matched by the frontier subwords.
+                """
+                # print(subword_span_pos_ls)
+                # print(words)
+                # print(subwords)
+                # print(subwords[subword_p: span_s])
+                # raise ValueError(skipped_word_num)
+                # print(f"ValueError({skipped_word_num})")
+                return None
 
         subword_p = span_e
 
         token2word_index.extend([extended_word_cnt] * (span_e - span_s))
         extended_indicate_mask.append(indicate_mask[word_idx])
         extended_word_cnt += 1
-        assert word_p == word_idx
+        # assert word_p == word_idx  # TODO: Found assertion error here.
+        if word_p != word_idx:
+            return None
         word_p += 1
 
     skipped_word_num = len(words) - word_p
@@ -305,7 +443,7 @@ def annotate_span(subwords: List[str], words: List[str], indicate_mask: List[int
         extended_word_cnt += skipped_len
 
     assert len(token2word_index) == len(subwords)
-    assert len(extended_indicate_mask) == extended_word_cnt
+    assert len(extended_indicate_mask) == extended_word_cnt  # TODO: Found assertion error here.
     assert all(idx < extended_word_cnt for idx in token2word_index)
     assert any(idx == extended_word_cnt - 1 for idx in token2word_index)
     assert word_p + skipped_word_num == len(words)
@@ -327,6 +465,7 @@ def main():
     parser.add_argument("--id2rel", type=str)
     parser.add_argument("--triplet2sent", type=str)
     parser.add_argument("--edge2rel", type=str)
+    parser.add_argument("--context_len", type=int, default=0)
     parser.add_argument("--tokenizer", type=str)
     # parser.add_argument("--shuffle_sentence", )
     parser.add_argument("--debug", default=False, action="store_true")
@@ -347,7 +486,7 @@ def main():
     tokenizer = AutoTokenizer.from_pretrained(args.tokenizer)
 
     if args.debug:
-        all_path = all_path[:1000]
+        all_path = all_path[:100]
 
     print(len(all_path))
 
@@ -365,13 +504,49 @@ def main():
         tokenizer_name = tokenizer_get_name(tokenizer)
         output_file = os.path.join(args.output_dir,
                                    f"logic_circle_data_v1_{tokenizer_name}_s{args.seed}_{args.mode}.json")
+    elif args.mode == "seq2seq":
+        with Pool(args.num_workers, initializer=init,
+                  initargs=(tokenizer, id2ent, id2rel, triplet2sent, edge2rel)) as p:
+            _annotate = partial(circle2text_seq2seq_v1, context_len=args.context_len)
+            _results = list(tqdm(
+                p.imap(_annotate, all_path, chunksize=32),
+                total=len(all_path),
+                desc="constructing seq2seq dataset",
+                dynamic_ncols=True,
+            ))
 
-        if not os.path.exists(args.output_dir):
-            os.makedirs(args.output_dir, exist_ok=False)
+        tokenizer_name = tokenizer_get_name(tokenizer)
+        file_name = args.path.split('/')[-1][:-5]
+        output_file = os.path.join(args.output_dir,
+                                   f"{file_name}_v1_{tokenizer_name}_s{args.seed}_seq2seq_{args.context_len}.json")
+    elif args.mode == "seq2seq_simple":
+        with Pool(args.num_workers, initializer=init,
+                  initargs=(tokenizer, id2ent, id2rel, triplet2sent, edge2rel)) as p:
+            _annotate = partial(circle2text_seq2seq_simple_v1, context_len=args.context_len)
+            _results = list(tqdm(
+                p.imap(_annotate, all_path, chunksize=32),
+                total=len(all_path),
+                desc="constructing seq2seq dataset",
+                dynamic_ncols=True,
+            ))
 
-        json.dump(_results, open(output_file, 'w'))
+        tokenizer_name = tokenizer_get_name(tokenizer)
+        file_name = args.path.split('/')[-1][:-5]
+        output_file = os.path.join(args.output_dir,
+                                   f"{file_name}_v1_{tokenizer_name}_s{args.seed}_seq2seq_simple_"
+                                   f"{args.context_len}.json")
     else:
         raise NotImplementedError()
+
+    results = [res for res in _results if res is not None]
+    del _results
+
+    if not os.path.exists(args.output_dir):
+        os.makedirs(args.output_dir, exist_ok=False)
+
+    print(len(results))
+
+    json.dump(results, open(output_file, 'w'))
 
 
 if __name__ == '__main__':

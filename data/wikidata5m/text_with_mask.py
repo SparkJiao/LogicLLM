@@ -9,24 +9,6 @@ from torch import Tensor
 import random
 
 
-# class LogicCircleDataset(Dataset):
-#     def __init__(self, logical_circle: str, id2ent: str, id2rel: str, triplet2sent: str):
-#         super(self).__init__()
-#
-#         self.logical_circle = json.load(open(logical_circle, 'r'))
-#         self.id2ent = json.load(open(id2ent, 'r'))
-#         self.id2rel = json.load(open(id2rel, 'r'))
-#         self.triplet2sent = json.load(open(triplet2sent, 'r'))
-#
-#     def __iter__(self):
-#         pass
-#
-#     def __len__(self):
-#         pass
-
-
-# class WholeWordMLMBatchCollatorMixin:
-#     @staticmethod
 def _align_sequence_with_special_token(input_ids: Union[Tensor, List[int]], sequence: List[int],
                                        tokenizer: PreTrainedTokenizer, padding: int = 0):
     assert len(input_ids.size()) == 1
@@ -46,14 +28,12 @@ def _align_sequence_with_special_token(input_ids: Union[Tensor, List[int]], sequ
     return padded_sequence
 
 
-# @staticmethod
 def _pad_sequence_to_max_len(sequence: List[List[int]], padding: int = 0):
     max_len = max(map(len, sequence))
     padded_sequence = [seq + [padding] * (max_len - len(seq)) for seq in sequence]
     return padded_sequence
 
 
-# @staticmethod
 def mask_text(text: List[str], token2word_index: List[List[int]], indicate_mask: List[List[int]],
               entity_mask_ratio: float, entity_mask_num: int,
               non_entity_mask_ratio: float, non_entity_mask_num: int,
@@ -65,7 +45,7 @@ def mask_text(text: List[str], token2word_index: List[List[int]], indicate_mask:
 
     aligned_token2word_index = []
     for input_ids, item_tk2wd_index in zip(model_inputs["input_ids"], token2word_index):
-        item_padded_tk2wd_index = _align_sequence_with_special_token(input_ids, item_tk2wd_index, tokenizer)
+        item_padded_tk2wd_index = _align_sequence_with_special_token(input_ids, item_tk2wd_index, tokenizer, padding=-1)
         aligned_token2word_index.append(item_padded_tk2wd_index)
     token2word_index = torch.tensor(aligned_token2word_index, dtype=torch.long)
     assert token2word_index.size() == model_inputs["input_ids"].size()
@@ -80,8 +60,10 @@ def mask_text(text: List[str], token2word_index: List[List[int]], indicate_mask:
                                               non_entity_mask_ratio,
                                               non_entity_mask_num)
 
-    mlm_mask = torch.zeros(token2word_index.size(), dtype=torch.bool)
+    padding_mask = token2word_index == -1
+    token2word_index[padding_mask] = 0
     mlm_mask = torch.gather(ww_mlm_mask, dim=1, index=token2word_index)
+    mlm_mask[padding_mask] = 0
 
     labels = model_inputs["input_ids"].clone()
     labels[~mlm_mask] = -100
@@ -91,7 +73,6 @@ def mask_text(text: List[str], token2word_index: List[List[int]], indicate_mask:
     return model_inputs, token2word_index, indicate_mask
 
 
-# @staticmethod
 def generate_mlm_mask_strategy1(indicate_mask: Tensor,
                                 entity_mask_ratio: float = 0.4,
                                 entity_mask_num: int = 2,
@@ -140,18 +121,35 @@ def generate_mask_via_num(total_num: int, mask_num: int):
     return mask
 
 
-# @staticmethod
 def generate_mask_via_ratio(tensor: Tensor, ratio: float):
     probability_matrix = torch.full(tensor.shape, ratio)
     masked_indices = torch.bernoulli(probability_matrix).bool()
     return masked_indices
 
 
-# @staticmethod
-def generate_mlm_mask():
-    pass
+def seq2seq_batch_entity_indicate(text: List[str], token2word_index: List[List[int]], indicate_mask: List[List[int]],
+                                  tokenizer: PreTrainedTokenizer):
+    """
+    All of this method to do is generate a mask indicate if each token (subword) belongs to an entity.
+    """
+    model_inputs = tokenizer(text,
+                             truncation=True,
+                             padding=PaddingStrategy.LONGEST,
+                             return_tensors="pt")
 
+    aligned_token2word_index = []
+    for input_ids, item_tk2wd_index in zip(model_inputs["input_ids"], token2word_index):
+        item_padded_tk2wd_index = _align_sequence_with_special_token(input_ids, item_tk2wd_index, tokenizer, padding=-1)
+        aligned_token2word_index.append(item_padded_tk2wd_index)
+    token2word_index = torch.tensor(aligned_token2word_index, dtype=torch.long)
+    assert token2word_index.size() == model_inputs["input_ids"].size()
 
-# @staticmethod
-def word_mask2token_mask():
-    pass
+    padded_indicate_mask = _pad_sequence_to_max_len(indicate_mask, padding=-1)
+    indicate_mask = torch.tensor(padded_indicate_mask, dtype=torch.long)
+
+    token_padding_mask = token2word_index == -1
+    token2word_index[token_padding_mask] = 0
+    extended_indicate_mask = torch.gather(indicate_mask, dim=1, index=token2word_index)
+    extended_indicate_mask[token_padding_mask] = -1
+
+    return model_inputs["input_ids"], extended_indicate_mask

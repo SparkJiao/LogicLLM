@@ -25,8 +25,9 @@ def init(graph: Dict[str, List[Tuple[str, str]]], edge2rel: Dict[str, List[str]]
     _triplet2id = triplet2id
 
 
-def load_kg_to_edge(kg_file: str, id2ent_file: str):
+def load_kg_to_edge(kg_file: str, id2ent_file: str, id2rel_file: str):
     id2ent = json.load(open(id2ent_file, 'r'))
+    id2rel = json.load(open(id2rel_file, 'r'))
 
     graph = defaultdict(list)
     edge2rel = defaultdict(list)
@@ -42,7 +43,7 @@ def load_kg_to_edge(kg_file: str, id2ent_file: str):
             line = f.readline()
 
             s, rel, t = tmp
-            if s not in id2ent or t not in id2ent:
+            if s not in id2ent or t not in id2ent or rel not in id2rel:
                 continue
 
             graph[s].append((rel, t))
@@ -211,9 +212,11 @@ def bfs_memory(s: str, min_depth: int, max_depth: int):
     all_paths = []
     prefix_memory = []
     suffix_memory = defaultdict(list)
+    suffix_path_set = defaultdict(set)
 
     for _, t in _edges[s]:
         suffix_memory[t].append([])  # Add padding to all one-hop nodes so that the model can use this to concat path.
+        suffix_path_set[t].add(get_path_unique_id([]))
 
     queue_vis = set()
 
@@ -269,7 +272,13 @@ def bfs_memory(s: str, min_depth: int, max_depth: int):
                     for triplet_id, triplet in enumerate(new_path):
                         if triplet_id == 0:
                             continue
-                        suffix_memory[triplet[0]].append(new_path[triplet_id:])
+                        sub_path = new_path[triplet_id:]
+                        sub_path_id = get_path_unique_id(sub_path)
+                        if sub_path_id in suffix_path_set[triplet[0]]:
+                            continue
+
+                        suffix_path_set[triplet[0]].add(sub_path_id)
+                        suffix_memory[triplet[0]].append(sub_path)
 
     for prefix, next_n in prefix_memory:
         if next_n not in suffix_memory:
@@ -296,6 +305,11 @@ def bfs_memory(s: str, min_depth: int, max_depth: int):
                 path_id_set.add(concat_path_id)
                 all_paths.append(concat_path)
 
+    del prefix_memory
+    del suffix_memory
+    del suffix_path_set
+    del path_id_set
+    del queue_vis
     # print(len(all_paths))
     return all_paths
 
@@ -363,6 +377,7 @@ def main():
     parser.add_argument("--kg", type=str)
     # parser.add_argument("--triplet2sent", type=str)
     parser.add_argument("--id2ent", type=str)
+    parser.add_argument("--id2rel", type=str)
     parser.add_argument("--min_depth", type=int, default=2)
     parser.add_argument("--max_depth", type=int, default=4)
     parser.add_argument("--num_workers", type=int, default=8)
@@ -370,7 +385,7 @@ def main():
     parser.add_argument("--split_chunk", type=str, default=None)
     args = parser.parse_args()
 
-    graph, triplet2id, edge2rel = load_kg_to_edge(args.kg, args.id2ent)
+    graph, triplet2id, edge2rel = load_kg_to_edge(args.kg, args.id2ent, args.id2rel)
     print(len(graph), len(triplet2id), len(edge2rel))
 
     nodes = list(graph.keys())

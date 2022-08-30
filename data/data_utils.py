@@ -100,11 +100,33 @@ def span_chunk(text: str, span_ls: List[str], space_tokenize: bool = False) -> T
         span_pos_ls = find_span(text, span)
         pos_ls.extend(span_pos_ls)
     pos_ls = sorted(pos_ls, key=lambda x: x[0])
+
+    # Unified span
+    to_be_dropped = set()
+    for i, pos_i in enumerate(pos_ls):
+        for j, pos_j in enumerate(pos_ls):
+            if i == j:
+                continue
+            if pos_j[0] <= pos_i[0] and pos_i[1] <= pos_j[1]:
+                to_be_dropped.add(i)
+
+    new_pos_ls = []
+    for pos_id, pos in enumerate(pos_ls):
+        if pos_id not in to_be_dropped:
+            new_pos_ls.append(pos)
+    pos_ls = new_pos_ls
+
     # No within word span check.
     for pos_id, pos in enumerate(pos_ls):
         if pos_id == 0:
             continue
-        assert pos[0] >= pos_ls[pos_id - 1][1], (text[pos[0]: pos[1]], text[pos[pos_id - 1][0]: pos[pos_id - 1][1]])
+        # assert pos[0] >= pos_ls[pos_id - 1][1], (span_ls, text[pos[0]: pos[1]], text[pos_ls[pos_id - 1][0]: pos_ls[pos_id - 1][1]])
+        # TODO: Think about how to fix this:
+        #   some bad cases:
+        #   - AssertionError: (['Goethe-Universität', 'Johann Wolfgang Goethe'], 'Goethe-Universität', 'Johann Wolfgang Goethe')
+        if pos[0] < pos_ls[pos_id - 1][1]:
+            # pos[0] = pos_ls[pos_id - 1][1]
+            pos_ls[pos_id] = (pos_ls[pos_id - 1][1], pos[1])
 
     text_spans = []
     indicate_mask = []
@@ -137,6 +159,7 @@ def span_chunk(text: str, span_ls: List[str], space_tokenize: bool = False) -> T
             text_spans.extend(word_tokenize(rest))
         else:
             text_spans.append(rest)
+        indicate_mask = indicate_mask + [0] * (len(text_spans) - len(indicate_mask))
 
     # recovered_text = " ".join(text_spans)
     # if recovered_text != text:

@@ -6,7 +6,7 @@ from functools import partial
 from multiprocessing import Pool
 from typing import Dict, List, Tuple
 
-from nltk import sent_tokenize
+from nltk import sent_tokenize, word_tokenize
 from tqdm import tqdm
 
 sys.path.append("../../")
@@ -33,13 +33,32 @@ def entity_iterator(ent_a, ent_b):
             yield a_alias, b_alias
 
 
+def check_entity_alias(a_alias, b_alias, sent):
+    a_span_ls = find_span(sent, a_alias)
+    if not a_span_ls:
+        return False
+    b_span_ls = find_span(sent, b_alias)
+    if b_span_ls:
+        return False
+
+    span_ls = sorted(a_span_ls + b_span_ls, key=lambda x: x[0])
+    for i, pos_i in enumerate(span_ls):
+        if i == 0:
+            continue
+        if pos_i[0] < span_ls[i - 1][1]:
+            return False
+
+    return True
+
+
 def extract_common_sent(ent_a, ent_b, document):
     res = []
     sentences = sent_tokenize(document)
     for sent in sentences:
         for a_alias, b_alias in entity_iterator(ent_a, ent_b):
             # if a_alias in sent and b_alias in sent:  # FIXED: May find a span within a single word.
-            if find_span(sent, a_alias) and find_span(sent, b_alias):
+            # if find_span(sent, a_alias) and find_span(sent, b_alias):
+            if check_entity_alias(a_alias, b_alias, sent):  # FIXED: remove the cases with span overlapping.
                 res.append({
                     "text": sent,
                     "s": a_alias,
@@ -56,10 +75,10 @@ def align_sentences_with_triplet(triplet: Tuple[str, ...]):
     s_document = ent2text[s]
     t_document = ent2text[t]
 
-    if s not in id2ent or t not in id2ent:
+    if s not in id2ent or t not in id2ent or rel not in id2rel:
         return {
             "s": s if s in id2ent else -1,
-            "rel": rel,
+            "rel": rel if rel in id2rel else -1,
             "t": t if t in id2ent else -1,
             "corpus": []
         }
@@ -161,7 +180,7 @@ def main():
         ))
         # _results = [res for res in _results if len(res["corpus"])]
         for res in _results:
-            if len(res["corpus"]) and res["s"] != -1 and res["t"] != -1:
+            if len(res["corpus"]) and res["s"] != -1 and res["t"] != -1 and res["rel"] != -1:
                 results.append(res)
                 text_num += len(res["corpus"])
             else:
