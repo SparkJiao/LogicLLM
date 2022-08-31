@@ -64,10 +64,15 @@ def triplet2texts(s, rel, t, triplet2sent, id2ent, id2rel) -> Union[List[Dict[st
             s_alias = item["s"]
             t_alias = item["t"]
             text = item["text"]
-            assert s_alias in text, (s_alias, text)
-            assert t_alias in text, (t_alias, text)
+            assert s_alias in text, (s_alias, t_alias, text)
+            assert t_alias in text, (s_alias, t_alias, text)  # FIXED: Found an assertion error here.
+            # if s_alias not in text:
+            #     continue
+            # if t_alias not in text:
+            #     continue
             if len(set(word_tokenize(s_alias)) & set(
-                    word_tokenize(t_alias))):  # FIXED in `align_triplet_text.py`: This case should be removed during text-triplet aligning.
+                    word_tokenize(
+                        t_alias))):  # FIXED in `align_triplet_text.py`: This case should be removed during text-triplet aligning.
                 continue
             texts.append({
                 "s": s,
@@ -88,7 +93,7 @@ def triplet2texts(s, rel, t, triplet2sent, id2ent, id2rel) -> Union[List[Dict[st
     #     return None
     rel_alias = random.choice(id2rel[rel])
 
-    text = ' '.join([s_alias, rel_alias, t_alias])
+    text = ' '.join([s_alias, rel_alias, t_alias]) + '.'
     texts.append({
         "s": s,
         "t": t,
@@ -100,6 +105,10 @@ def triplet2texts(s, rel, t, triplet2sent, id2ent, id2rel) -> Union[List[Dict[st
     })
 
     return texts
+
+
+def text2triplet(triplet: str):
+    return triplet.split("\t")
 
 
 def doc_span_chunk(sentences: List[Dict[str, str]]):
@@ -246,20 +255,21 @@ def circle2text_seq2seq_v1(path: List[Tuple[str, str, str]],
     return flag, src_text, tgt_spans, token2word_index, extended_indicate_mask
 
 
-def circle2text_seq2seq_simple_v1(path: List[Tuple[str, str, str]],
-                                  context_len: int = 0):
+def circle2text_seq2seq_simple_v1(path: List[str], context_len: int = 0):
     assert len(path) >= 2
 
     # Obtain the relation with the given entity pair
-    s = path[0][0]
-    t = path[-1][-1]
+    # s = path[0][0]
+    # t = path[-1][-1]
+    s = path[0].split("\t")[0]
+    t = path[-1].split("\t")[-1]
     key = f"{s}\t{t}"
 
     assert len(_edge2rel[key])
     rel = random.choice(_edge2rel[key])
 
     # Symbols to text
-    context = [triplet2texts(*_triplet, _triplet2sent, _id2ent, _id2rel) for _triplet in path]
+    context = [triplet2texts(*text2triplet(_triplet), _triplet2sent, _id2ent, _id2rel) for _triplet in path]
     anchor = triplet2texts(s, rel, t, _triplet2sent, _id2ent, _id2rel)
 
     if any(sent_dict is None for sent_dict in context + [anchor]):
@@ -530,10 +540,10 @@ def main():
                 dynamic_ncols=True,
             ))
 
-        tokenizer_name = tokenizer_get_name(tokenizer)
+        # tokenizer_name = tokenizer_get_name(tokenizer)
         file_name = args.path.split('/')[-1][:-5]
         output_file = os.path.join(args.output_dir,
-                                   f"{file_name}_v1_{tokenizer_name}_s{args.seed}_seq2seq_simple_"
+                                   f"{file_name}_v1_s{args.seed}_seq2seq_simple_"
                                    f"{args.context_len}.json")
     else:
         raise NotImplementedError()

@@ -83,7 +83,8 @@ def load_and_cache_examples(cfg, tokenizer: PreTrainedTokenizer, _split="train")
 
 
 def if_cancel_sync(cfg: DictConfig, step: int):
-    if getattr(cfg, "forward_sync", False) is False and (step + 1) % cfg.gradient_accumulation_steps != 0 and cfg.local_rank != -1:
+    if getattr(cfg, "forward_sync", False) is False and (
+            step + 1) % cfg.gradient_accumulation_steps != 0 and cfg.local_rank != -1:
         return True
     return False
 
@@ -94,11 +95,13 @@ def initialize_optimizer(cfg: DictConfig, grouped_parameters: List[Dict] = None,
         no_decay = ['bias', 'LayerNorm.weight', 'layer_norm.weight']
         grouped_parameters = [
             {
-                'params': [p for n, p in model.named_parameters() if (not any(nd in n for nd in no_decay)) and p.requires_grad],
+                'params': [p for n, p in model.named_parameters() if
+                           (not any(nd in n for nd in no_decay)) and p.requires_grad],
                 'weight_decay': cfg.weight_decay
             },
             {
-                'params': [p for n, p in model.named_parameters() if (any(nd in n for nd in no_decay)) and p.requires_grad],
+                'params': [p for n, p in model.named_parameters() if
+                           (any(nd in n for nd in no_decay)) and p.requires_grad],
                 'weight_decay': 0.0
             }
         ]
@@ -127,25 +130,42 @@ def initialize_optimizer(cfg: DictConfig, grouped_parameters: List[Dict] = None,
                                   eps=cfg.adam_epsilon,
                                   use_nvlamb=(cfg.use_nvlamb if "use_nvlamb" in cfg else False),
                                   max_grad_norm=cfg.max_grad_norm)
+    elif "optimizer" in cfg and cfg.optimizer and "adafactor" in cfg.optimizer:
+        from transformers.optimization import Adafactor
+
+        optimizer = Adafactor(
+            grouped_parameters,
+            lr=cfg.learning_rate,
+            eps=(1e-30, 1e-3),
+            clip_threshold=1.0,
+            beta1=None,
+            weight_decay=0.0,
+            relative_step=False,
+            scale_parameter=False,
+            warmup_init=False
+        )
     else:
         if "bit_training" in cfg and cfg.bit_training:
             from bitsandbytes.optim import AdamW8bit
 
-            optimizer = AdamW8bit(grouped_parameters, lr=cfg.learning_rate, eps=cfg.adam_epsilon, betas=(eval(cfg.adam_betas)))
+            optimizer = AdamW8bit(grouped_parameters, lr=cfg.learning_rate, eps=cfg.adam_epsilon,
+                                  betas=(eval(cfg.adam_betas)))
         else:
             if hasattr(cfg, "multi_tensor") and cfg.multi_tensor:
                 from torch.optim._multi_tensor import AdamW
             else:
                 from torch.optim.adamw import AdamW
 
-            optimizer = AdamW(grouped_parameters, lr=cfg.learning_rate, eps=cfg.adam_epsilon, betas=(eval(cfg.adam_betas)))
+            optimizer = AdamW(grouped_parameters, lr=cfg.learning_rate, eps=cfg.adam_epsilon,
+                              betas=(eval(cfg.adam_betas)))
 
     return optimizer
 
 
 def note_best_checkpoint(cfg: DictConfig, results: Dict[str, float], sub_path: str):
     metric = results[cfg.prediction_cfg.metric]
-    if (not cfg.prediction_cfg.best_result) or (cfg.prediction_cfg.measure > 0 and metric > cfg.prediction_cfg.best_result) or (
+    if (not cfg.prediction_cfg.best_result) or (
+            cfg.prediction_cfg.measure > 0 and metric > cfg.prediction_cfg.best_result) or (
             cfg.prediction_cfg.measure < 0 and metric < cfg.prediction_cfg.best_result):
         cfg.prediction_cfg.best_result = metric
         cfg.prediction_cfg.best_checkpoint = sub_path

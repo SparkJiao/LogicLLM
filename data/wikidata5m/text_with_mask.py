@@ -1,12 +1,20 @@
 import json
+import os.path
 
 import torch
 from torch.utils.data import Dataset
-from typing import List, Union
-from transformers import PreTrainedTokenizer
+from typing import List, Union, Tuple
+from transformers import PreTrainedTokenizer, AutoTokenizer
 from transformers.tokenization_utils import TruncationStrategy, PaddingStrategy
 from torch import Tensor
 import random
+from torch.utils.data.dataloader import default_collate
+from data.data_utils import tokenizer_get_name
+import glob
+from general_util.logger import get_child_logger
+from data.collators.dict2dict import DictTensorDataset
+
+logger = get_child_logger(__name__)
 
 
 def _align_sequence_with_special_token(input_ids: Union[Tensor, List[int]], sequence: List[int],
@@ -32,6 +40,45 @@ def _pad_sequence_to_max_len(sequence: List[List[int]], padding: int = 0):
     max_len = max(map(len, sequence))
     padded_sequence = [seq + [padding] * (max_len - len(seq)) for seq in sequence]
     return padded_sequence
+
+
+def _roberta_whole_word_mask(input_tokens: List[str], max_predictions: int = 512, mlm_probability: float = 0.15):
+    cand_indices = []
+    for i, token in enumerate(input_tokens):
+        if token == "<s>" or token == "</s>":
+            continue
+
+        if len(cand_indices) >= 1 and token.startswith("Ġ"):
+            cand_indices[-1].append(i)
+        else:
+            cand_indices.append([i])
+
+    random.shuffle(cand_indices)
+    num_to_predict = min(max_predictions, max(1, int(round(len(input_tokens) * mlm_probability))))
+    masked_lms = []
+    covered_indexes = set()
+    for index_set in cand_indices:
+        if len(masked_lms) >= num_to_predict:
+            break
+        # If adding a whole-word mask would exceed the maximum number of
+        # predictions, then just skip this candidate.
+        if len(masked_lms) + len(index_set) > num_to_predict:
+            continue
+        is_any_index_covered = False
+        for index in index_set:
+            if index in covered_indexes:
+                is_any_index_covered = True
+                break
+        if is_any_index_covered:
+            continue
+        for index in index_set:
+            covered_indexes.add(index)
+            masked_lms.append(index)
+
+    if len(covered_indexes) != len(masked_lms):
+        raise ValueError("Length of covered_indexes is not equal to length of masked_lms.")
+    mask_labels = [1 if i in covered_indexes else 0 for i in range(len(input_tokens))]
+    return mask_labels
 
 
 def mask_text(text: List[str], token2word_index: List[List[int]], indicate_mask: List[List[int]],
@@ -153,3 +200,52 @@ def seq2seq_batch_entity_indicate(text: List[str], token2word_index: List[List[i
     extended_indicate_mask[token_padding_mask] = -1
 
     return model_inputs["input_ids"], extended_indicate_mask
+
+
+def load_seq2seq_data(file_path: str, tokenizer: PreTrainedTokenizer, max_input_length: int, max_output_length: int,
+                      glob_mark: str = None, sample: bool = False):
+    """
+    Corresponding to the data generated from `preprocess.wikidata_5m.logical_circle_to_text`.
+    """
+    tokenizer_name = tokenizer_get_name(tokenizer)
+    file_suffix = f"{tokenizer_name}_{max_input_length}_{max_output_length}_sss_v1_0"
+
+    if os.path.exists(file_path):
+        train_files = [file_path]
+        cached_file_path = f"{file_path}_{file_suffix}"
+    else:
+        train_files = sorted(list(glob.glob(file_path)))
+        cached_file_path = f"{train_files[-1]}_{glob_mark}_{file_suffix}"
+
+    logger.info(train_files)
+
+    if os.path.exists(cached_file_path):
+        logger.info(f"Loading cached file from {cached_file_path}")
+        data = torch.load(cached_file_path)
+        if sample:
+            data = {k: v[:10000] for k, v in data.items()}
+        return DictTensorDataset(data)
+
+    src_texts = []
+    tgt_texts = []
+    for file in train_files:
+        src, tgt = list(zip(*json.load(open(file, 'r'))))
+        src_texts.extend(src)
+        tgt_texts.extend(tgt)
+
+    model_inputs = tokenizer(src_texts,
+                             padding=PaddingStrategy.LONGEST,
+                             truncation=True,
+                             max_length=max_input_length,
+                             return_tensors="pt")
+    with tokenizer.as_target_tokenizer():
+        labels = tokenizer(tgt_texts, padding=PaddingStrategy.LONGEST, truncation=True, max_length=max_output_length,
+                           return_tensors="pt")
+
+    model_inputs["labels"] = labels["input_ids"]
+    logger.info(f"Input length: {model_inputs['input_ids'].size()}")
+    logger.info(f"Output length: {model_inputs['labels'].size()}")
+    logger.info(f"Saving to {cached_file_path}")
+    torch.save(model_inputs, cached_file_path)
+
+    return DictTensorDataset(model_inputs)

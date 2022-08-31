@@ -38,7 +38,7 @@ def check_entity_alias(a_alias, b_alias, sent):
     if not a_span_ls:
         return False
     b_span_ls = find_span(sent, b_alias)
-    if b_span_ls:
+    if not b_span_ls:  # FIXED
         return False
 
     span_ls = sorted(a_span_ls + b_span_ls, key=lambda x: x[0])
@@ -47,6 +47,9 @@ def check_entity_alias(a_alias, b_alias, sent):
             continue
         if pos_i[0] < span_ls[i - 1][1]:
             return False
+
+    assert a_alias in sent, (a_alias, sent, a_span_ls)
+    assert b_alias in sent, (b_alias, sent, b_span_ls)
 
     return True
 

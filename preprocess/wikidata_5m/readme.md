@@ -12,7 +12,12 @@
     --num_workers 32 --output_dir ../../wikidata5m/triplet_text_align_v1.0
 >>> Entity amount: 4813491
 >>> Relation amount: 825
->>> aligning sentences: 100%|███████████████████████| 20614279/20614279 [23:37<00:00, 14546.94it/s]
+>>> aligning sentences: 100%|██████████████| 20614279/20614279 [24:20<00:00, 14115.30it/s]
+>>> Generated 4218775 text-triplet pairs with 16395504 samples overlooked.
+>>> Total 4544898 aligned sentences with 1.0773027715391317 per triplet.
+
+
+$ source run_triplet_align.sh
 Generated 15323472 text-triplet pairs with 5290807 samples overlooked.
 Total 21042188 aligned sentences with 1.3731997552512902 per triplet.
   
