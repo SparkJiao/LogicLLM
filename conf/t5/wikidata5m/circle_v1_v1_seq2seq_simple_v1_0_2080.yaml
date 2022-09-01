@@ -3,8 +3,8 @@ hydra:
     dir: ./
 
 data_dir: wikidata5m/triplet_text_align_v1.0/logical_circle_once
-train_file: ${data_dir}/logic_circle_d3_4_False_s42_v2_25_5_v1_s42_seq2seq_simple_0_0-5_train.json
-dev_file: ${data_dir}/logic_circle_d3_4_False_s42_v2_25_5_v1_s42_seq2seq_simple_0_0-5_dev.json
+train_file: ${data_dir}/logic_circle_d3_4_False_s42_v2_25_v1_s42_seq2seq_simple_0_0-5.json
+dev_file: ${data_dir}/logic_circle_d3_4_False_s42_v2_25_v1_s42_seq2seq_simple_0_0-5.json
 test_file:
 
 # Model
@@ -26,9 +26,8 @@ collator:
   max_input_length: 64
   max_output_length: 128
 
-
 # Dataloader
-num_workers: 4
+num_workers: 8
 prefetch_factor: 2
 
 # Wiki path pretrain v8.2
@@ -37,10 +36,10 @@ pretrain:
 get_device_map:
 
 
-output_dir: experiments/t5.large.lm-adapt.logic_circle.gen.v1_v1_seq2seq_simple_v1.64.128.w1.A40
+output_dir: experiments/t5.large.lm-adapt.logic_circle.gen.v1_v1_seq2seq_simple_v1.64.128.v1.1.w8.2080
 
 do_train: True
-evaluate_during_training: True
+evaluate_during_training: False
 
 do_eval: False
 eval_sub_path:
@@ -48,28 +47,28 @@ eval_sub_path:
 do_preprocess: False
 
 # Training hyper-parameters
-per_gpu_train_batch_size: 16
-per_gpu_eval_batch_size: 16
+per_gpu_train_batch_size: 1
+per_gpu_eval_batch_size: 1
 learning_rate: 5e-4
 gradient_accumulation_steps: 256
 weight_decay: 0.01
 adam_epsilon: 1e-6
 adam_betas: "(0.9, 0.999)"
 max_grad_norm: 5.0
-num_train_epochs: 5
+num_train_epochs: 1
 max_steps: 0
 warmup_proportion: 0.1
 warmup_steps: 0
 
 # Optimizer
-optimizer: adafactor
+optimizer:
 use_nvlamb:
 bit_training: False
 
 
 logging_steps: 1
-save_best: True
-save_steps: -1
+save_best: False
+save_steps: 100
 eval_steps: 100
 ddp_eval: True
 no_cuda: False
@@ -77,7 +76,7 @@ seed: 42
 local_rank: -1
 fp16: True
 fp16_opt_level: O1
-fp16_bfloat16: True
+fp16_bfloat16: False
 
 # Prediction config
 prediction_cfg:

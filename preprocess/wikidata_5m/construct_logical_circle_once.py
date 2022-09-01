@@ -237,6 +237,8 @@ def main():
     json.dump(all_paths, open(os.path.join(args.output_dir, file_name), 'w'))
     json.dump(edge2rel, open(os.path.join(args.output_dir, "edge2rel.json"), 'w'))
 
+    print(f"Saved file to {os.path.join(args.output_dir, file_name)}")
+
 
 if __name__ == '__main__':
     main()

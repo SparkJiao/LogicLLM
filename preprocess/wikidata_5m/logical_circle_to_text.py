@@ -14,11 +14,9 @@ from tqdm import tqdm
 from transformers import PreTrainedTokenizer, AutoTokenizer
 from transformers.models.bert.tokenization_bert import whitespace_tokenize
 from nltk import word_tokenize
+import glob
 
-# pwd = os.getcwd()
-# f_pwd = os.path.abspath(os.path.dirname(pwd) + os.path.sep + ".." + os.path.sep + "..")
 
-# sys.path.append(f_pwd)
 sys.path.append("../../")
 
 from data.data_utils import span_chunk, tokenizer_get_name, find_span
@@ -481,6 +479,8 @@ def main():
     parser.add_argument("--debug", default=False, action="store_true")
     parser.add_argument("--num_workers", type=int, default=8)
     parser.add_argument("--output_dir", type=str)
+    parser.add_argument("--glob_mark", type=str, default=None)
+    parser.add_argument("--dev_num", type=int, default=0)
 
     args = parser.parse_args()
 
@@ -488,75 +488,100 @@ def main():
     np.random.seed(args.seed)
     torch.manual_seed(args.seed)
 
-    all_path = json.load(open(args.path))
     id2ent = json.load(open(args.id2ent))
     id2rel = json.load(open(args.id2rel))
     triplet2sent = load_triplet2sent(args.triplet2sent)
     edge2rel = json.load(open(args.edge2rel))
     tokenizer = AutoTokenizer.from_pretrained(args.tokenizer)
 
-    if args.debug:
-        all_path = all_path[:100]
-
-    print(len(all_path))
-
-    if args.mode == "mlm":
-        with Pool(args.num_workers, initializer=init,
-                  initargs=(tokenizer, id2ent, id2rel, triplet2sent, edge2rel)) as p:
-            _annotate = partial(circle2text_mlm)
-            _results = list(tqdm(
-                p.imap(_annotate, all_path, chunksize=32),
-                total=len(all_path),
-                desc="constructing dataset",
-                dynamic_ncols=True,
-            ))
-
-        tokenizer_name = tokenizer_get_name(tokenizer)
-        output_file = os.path.join(args.output_dir,
-                                   f"logic_circle_data_v1_{tokenizer_name}_s{args.seed}_{args.mode}.json")
-    elif args.mode == "seq2seq":
-        with Pool(args.num_workers, initializer=init,
-                  initargs=(tokenizer, id2ent, id2rel, triplet2sent, edge2rel)) as p:
-            _annotate = partial(circle2text_seq2seq_v1, context_len=args.context_len)
-            _results = list(tqdm(
-                p.imap(_annotate, all_path, chunksize=32),
-                total=len(all_path),
-                desc="constructing seq2seq dataset",
-                dynamic_ncols=True,
-            ))
-
-        tokenizer_name = tokenizer_get_name(tokenizer)
-        file_name = args.path.split('/')[-1][:-5]
-        output_file = os.path.join(args.output_dir,
-                                   f"{file_name}_v1_{tokenizer_name}_s{args.seed}_seq2seq_{args.context_len}.json")
-    elif args.mode == "seq2seq_simple":
-        with Pool(args.num_workers, initializer=init,
-                  initargs=(tokenizer, id2ent, id2rel, triplet2sent, edge2rel)) as p:
-            _annotate = partial(circle2text_seq2seq_simple_v1, context_len=args.context_len)
-            _results = list(tqdm(
-                p.imap(_annotate, all_path, chunksize=32),
-                total=len(all_path),
-                desc="constructing seq2seq dataset",
-                dynamic_ncols=True,
-            ))
-
-        # tokenizer_name = tokenizer_get_name(tokenizer)
-        file_name = args.path.split('/')[-1][:-5]
-        output_file = os.path.join(args.output_dir,
-                                   f"{file_name}_v1_s{args.seed}_seq2seq_simple_"
-                                   f"{args.context_len}.json")
+    if os.path.exists(args.path):
+        path_files = [args.path]
     else:
-        raise NotImplementedError()
+        path_files = sorted(list(glob.glob(args.path)))
 
-    results = [res for res in _results if res is not None]
-    del _results
+    results = []
+    output_file = None
+    for path_file in path_files:
+        print(f"Reading path file from {path_file}...")
+        all_path = json.load(open(path_file))
+
+        if args.debug:
+            all_path = all_path[:100]
+
+        print(len(all_path))
+
+        if args.mode == "mlm":
+            with Pool(args.num_workers, initializer=init,
+                      initargs=(tokenizer, id2ent, id2rel, triplet2sent, edge2rel)) as p:
+                _annotate = partial(circle2text_mlm)
+                _results = list(tqdm(
+                    p.imap(_annotate, all_path, chunksize=32),
+                    total=len(all_path),
+                    desc="constructing dataset",
+                    dynamic_ncols=True,
+                ))
+
+            tokenizer_name = tokenizer_get_name(tokenizer)
+            output_file = os.path.join(args.output_dir,
+                                       f"logic_circle_data_v1_{tokenizer_name}_s{args.seed}_{args.mode}.json")
+        elif args.mode == "seq2seq":
+            with Pool(args.num_workers, initializer=init,
+                      initargs=(tokenizer, id2ent, id2rel, triplet2sent, edge2rel)) as p:
+                _annotate = partial(circle2text_seq2seq_v1, context_len=args.context_len)
+                _results = list(tqdm(
+                    p.imap(_annotate, all_path, chunksize=32),
+                    total=len(all_path),
+                    desc="constructing seq2seq dataset",
+                    dynamic_ncols=True,
+                ))
+
+            tokenizer_name = tokenizer_get_name(tokenizer)
+            file_name = path_file.split('/')[-1][:-5]
+            output_file = os.path.join(args.output_dir,
+                                       f"{file_name}_v1_{tokenizer_name}_s{args.seed}_seq2seq_{args.context_len}.json")
+        elif args.mode == "seq2seq_simple":
+            with Pool(args.num_workers, initializer=init,
+                      initargs=(tokenizer, id2ent, id2rel, triplet2sent, edge2rel)) as p:
+                _annotate = partial(circle2text_seq2seq_simple_v1, context_len=args.context_len)
+                _results = list(tqdm(
+                    p.imap(_annotate, all_path, chunksize=32),
+                    total=len(all_path),
+                    desc="constructing seq2seq dataset",
+                    dynamic_ncols=True,
+                ))
+
+            # tokenizer_name = tokenizer_get_name(tokenizer)
+            file_name = path_file.split('/')[-1][:-5]
+            output_file = os.path.join(args.output_dir,
+                                       f"{file_name}_v1_s{args.seed}_seq2seq_simple_"
+                                       f"{args.context_len}.json")
+        else:
+            raise NotImplementedError()
+
+        results.extend([res for res in _results if res is not None])
+        del _results
 
     if not os.path.exists(args.output_dir):
         os.makedirs(args.output_dir, exist_ok=False)
 
     print(len(results))
 
-    json.dump(results, open(output_file, 'w'))
+    if args.glob_mark:
+        output_file = output_file[:-5] + f"_{args.glob_mark}.json"
+
+    if args.dev_num > 0:
+        dev_index = set(random.sample(list(range(len(results))), args.dev_num))
+        train = []
+        dev = []
+        for idx in range(len(results)):
+            if idx in dev_index:
+                dev.append(results[idx])
+            else:
+                train.append(results[idx])
+        json.dump(train, open(output_file[:-5] + "_train.json", "w"))
+        json.dump(dev, open(output_file[:-5] + "_dev.json", "w"))
+    else:
+        json.dump(results, open(output_file, 'w'))
 
 
 if __name__ == '__main__':

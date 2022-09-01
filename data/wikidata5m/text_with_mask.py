@@ -3,7 +3,7 @@ import os.path
 
 import torch
 from torch.utils.data import Dataset
-from typing import List, Union, Tuple
+from typing import List, Union, Tuple, Dict
 from transformers import PreTrainedTokenizer, AutoTokenizer
 from transformers.tokenization_utils import TruncationStrategy, PaddingStrategy
 from torch import Tensor
@@ -249,3 +249,61 @@ def load_seq2seq_data(file_path: str, tokenizer: PreTrainedTokenizer, max_input_
     torch.save(model_inputs, cached_file_path)
 
     return DictTensorDataset(model_inputs)
+
+
+class Seq2SeqTextDataset(Dataset):
+    def __init__(self, file_path, tokenizer: PreTrainedTokenizer):
+        super().__init__()
+
+        if os.path.exists(file_path):
+            train_files = [file_path]
+        else:
+            train_files = sorted(list(glob.glob(file_path)))
+
+        src_texts = []
+        tgt_texts = []
+        for file in train_files:
+            src, tgt = list(zip(*json.load(open(file, 'r'))))
+            src_texts.extend(src)
+            tgt_texts.extend(tgt)
+
+        self.src = src_texts
+        self.tgt = tgt_texts
+
+    def __getitem__(self, index) -> Dict[str, str]:
+        return {
+            "src": self.src[index],
+            "tgt": self.tgt[index],
+        }
+
+    def __len__(self):
+        return len(self.src)
+
+
+class Seq2SeqTextCollator:
+    def __init__(self, tokenizer, max_input_length: int, max_output_length: int):
+        self.tokenizer: PreTrainedTokenizer = AutoTokenizer.from_pretrained(tokenizer, use_fast=False)
+        self.max_input_length = max_input_length
+        self.max_output_length = max_output_length
+
+    def __call__(self, batch):
+        batch = default_collate(batch)
+        src = batch.pop("src")
+        tgt = batch.pop("tgt")
+
+        model_inputs = self.tokenizer(src,
+                                      padding=PaddingStrategy.LONGEST,
+                                      truncation=True,
+                                      max_length=self.max_input_length,
+                                      return_tensors="pt")
+
+        with self.tokenizer.as_target_tokenizer():
+            labels = self.tokenizer(tgt,
+                                    padding=PaddingStrategy.LONGEST,
+                                    truncation=True,
+                                    max_length=self.max_output_length,
+                                    return_tensors="pt")
+
+        model_inputs["labels"] = labels["input_ids"]
+
+        return model_inputs

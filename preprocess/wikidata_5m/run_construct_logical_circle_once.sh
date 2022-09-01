@@ -1,6 +1,7 @@
 #!/bin/bash
 
-for split_id in {0..24}; do
+#for split_id in {0..24}; do
+for split_id in {6..24}; do
   python preprocess/wikidata_5m/construct_logical_circle_once.py \
     --kg wikidata5m/wikidata5m_transductive_train.txt \
     --id2ent wikidata5m/triplet_text_align_v1.0/id2ent.json \
