@@ -56,7 +56,7 @@ weight_decay: 0.01
 adam_epsilon: 1e-6
 adam_betas: "(0.9, 0.999)"
 max_grad_norm: 5.0
-num_train_epochs: 5
+num_train_epochs: 1
 max_steps: 0
 warmup_proportion: 0.1
 warmup_steps: 0
