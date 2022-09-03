@@ -499,6 +499,8 @@ def main():
     else:
         path_files = sorted(list(glob.glob(args.path)))
 
+    print(path_files)
+
     results = []
     output_file = None
     for path_file in path_files:

@@ -59,7 +59,8 @@ def evaluate(cfg, model, tokenizer: PreTrainedTokenizer, prefix="", _split="dev"
 
         batch = batch_to_device(batch, cfg.device)
         if cfg.fp16:
-            with torch.cuda.amp.autocast(dtype=(torch.bfloat16 if getattr(cfg, "fp16_bfloat16", False) else torch.float16)):
+            with torch.cuda.amp.autocast(
+                    dtype=(torch.bfloat16 if getattr(cfg, "fp16_bfloat16", False) else torch.float16)):
                 with torch.no_grad():
                     if not prediction_state:
                         outputs = model(**batch)
@@ -77,7 +78,8 @@ def evaluate(cfg, model, tokenizer: PreTrainedTokenizer, prefix="", _split="dev"
                                                               output_scores=getattr(cfg, "output_scores", False),
                                                               return_dict_in_generate=True)
 
-                            generated_seq = tokenizer.batch_decode(decoding_outputs["sequences"], skip_special_tokens=True)
+                            generated_seq = tokenizer.batch_decode(decoding_outputs["sequences"],
+                                                                   skip_special_tokens=True)
                             outputs["generated_seq"] = generated_seq
                             outputs["sequences_scores"] = decoding_outputs["sequences_scores"]
                         else:

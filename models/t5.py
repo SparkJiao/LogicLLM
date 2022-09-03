@@ -175,7 +175,7 @@ class T5ForSeq2Seq(T5ForConditionalGeneration, LogMixin, ABC):
                 bleu = sum(
                     [sentence_bleu([word_tokenize(tgt)], word_tokenize(gen_sentence))
                      for tgt, gen_sentence in zip(target, eval_gen_sentences)]
-                )
+                ) / labels.size(0)  # FIXED: the value should be the averaged one.
                 self.eval_metrics.update("bleu", bleu, n=labels.size(0))
 
                 acc, true_label_num = layers.get_accuracy(lm_logits, labels)
