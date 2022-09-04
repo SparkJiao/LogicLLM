@@ -306,4 +306,12 @@ class Seq2SeqTextCollator:
 
         model_inputs["labels"] = labels["input_ids"]
 
+        meta_data = [
+            {
+                "src": _src,
+                "tgt": _tgt,
+            } for _src, _tgt in zip(src, tgt)
+        ]
+        model_inputs["meta_data"] = meta_data
+
         return model_inputs
