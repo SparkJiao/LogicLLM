@@ -12,6 +12,7 @@ from torch.utils.data.dataloader import default_collate
 from data.data_utils import tokenizer_get_name
 import glob
 from general_util.logger import get_child_logger
+from modules.trie import Trie, MarisaTrie
 from data.collators.dict2dict import DictTensorDataset
 
 logger = get_child_logger(__name__)
@@ -280,6 +281,39 @@ class Seq2SeqTextDataset(Dataset):
         return len(self.src)
 
 
+class Seq2SeqEntityTextDataset(Dataset):
+    def __init__(self, file_path, tokenizer: PreTrainedTokenizer):
+        super().__init__()
+
+        if os.path.exists(file_path):
+            train_files = [file_path]
+        else:
+            train_files = sorted(list(glob.glob(file_path)))
+
+        src_texts = []
+        tgt_texts = []
+        entities = []
+        for file in train_files:
+            src, tgt, entity = list(zip(*json.load(open(file, 'r'))))
+            src_texts.extend(src)
+            tgt_texts.extend(tgt)
+            entities.extend(entity)
+
+        self.src = src_texts
+        self.tgt = tgt_texts
+        self.entity = entities
+
+    def __getitem__(self, index) -> Dict[str, str]:
+        return {
+            "src": self.src[index],
+            "tgt": self.tgt[index],
+            "entity": self.entity[index],
+        }
+
+    def __len__(self):
+        return len(self.src)
+
+
 class Seq2SeqTextCollator:
     def __init__(self, tokenizer, max_input_length: int, max_output_length: int):
         self.tokenizer: PreTrainedTokenizer = AutoTokenizer.from_pretrained(tokenizer, use_fast=False)
@@ -315,3 +349,69 @@ class Seq2SeqTextCollator:
         model_inputs["meta_data"] = meta_data
 
         return model_inputs
+
+
+class Seq2SeqEntityTextCollator(Seq2SeqTextCollator):
+    def __init__(self, tokenizer, max_input_length: int, max_output_length: int):
+        super().__init__(tokenizer, max_input_length, max_output_length)
+
+        self.tokenizer.add_tokens("<s>")
+
+    def __call__(self, batch):
+        entities = [item.pop("entity") for item in batch]
+
+        batch = default_collate(batch)
+        src = batch.pop("src")
+        tgt = batch.pop("tgt")
+        assert len(batch) == 0, list(batch.keys())
+
+        concat_src = []
+        for src_text, tgt_ent_ls in zip(src, entities):
+            concat_src.append("<s>".join([src_text] + tgt_ent_ls))
+        src = concat_src
+
+        model_inputs = self.tokenizer(src,
+                                      padding=PaddingStrategy.LONGEST,
+                                      truncation=True,
+                                      max_length=self.max_input_length,
+                                      return_tensors="pt")
+
+        with self.tokenizer.as_target_tokenizer():
+            labels = self.tokenizer(tgt,
+                                    padding=PaddingStrategy.LONGEST,
+                                    truncation=True,
+                                    max_length=self.max_output_length,
+                                    return_tensors="pt")
+
+        model_inputs["labels"] = labels["input_ids"]
+
+        meta_data = [
+            {
+                "src": _src,
+                "tgt": _tgt,
+            } for _src, _tgt in zip(src, tgt)
+        ]
+        model_inputs["meta_data"] = meta_data
+
+        return model_inputs
+
+
+def seq2seq_text_trie(file_path, tokenizer: str, max_seq_length: int = 512):
+    data = json.load(open(file_path))
+    tokenizer: PreTrainedTokenizer = AutoTokenizer.from_pretrained(tokenizer)
+
+    # trie = Trie()
+    # trie = MarisaTrie()
+
+    src, tgt = list(zip(*data))
+    all_seq_ls = []
+    for tgt_text in tgt:
+        tgt_tokens = tokenizer.convert_tokens_to_ids(tokenizer.tokenize(tgt_text))[:max_seq_length - 2]
+        tgt_tokens.append(tokenizer.eos_token_id)
+        tgt_tokens = [tokenizer.pad_token_id] + tgt_tokens
+        # trie.add(tgt_tokens)
+        all_seq_ls.append(tgt_tokens)
+
+    trie = MarisaTrie(all_seq_ls)
+
+    return trie

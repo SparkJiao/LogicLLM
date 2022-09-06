@@ -7,6 +7,9 @@ from omegaconf import DictConfig
 
 
 def vanilla_torch_dist(cfg: DictConfig, backend="nccl"):
+    if "LOCAL_RANK" in os.environ and os.environ["LOCAL_RANK"] not in [-1, "-1"]:
+        cfg.local_rank = int(os.environ["LOCAL_RANK"])
+
     if cfg.local_rank == -1 or cfg.no_cuda:
         device = str(torch.device("cuda" if torch.cuda.is_available() and not cfg.no_cuda else "cpu"))
         cfg.n_gpu = torch.cuda.device_count()

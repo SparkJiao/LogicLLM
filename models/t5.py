@@ -2,6 +2,7 @@ from abc import ABC
 from typing import Optional, Tuple, Union, Dict
 
 import torch
+import transformers.models.t5.modeling_t5
 from nltk import word_tokenize
 from nltk.translate.bleu_score import sentence_bleu
 from torch import Tensor
@@ -12,6 +13,8 @@ from transformers.models.t5.modeling_t5 import (
     Seq2SeqLMOutput, T5ForConditionalGeneration, BaseModelOutput
 )
 from transformers.models.t5.tokenization_t5 import T5Tokenizer
+from transformers.models.t5.modeling_t5 import T5DenseActDense, T5DenseGatedActDense, T5LayerNorm
+from transformers.generation_logits_process import LogitsProcessor, LogitsProcessorList
 
 from general_util.logger import get_child_logger
 from general_util.mixin import LogMixin
@@ -20,15 +23,106 @@ from modules import layers
 logger = get_child_logger("T5")
 
 
+class T5LayerFF(torch.nn.Module):
+    def __init__(self, config: T5Config):
+        super().__init__()
+        if config.is_gated_act:
+            self.DenseReluDense = T5DenseGatedActDense(config)
+        else:
+            self.DenseReluDense = T5DenseActDense(config)
+
+        self.layer_norm = T5LayerNorm(config.d_model, eps=config.layer_norm_epsilon)
+        self.dropout = torch.nn.Dropout(config.dropout_rate)
+
+    def _forward(self, hidden_states):
+        forwarded_states = self.layer_norm(hidden_states)
+        forwarded_states = self.DenseReluDense(forwarded_states)
+        hidden_states = hidden_states + self.dropout(forwarded_states)
+        return hidden_states
+
+    def forward(self, hidden_states):
+        # many t5/mt5 models are trained in bfloat16 and don't do well under mixed precision (fp16).
+        # It appears that it's enough to disable autocast for this FF layer to avoid inf/nan
+        # problems for the whole model
+        # if torch.is_autocast_enabled():
+        with torch.cuda.amp.autocast(enabled=False):
+            hidden_states = hidden_states.to(torch.float32)
+            return self._forward(hidden_states)
+        # else:
+        #     return self._forward(hidden_states)
+
+
 class T5ForSeq2Seq(T5ForConditionalGeneration, LogMixin, ABC):
 
-    def __init__(self, config: T5Config, tokenizer: str):
+    def __init__(self, config: T5Config, tokenizer: str, fp16_compatible: bool = False,
+                 logits_processor: LogitsProcessor = None):
         super().__init__(config)
         self.config = config
 
-        self.init_metric("loss", "acc", "bleu")
+        # if fp16_compatible:  # This doesn't work on RTX 6000.
+        #     for block_id, block in enumerate(self.encoder.block):
+        #         assert isinstance(block.layer[-1], transformers.models.t5.modeling_t5.T5LayerFF)
+        #         self.encoder.block[block_id].layer[-1] = T5LayerFF(config)
+        #
+        #     for block_id, block in enumerate(self.decoder.block):
+        #         assert isinstance(block.layer[-1], transformers.models.t5.modeling_t5.T5LayerFF)
+        #         self.decoder.block[block_id].layer[-1] = T5LayerFF(config)
+        # if fp16_compatible:
+        #     self.lm_scale_modifier = torch.nn.Parameter(torch.ones(config.d_model))
+        #     self.fix_t5_fp16()
+        # else:
+        #     self.lm_scale_modifier = 1
+
+        self.init_metric("loss", "acc")
+
+        self.logits_processor = logits_processor
+        if self.logits_processor is not None:
+            self.logits_processor = LogitsProcessorList([self.logits_processor])
 
         self.tokenizer = T5Tokenizer.from_pretrained(tokenizer, use_fast=False)
+
+        self.generating = False
+
+    # def fix_t5_fp16(self):
+    #     emb_scaling = 1 / 32.0
+    #     att_v_scaling = 1 / 4.0
+    #     att_o_scaling = 1 / 8.0
+    #     ff_wi_scaling = 1 / 4.0
+    #     ff_wo_scaling = 1 / 1.0
+    #     ff_ln_scaling = 1 / 2.0
+    #
+    #     assert att_v_scaling * att_o_scaling == emb_scaling
+    #     assert ff_wi_scaling * ff_wi_scaling * ff_wo_scaling * ff_ln_scaling == emb_scaling
+    #
+    #     with torch.no_grad():
+    #         self.shared.weight *= emb_scaling
+    #         for unit in self.encoder.block:
+    #             unit.layer[0].SelfAttention.v.weight *= att_v_scaling
+    #             unit.layer[0].SelfAttention.o.weight *= att_o_scaling
+    #             unit.layer[1].DenseReluDense.wi_0.weight *= ff_wi_scaling
+    #             unit.layer[1].DenseReluDense.wi_1.weight *= ff_wi_scaling
+    #             unit.layer[1].DenseReluDense.wo.weight *= ff_wo_scaling
+    #             unit.layer[1].layer_norm.weight *= ff_ln_scaling
+    #         for unit in self.decoder.block:
+    #             unit.layer[0].SelfAttention.v.weight *= att_v_scaling
+    #             unit.layer[0].SelfAttention.o.weight *= att_o_scaling
+    #             unit.layer[1].EncDecAttention.v.weight *= att_v_scaling
+    #             unit.layer[1].EncDecAttention.o.weight *= att_o_scaling
+    #             unit.layer[2].DenseReluDense.wi_0.weight *= ff_wi_scaling
+    #             unit.layer[2].DenseReluDense.wi_1.weight *= ff_wi_scaling
+    #             unit.layer[2].DenseReluDense.wo.weight *= ff_wo_scaling
+    #             unit.layer[2].layer_norm.weight *= ff_ln_scaling
+    #         self.lm_scale_modifier /= emb_scaling
+
+    def generate(self, *model_args, **model_kwargs):
+        self.generating = True
+        model_kwargs.pop("labels", None)
+        if self.logits_processor is not None:
+            res = super().generate(*model_args, **model_kwargs, logits_processor=self.logits_processor)
+        else:
+            res = super().generate(*model_args, **model_kwargs)
+        self.generating = False
+        return res
 
     def forward(
             self,
@@ -149,6 +243,7 @@ class T5ForSeq2Seq(T5ForConditionalGeneration, LogMixin, ABC):
             # See https://github.com/tensorflow/mesh/blob/fa19d69eafc9a482aff0b59ddd96b025c0cb207d/mesh_tensorflow/transformer/transformer.py#L586
             sequence_output = sequence_output * (self.model_dim ** -0.5)
 
+        # lm_logits = self.lm_head(sequence_output * self.lm_scale_modifier)
         lm_logits = self.lm_head(sequence_output)
 
         loss = None

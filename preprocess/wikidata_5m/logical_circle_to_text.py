@@ -288,6 +288,51 @@ def circle2text_seq2seq_simple_v1(path: List[str], context_len: int = 0):
     return src_text, tgt_text
 
 
+# TODO: Add sentence based text, named version v2.
+
+
+def circle2text_seq2seq_entity_v1(path: List[str], context_len: int = 0, entity_prob: float = 0.7):
+    assert len(path) >= 2
+
+    # Obtain the relation with the given entity pair
+    s = path[0].split("\t")[0]
+    t = path[-1].split("\t")[-1]
+    key = f"{s}\t{t}"
+
+    assert len(_edge2rel[key])
+    rel = random.choice(_edge2rel[key])
+
+    # Symbols to text
+    context = [triplet2texts(*text2triplet(_triplet), _triplet2sent, _id2ent, _id2rel) for _triplet in path]
+    anchor = triplet2texts(s, rel, t, _triplet2sent, _id2ent, _id2rel)
+
+    if any(sent_dict is None for sent_dict in context + [anchor]):
+        return None
+
+    # Sample a text group
+    context = [random.choice(sent_dict) for sent_dict in context]
+    anchor = random.choice(anchor)
+
+    random.shuffle(context)
+
+    input_seq = [anchor] + context[:context_len]
+    output_seq = context[context_len:]
+
+    src_text = " ".join([sent_dict["text"] for sent_dict in input_seq])
+    tgt_text = " ".join([sent_dict["text"] for sent_dict in output_seq])
+
+    kept_entities = []
+    all_entities_tgt = set([sent_dict["s_alias"] for sent_dict in output_seq] + [
+        sent_dict["t_alias"] for sent_dict in output_seq])
+    for ent in all_entities_tgt:
+        _r = random.random()
+        if _r > entity_prob:
+            kept_entities.append(ent)
+
+    return src_text, tgt_text, kept_entities
+
+
+
 def generate_whole_word_index_mapping(text: str, tokenizer: PreTrainedTokenizer, spans: List[str] = None):
     """
 
@@ -474,6 +519,7 @@ def main():
     parser.add_argument("--triplet2sent", type=str)
     parser.add_argument("--edge2rel", type=str)
     parser.add_argument("--context_len", type=int, default=0)
+    parser.add_argument("--entity_prob", type=float, default=0.7)
     parser.add_argument("--tokenizer", type=str)
     # parser.add_argument("--shuffle_sentence", )
     parser.add_argument("--debug", default=False, action="store_true")
@@ -557,6 +603,23 @@ def main():
             output_file = os.path.join(args.output_dir,
                                        f"{file_name}_v1_s{args.seed}_seq2seq_simple_"
                                        f"{args.context_len}.json")
+        elif args.mode == "seq2seq_entity":
+            with Pool(args.num_workers, initializer=init,
+                      initargs=(tokenizer, id2ent, id2rel, triplet2sent, edge2rel)) as p:
+                _annotate = partial(circle2text_seq2seq_entity_v1, context_len=args.context_len,
+                                    entity_prob=args.entity_prob)
+                _results = list(tqdm(
+                    p.imap(_annotate, all_path, chunksize=32),
+                    total=len(all_path),
+                    desc="constructing seq2seq dataset",
+                    dynamic_ncols=True,
+                ))
+
+            # tokenizer_name = tokenizer_get_name(tokenizer)
+            file_name = path_file.split('/')[-1][:-5]
+            output_file = os.path.join(args.output_dir,
+                                       f"{file_name}_v1_s{args.seed}_seq2seq_entity_"
+                                       f"{args.context_len}_{args.entity_prob}.json")
         else:
             raise NotImplementedError()
 

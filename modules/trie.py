@@ -17,7 +17,7 @@ except ModuleNotFoundError:
 
 
 class Trie(object):
-    def __init__(self, sequences: List[List[int]] = []):
+    def __init__(self, sequences: List[List[int]] = [], sep_token_id: int = None):
         self.trie_dict = {}
         self.len = 0
         if sequences:
@@ -27,6 +27,8 @@ class Trie(object):
 
         self.append_trie = None
         self.bos_token_id = None
+
+        self.sep_token_id = sep_token_id
 
     def append(self, trie, bos_token_id):
         self.append_trie = trie

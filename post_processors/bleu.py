@@ -7,7 +7,7 @@ from torch import distributed as dist
 from post_processors.dist_mixin import DistGatherMixin
 
 
-class SQL2NL(DistGatherMixin):
+class BLEUMetric(DistGatherMixin):
     def __init__(self):
         self.predictions = []
 

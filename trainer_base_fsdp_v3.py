@@ -36,7 +36,7 @@ from tqdm import tqdm, trange
 from transformers import (get_linear_schedule_with_warmup, AutoTokenizer, PreTrainedTokenizer)
 
 from general_util.dist_utils import vanilla_torch_dist
-from general_util.evaluator import evaluate
+from general_util.evaluator import evaluate_fn as evaluate
 from general_util.logger import setting_logger
 from general_util.training_utils import batch_to_device, unwrap_model, set_seed, note_best_checkpoint, initialize_optimizer, \
     load_and_cache_examples, if_cancel_sync
