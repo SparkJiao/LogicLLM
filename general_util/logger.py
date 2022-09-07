@@ -2,13 +2,15 @@ import logging
 import os
 import sys
 
-_local_rank = getattr(os.environ, "LOCAL_RANK", "")
 _root_name = 'FK'
-if _local_rank:
-    _root_name += f".{_local_rank}"
 
 
 def get_child_logger(child_name):
+    _local_rank = getattr(os.environ, "LOCAL_RANK", "")
+
+    if _root_name == "FK" and _local_rank:
+        return logging.getLogger(_root_name + '.' + _local_rank + '.' + child_name)
+
     return logging.getLogger(_root_name + '.' + child_name)
 
 
@@ -20,7 +22,7 @@ def setting_logger(log_file: str, local_rank: int = -1):
                         level=logging.INFO if local_rank in [-1, 0] else logging.WARNING)
 
     global _root_name
-    if local_rank != -1 and len(_root_name) == 2:
+    if local_rank != -1 and _root_name == "FK":
         _root_name = _root_name + '.' + str(local_rank)
     logger = logging.getLogger(_root_name)
     logger.setLevel(logging.INFO if local_rank in [-1, 0] else logging.WARNING)
@@ -41,4 +43,3 @@ def setting_logger(log_file: str, local_rank: int = -1):
 
     logger.addHandler(f_handler)
     return logger
-

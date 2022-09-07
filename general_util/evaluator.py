@@ -191,6 +191,9 @@ def evaluate_fn(cfg: DictConfig, model: torch.nn.Module, tokenizer: PreTrainedTo
 
     eval_forward_fn = hydra.utils.instantiate(cfg.eval_forward_fn, cfg, model, tokenizer)
 
+    # logger.info(f"If model is an instance of FSDP: {isinstance(model, FSDP)}")
+    # logger.info(f"If encoder is an instance of FSDP: {isinstance(model.module.encoder, FSDP)}")
+
     torch.cuda.empty_cache()
 
     for batch in tqdm(eval_dataloader, desc="Evaluating", disable=cfg.local_rank not in [-1, 0], dynamic_ncols=True):
@@ -300,8 +303,13 @@ class GeneratorForwardFn:
 
 class GeneratorCLSForwardFn(GeneratorForwardFn):
     def __call__(self, batch):
+        # FIXME: Currently, we have to perform an extra forward to avoid a strange issue caused by FSDP,
+        #  no matter if we really need the outputs from the encoder.
+        #  Anyway, if the model is not warpped by FSDP, this step can be omitted.
+        #  For the details, please refer to https://github.com/pytorch/pytorch/issues/82461
         outputs = self.model(**batch, disable_decoder=True)
 
         _generate_outputs, res = super(GeneratorCLSForwardFn, self).__call__(batch)
-        outputs.update(_generate_outputs)
+        for key, val in _generate_outputs.items():
+            outputs[key] = val
         return outputs, res

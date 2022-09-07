@@ -90,7 +90,7 @@ prediction_cfg:
 
 generator: True
 eval_forward_fn:
-  _target_: general_util.evaluator.GeneratorForwardFn
+  _target_: general_util.evaluator.GeneratorCLSForwardFn
 max_output_length: 128
 num_beams: 1
 num_return_sequences: 1
