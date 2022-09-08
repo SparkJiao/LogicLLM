@@ -3,12 +3,14 @@ from nltk import word_tokenize
 from multiprocessing import Pool
 from tqdm import tqdm
 from typing import List, Set
+from functools import partial
+from collections import Counter
 import sys
 import argparse
 
 sys.path.append("../../")
 
-from data.bm25 import BM25Model
+from data.bm25 import BM25Model, BM25ModelV2
 
 
 def read_wiki_corpus(file_path: str):
@@ -25,15 +27,46 @@ def read_wiki_corpus(file_path: str):
     return data
 
 
-def _tokenize(item):
+def read_wiki_corpus_and_build_bm25(file_path: str, num_workers: int = 8):
+    f = open(file_path, 'r')
+    lines = f.readlines()
+    with Pool(num_workers) as p:
+        res = list(tqdm(
+            p.imap(_get_word_frequency, lines, chunksize=32),
+            total=len(lines),
+            desc="word tokenization"
+        ))
+
+    id_list, doc_word_frequency = list(zip(*res))
+
+    # bm25_model = BM25Model(documents)
+    bm25_model = BM25ModelV2(doc_word_frequency)
+    return bm25_model, id_list
+
+
+def _tokenize(item, json_loads: bool = False):
+    if json_loads:
+        item = json.loads(item)
+
     words = word_tokenize(item["para"])
-    res = {
-        "title": item["title"],
-        "para_id": item["para_id"],
-        "words": words
-    }
-    del item
-    return res
+    # res = {
+    #     "title": item["title"],
+    #     "para_id": item["para_id"],
+    #     "words": words
+    # }
+    # del item
+    return f"{item['title']}-{item['para_id']}", words
+
+
+def _get_word_frequency(line: str):
+    item = json.loads(line)
+
+    words = word_tokenize(item["para"])
+
+    word_freq = Counter(words)
+
+    del line
+    return f"{item['title']}-{item['para_id']}", word_freq
 
 
 def build_bm25_model(data, num_workers: int = 8):
@@ -96,11 +129,13 @@ def main():
     parser.add_argument("--top_k", type=int, default=100)
     args = parser.parse_args()
 
-    corpus_data = read_wiki_corpus(args.corpus_file)
-    bm25_model, doc_id_list = build_bm25_model(corpus_data, args.num_workers)
+    # corpus_data = read_wiki_corpus(args.corpus_file)
+    # bm25_model, doc_id_list = build_bm25_model(corpus_data, args.num_workers)
+    bm25_model, doc_id_list = read_wiki_corpus_and_build_bm25(args.corpus_file, args.num_workers)
     qa_data, para_ids = load_strategy_qa(args.qa_file)
     recall = bm25_retrieval(qa_data, para_ids, doc_id_list, bm25_model, args.top_k)
     print(recall)
+
 
 if __name__ == '__main__':
     main()

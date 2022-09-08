@@ -5,6 +5,7 @@
 """
 import numpy as np
 from collections import Counter
+from typing import List, Dict
 
 
 class BM25Model(object):
@@ -37,6 +38,48 @@ class BM25Model(object):
                 df[key] = df.get(key, 0) + 1
         for key, value in df.items():
             # 每个词的逆文档频率
+            self.idf[key] = np.log((self.documents_number - value + 0.5) / (value + 0.5))
+
+    def get_score(self, index, query):
+        score = 0.0
+        document_len = len(self.f[index])
+        qf = Counter(query)
+        for q in query:
+            if q not in self.f[index]:
+                continue
+            score += self.idf[q] * (self.f[index][q] * (self.k1 + 1) / (
+                    self.f[index][q] + self.k1 * (1 - self.b + self.b * document_len / self.avg_documents_len))) * (
+                             qf[q] * (self.k2 + 1) / (qf[q] + self.k2))
+
+        return score
+
+    def get_documents_score(self, query):
+        score_list = []
+        for i in range(self.documents_number):
+            score_list.append(self.get_score(i, query))
+        return score_list
+
+
+class BM25ModelV2:
+    def __init__(self, doc_word_frequency: List[Dict[str, int]], k1=2, k2=1, b=0.5):
+        self.doc_word_frequency = doc_word_frequency
+        self.documents_number = len(doc_word_frequency)
+        self.avg_documents_len = sum([sum(doc.values()) for doc in doc_word_frequency]) / self.documents_number
+        self.f = []
+        self.idf = {}
+        self.k1 = k1
+        self.k2 = k2
+        self.b = b
+        self.init()
+
+    def init(self):
+        df = {}
+        for doc_word_freq in self.doc_word_frequency:
+            self.f.append(doc_word_freq)
+            for key in doc_word_freq.keys():
+                df[key] = df.get(key, 0) + 1
+            del doc_word_freq
+        for key, value in df.items():
             self.idf[key] = np.log((self.documents_number - value + 0.5) / (value + 0.5))
 
     def get_score(self, index, query):
