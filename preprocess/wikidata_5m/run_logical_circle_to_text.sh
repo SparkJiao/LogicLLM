@@ -34,13 +34,24 @@
 #  --num_workers 32 --output_dir ../../wikidata5m/triplet_text_align_v1.0/logical_circle_once --dev_num 50000
 
 
+#python logical_circle_to_text.py \
+#  --seed 42 --mode seq2seq_entity \
+#  --path "../../wikidata5m/triplet_text_align_v1.0/logical_circle_once/raw_data/logic_circle_d3_4_False_s42_v2_25_*.json" \
+#  --id2ent ../../wikidata5m/triplet_text_align_v1.0/id2ent.json \
+#  --id2rel ../../wikidata5m/triplet_text_align_v1.0/id2rel.json \
+#  --triplet2sent ../../wikidata5m/triplet_text_align_v1.0/triplet2sent.json \
+#  --edge2rel ../../wikidata5m/triplet_text_align_v1.0/logical_circle_once/edge2rel.json \
+#  --tokenizer ../../pretrained-models/t5-large-lm-adapt \
+#  --num_workers 32 --output_dir ../../wikidata5m/triplet_text_align_v1.0/logical_circle_once --dev_num 50000
+
+
 python logical_circle_to_text.py \
-  --seed 42 --mode seq2seq_entity \
+  --seed 42 --mode mlm_simple \
   --path "../../wikidata5m/triplet_text_align_v1.0/logical_circle_once/raw_data/logic_circle_d3_4_False_s42_v2_25_*.json" \
   --id2ent ../../wikidata5m/triplet_text_align_v1.0/id2ent.json \
   --id2rel ../../wikidata5m/triplet_text_align_v1.0/id2rel.json \
   --triplet2sent ../../wikidata5m/triplet_text_align_v1.0/triplet2sent.json \
   --edge2rel ../../wikidata5m/triplet_text_align_v1.0/logical_circle_once/edge2rel.json \
-  --tokenizer ../../pretrained-models/t5-large-lm-adapt \
+  --tokenizer ../../pretrained-models/roberta-large \
   --num_workers 32 --output_dir ../../wikidata5m/triplet_text_align_v1.0/logical_circle_once --dev_num 50000
 

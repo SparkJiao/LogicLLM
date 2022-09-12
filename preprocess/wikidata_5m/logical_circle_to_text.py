@@ -19,7 +19,7 @@ import glob
 
 sys.path.append("../../")
 
-from data.data_utils import span_chunk, tokenizer_get_name, find_span
+from data.data_utils import span_chunk, tokenizer_get_name, find_span, span_chunk_simple
 
 _tokenizer: PreTrainedTokenizer
 _id2ent: Dict[str, List[str]]
@@ -203,6 +203,42 @@ def circle2text_mlm(path: List[Tuple[str, str, str]],
     flag, token2word_index, extended_word_cnt, extended_indicate_mask = res
 
     return flag, text, spans, token2word_index, extended_indicate_mask
+
+
+def circle2text_mlm_simple(path: List[str]):
+    s = path[0].split("\t")[0]
+    t = path[-1].split("\t")[-1]
+    key = f"{s}\t{t}"
+
+    assert len(_edge2rel[key])
+    rel = random.choice(_edge2rel[key])
+
+    context = [triplet2texts(*text2triplet(_triplet), _triplet2sent, _id2ent, _id2rel) for _triplet in path]
+    anchor = triplet2texts(s, rel, t, _triplet2sent, _id2ent, _id2rel)
+
+    if any(sent_dict is None for sent_dict in context + [anchor]):
+        return None
+
+    # Sample a text group
+    context = [random.choice(sent_dict) for sent_dict in context]
+    anchor = random.choice(anchor)
+
+    sentences = context + [anchor]
+    random.shuffle(sentences)
+
+    ent_spans = []
+    text = []
+    for sent_dict in sentences:
+        ent_spans.extend([sent_dict["s_alias"], sent_dict["t_alias"]])
+        text.append(sent_dict["text"])
+    ent_spans = list(set(ent_spans))
+
+    text = " ".join(text)
+    normalized_text, token_spans = span_chunk_simple(text, ent_spans, _tokenizer)
+    if normalized_text is None:
+        return None
+
+    return normalized_text, token_spans
 
 
 def circle2text_seq2seq_v1(path: List[Tuple[str, str, str]],
@@ -572,6 +608,19 @@ def main():
             tokenizer_name = tokenizer_get_name(tokenizer)
             output_file = os.path.join(args.output_dir,
                                        f"logic_circle_data_v1_{tokenizer_name}_s{args.seed}_{args.mode}.json")
+        elif args.mode == "mlm_simple":
+            with Pool(args.num_workers, initializer=init,
+                      initargs=(tokenizer, id2ent, id2rel, triplet2sent, edge2rel)) as p:
+                _results = list(tqdm(
+                    p.imap(circle2text_mlm_simple, all_path, chunksize=32),
+                    total=len(all_path),
+                    desc="constructing mlm simple dataset",
+                    dynamic_ncols=True,
+                ))
+                tokenizer_name = tokenizer_get_name(tokenizer)
+                file_name = path_file.split('/')[-1][:-5]
+                output_file = os.path.join(args.output_dir,
+                                           f"{file_name}_v1_s{args.seed}_mlm_simple_{tokenizer_name}.json")
         elif args.mode == "seq2seq":
             with Pool(args.num_workers, initializer=init,
                       initargs=(tokenizer, id2ent, id2rel, triplet2sent, edge2rel)) as p:
@@ -624,6 +673,7 @@ def main():
             raise NotImplementedError()
 
         results.extend([res for res in _results if res is not None])
+        print(len(results))
         del _results
 
     if not os.path.exists(args.output_dir):

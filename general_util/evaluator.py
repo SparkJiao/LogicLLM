@@ -3,10 +3,10 @@ import os
 
 import hydra
 import torch
+from omegaconf import DictConfig
 from torch.utils.data import DistributedSampler, SequentialSampler, DataLoader
 from tqdm import tqdm
 from transformers import PreTrainedTokenizer
-from omegaconf import DictConfig
 
 from general_util.logger import get_child_logger
 from general_util.training_utils import batch_to_device, load_and_cache_examples, unwrap_model
@@ -254,9 +254,10 @@ def evaluate_fn(cfg: DictConfig, model: torch.nn.Module, tokenizer: PreTrainedTo
 
 
 class DiscriminatorForwardFn:
-    def __init__(self, cfg: DictConfig, model: torch.nn.Module):
+    def __init__(self, cfg: DictConfig, model: torch.nn.Module, tokenizer: PreTrainedTokenizer):
         self.cfg = cfg
         self.model = model
+        self.tokenizer = tokenizer
 
     def __call__(self, batch):
         outputs = self.model(**batch)

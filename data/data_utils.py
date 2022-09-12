@@ -34,7 +34,9 @@ def get_sep_tokens(_tokenizer: PreTrainedTokenizer):
 
 def is_alphabet(char):
     res = ord('a') <= ord(char) <= ord('z') or ord('A') <= ord(char) <= ord('Z')
+    res = res or (char in ['-', '\''])  # Fix the problem shown in the bad case of the method `span_chunk`.
     return res
+
 
 def whitespace_tokenize_w_punctuation_ends(text):
     """
@@ -67,6 +69,7 @@ def whitespace_tokenize_w_punctuation_ends(text):
             new_words.append(word)
 
     return new_words
+
 
 def find_span(sentence: str, span: str, start: int = 0):
     span = span.strip()
@@ -177,6 +180,70 @@ def span_chunk_subword(text: str, span_ls: List[str]) -> Tuple[List[str], List[i
     and find the span through recovery, which may have high time complexity.
     """
     pass
+
+
+def span_chunk_simple(text: str, span_ls: List[str], tokenizer: PreTrainedTokenizer):
+    """
+    This version only process the entities spans and using pre-trained tokenizer to tokenize the text first
+    to annotate the position of each span.
+    """
+    pos_ls = []
+    for span in span_ls:
+        span_pos_ls = find_span(text, span)
+        pos_ls.extend(span_pos_ls)
+    pos_ls = sorted(pos_ls, key=lambda x: x[0])
+
+    for pos_id, pos in enumerate(pos_ls):
+        if pos_id == 0:
+            continue
+        # assert pos[0] >= pos_ls[pos_id - 1][1], (span_ls, text[pos[0]: pos[1]], text[pos_ls[pos_id - 1][0]: pos_ls[pos_id - 1][1]])
+        # There maybe bad case where a entity in a substring of another entity.
+        # A bad case:
+        # AssertionError: (['Netherlands', 'history of eindhoven', 'Koninkrijk der Nederlanden', 'Constituent country of the Kingdom of the Netherlands', 'Robert van der Horst', 'Eindhoven'],
+        # 'Netherlands', 'Constituent country of the Kingdom of the Netherlands')
+        if pos[0] < pos_ls[pos_id - 1][1]:
+            return None, None
+
+    tokens = []
+    token_spans = []
+    last_e = 0
+    for s, e in pos_ls:
+        if last_e > s:
+            print(f"Overlapped span: {text[last_e: s]}\t{text[s: e]}\t{text}")
+            continue
+
+        if s > last_e:
+            tokens.extend(tokenizer.tokenize(text[last_e: s]))
+
+        tk_s = len(tokens)
+        tokens.extend(tokenizer.tokenize(text[s: e]))
+        tk_e = len(tokens)
+        token_spans.append((tk_s, tk_e))
+        last_e = e
+
+    if last_e < len(text):
+        tokens.extend(tokenizer.tokenize(text[last_e:]))
+
+    normalized_text = tokenizer.convert_tokens_to_string(tokens)
+
+    # consistency check
+    for s, e in token_spans:
+        ent = tokenizer.convert_tokens_to_string(tokens[s: e])
+        if ent not in span_ls:
+            # print(f"Warning: {ent}\t{span_ls}")
+            print(f"Warning: missed entity span after tokenization")
+            return None, None
+
+    _re_tokens = tokenizer.tokenize(normalized_text)
+    if tokens != _re_tokens:
+        # print(f"Warning: {tokens}\t{_re_tokens}")
+        # print(f"Warning: inconsistent tokens")
+        return None, None
+    if normalized_text != text:
+        print(f"Warning, inconsistent text: {normalized_text}\t{text}")
+        # return None, None
+
+    return normalized_text, token_spans
 
 
 def get_unused_tokens(_tokenizer: PreTrainedTokenizer, token_num: int = 4):

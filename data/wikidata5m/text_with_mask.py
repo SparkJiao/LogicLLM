@@ -252,6 +252,24 @@ def load_seq2seq_data(file_path: str, tokenizer: PreTrainedTokenizer, max_input_
     return DictTensorDataset(model_inputs)
 
 
+class MLMTextDataset(Dataset):
+    def __init__(self, file_path, tokenizer: PreTrainedTokenizer):
+        super().__init__()
+
+        texts, spans = list(zip(*json.load(file_path)))
+        self.texts = texts
+        self.spans = spans
+
+    def __getitem__(self, index):
+        return {
+            "text": self.texts[index],
+            "span": self.spans[index],
+        }
+
+    def __len__(self):
+        return len(self.texts)
+
+
 class Seq2SeqTextDataset(Dataset):
     def __init__(self, file_path, tokenizer: PreTrainedTokenizer):
         super().__init__()
@@ -394,6 +412,29 @@ class Seq2SeqEntityTextCollator(Seq2SeqTextCollator):
         model_inputs["meta_data"] = meta_data
 
         return model_inputs
+
+
+class MLMTextCollator:
+    def __init__(self, tokenizer, max_seq_length: int, mask_ratio: float, ent_mask_ratio: float):
+        self.tokenizer: PreTrainedTokenizer = AutoTokenizer.from_pretrained(tokenizer, use_fast=False)
+        self.max_seq_length = max_seq_length
+        self.mask_ratio = mask_ratio
+        self.ent_mask_ratio = ent_mask_ratio
+
+    def __call__(self, batch):
+        texts = [b.pop("text") for b in batch]
+        spans = [b.pop("span") for b in batch]
+
+        input_tokens = self.tokenizer.tokenize(texts)
+
+
+        model_inputs = self.tokenizer(texts,
+                                      padding=PaddingStrategy.LONGEST,
+                                      truncation=True,
+                                      max_length=self.max_seq_length,
+                                      return_tensors="pt")
+
+        input_ids = model_inputs["input_ids"]
 
 
 def seq2seq_text_trie(file_path, tokenizer: str, max_seq_length: int = 512):
