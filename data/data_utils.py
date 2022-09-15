@@ -212,13 +212,30 @@ def span_chunk_simple(text: str, span_ls: List[str], tokenizer: PreTrainedTokeni
             print(f"Overlapped span: {text[last_e: s]}\t{text[s: e]}\t{text}")
             continue
 
-        if s > last_e:
-            tokens.extend(tokenizer.tokenize(text[last_e: s]))
+        sub_tokens = tokenizer.tokenize(text[last_e: s])
+        find = False
+        for a in range(len(sub_tokens)):
+            if tokenizer.convert_tokens_to_string(sub_tokens[a:]).strip() == text[s: e]:
+                find = True
+                if a > 0:
+                    tokens.extend(sub_tokens[:a])
+                tk_s = len(tokens)
+                tokens.extend(sub_tokens[a:])
+                tk_e = len(tokens)
+                token_spans.append((tk_s, tk_e))
+                break
 
-        tk_s = len(tokens)
-        tokens.extend(tokenizer.tokenize(text[s: e]))
-        tk_e = len(tokens)
-        token_spans.append((tk_s, tk_e))
+        if not find:
+            while s - 1 >= last_e and text[s - 1] == ' ':
+                s = s - 1  # To tokenize the space with the entity together.
+            if s > last_e:
+                tokens.extend(tokenizer.tokenize(text[last_e: s]))
+
+            tk_s = len(tokens)
+            tokens.extend(tokenizer.tokenize(text[s: e]))
+            tk_e = len(tokens)
+            token_spans.append((tk_s, tk_e))
+
         last_e = e
 
     if last_e < len(text):
@@ -228,7 +245,7 @@ def span_chunk_simple(text: str, span_ls: List[str], tokenizer: PreTrainedTokeni
 
     # consistency check
     for s, e in token_spans:
-        ent = tokenizer.convert_tokens_to_string(tokens[s: e])
+        ent = tokenizer.convert_tokens_to_string(tokens[s: e]).strip()
         if ent not in span_ls:
             # print(f"Warning: {ent}\t{span_ls}")
             print(f"Warning: missed entity span after tokenization")
@@ -236,7 +253,8 @@ def span_chunk_simple(text: str, span_ls: List[str], tokenizer: PreTrainedTokeni
 
     _re_tokens = tokenizer.tokenize(normalized_text)
     if tokens != _re_tokens:
-        # print(f"Warning: {tokens}\t{_re_tokens}")
+        # print(f"Warning: \n{tokens}\n{_re_tokens}\n{text}\n{normalized_text}")
+        # print()
         # print(f"Warning: inconsistent tokens")
         return None, None
     if normalized_text != text:

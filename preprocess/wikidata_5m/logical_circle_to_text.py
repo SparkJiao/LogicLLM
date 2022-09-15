@@ -16,7 +16,6 @@ from transformers.models.bert.tokenization_bert import whitespace_tokenize
 from nltk import word_tokenize
 import glob
 
-
 sys.path.append("../../")
 
 from data.data_utils import span_chunk, tokenizer_get_name, find_span, span_chunk_simple
@@ -366,7 +365,6 @@ def circle2text_seq2seq_entity_v1(path: List[str], context_len: int = 0, entity_
             kept_entities.append(ent)
 
     return src_text, tgt_text, kept_entities
-
 
 
 def generate_whole_word_index_mapping(text: str, tokenizer: PreTrainedTokenizer, spans: List[str] = None):

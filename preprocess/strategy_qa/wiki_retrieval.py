@@ -107,18 +107,50 @@ def load_strategy_qa(file_path: str):
     return questions, para_ids
 
 
-def bm25_retrieval(questions: List[str], para_ids: List[Set[str]], doc_id_list: List[str], bm25_model: BM25Model, top_k: int = 50):
-    ques_recall_list = []
-    for ques, q_para_ids in tqdm(zip(questions, para_ids), total=len(questions), desc="Calculating recall."):
-        ques_words = word_tokenize(ques)
-        doc_scores = bm25_model.get_documents_score(ques_words)
-        doc_scores = [(i, score) for i, score in enumerate(doc_scores)]
-        sorted_doc_scores = sorted(doc_scores, key=lambda x: x[1], reverse=False)
-        top_k_doc_ids = [doc_id_list[i] for i, _ in sorted_doc_scores[:top_k]]
-        q_recall = len(q_para_ids & set(top_k_doc_ids)) * 1.0 / len(q_para_ids)
-        ques_recall_list.append(q_recall)
+_bm25_model: BM25ModelV2
+_doc_id_list: List[str]
 
-    return sum(ques_recall_list) * 1.0 / len(ques_recall_list)
+
+def _init_(bm25_model, doc_id_list):
+    global _bm25_model
+    global _doc_id_list
+    _bm25_model = bm25_model
+    _doc_id_list = doc_id_list
+
+
+def _get_documents_score(item, top_k):
+    ques_words, para_ids = item
+    _doc_scores = _bm25_model.get_documents_score(ques_words)
+    _doc_scores = [(i, score) for i, score in enumerate(_doc_scores)]
+    _sorted_doc_scores = sorted(_doc_scores, key=lambda x: x[1], reverse=True)
+    _top_k_doc_ids = [_doc_id_list[i] for i, _ in _sorted_doc_scores[:top_k]]
+    _q_recall = len(para_ids & set(_top_k_doc_ids)) * 1.0 / len(para_ids)
+    return _q_recall, _top_k_doc_ids
+
+
+def bm25_retrieval(questions: List[str], para_ids: List[Set[str]], doc_id_list: List[str], bm25_model: BM25Model, top_k: int = 50,
+                   num_workers: int = 8):
+    # ques_recall_list = []
+
+    # for ques, q_para_ids in tqdm(zip(questions, para_ids), total=len(questions), desc="Calculating recall."):
+    #     ques_words = word_tokenize(ques)
+    #     doc_scores = bm25_model.get_documents_score(ques_words)
+    #     doc_scores = [(i, score) for i, score in enumerate(doc_scores)]
+    #     sorted_doc_scores = sorted(doc_scores, key=lambda x: x[1], reverse=False)
+    #     top_k_doc_ids = [doc_id_list[i] for i, _ in sorted_doc_scores[:top_k]]
+    #     q_recall = len(q_para_ids & set(top_k_doc_ids)) * 1.0 / len(q_para_ids)
+    #     ques_recall_list.append(q_recall)
+
+    with Pool(num_workers, initializer=_init_, initargs=(bm25_model, doc_id_list)) as p:
+        _annotate = partial(_get_documents_score, top_k=top_k)
+        results = list(tqdm(
+            p.imap(_annotate, list(zip(questions, para_ids)), chunksize=32),
+            total=len(questions),
+            desc="calculating recall"
+        ))
+    ques_recall_list, top_k_doc_ids = list(zip(*results))
+
+    return sum(ques_recall_list) * 1.0 / len(ques_recall_list), top_k_doc_ids
 
 
 def main():
@@ -127,14 +159,16 @@ def main():
     parser.add_argument("--qa_file", type=str)
     parser.add_argument("--num_workers", type=int, default=8)
     parser.add_argument("--top_k", type=int, default=100)
+    parser.add_argument("--output_file", type=str)
     args = parser.parse_args()
 
     # corpus_data = read_wiki_corpus(args.corpus_file)
     # bm25_model, doc_id_list = build_bm25_model(corpus_data, args.num_workers)
     bm25_model, doc_id_list = read_wiki_corpus_and_build_bm25(args.corpus_file, args.num_workers)
     qa_data, para_ids = load_strategy_qa(args.qa_file)
-    recall = bm25_retrieval(qa_data, para_ids, doc_id_list, bm25_model, args.top_k)
+    recall, top_k_doc_ids = bm25_retrieval(qa_data, para_ids, doc_id_list, bm25_model, args.top_k, args.num_workers)
     print(recall)
+    json.dump(top_k_doc_ids, open(args.output_file, "w"))
 
 
 if __name__ == '__main__':

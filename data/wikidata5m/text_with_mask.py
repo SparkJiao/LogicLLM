@@ -1,21 +1,60 @@
+import glob
 import json
 import os.path
+import random
+from typing import List, Union, Tuple, Dict, Optional
 
 import torch
-from torch.utils.data import Dataset
-from typing import List, Union, Tuple, Dict
-from transformers import PreTrainedTokenizer, AutoTokenizer
-from transformers.tokenization_utils import TruncationStrategy, PaddingStrategy
 from torch import Tensor
-import random
+from torch.utils.data import Dataset
 from torch.utils.data.dataloader import default_collate
-from data.data_utils import tokenizer_get_name
-import glob
-from general_util.logger import get_child_logger
-from modules.trie import Trie, MarisaTrie
+from transformers import PreTrainedTokenizer, AutoTokenizer
+from transformers.tokenization_utils import PaddingStrategy
+
 from data.collators.dict2dict import DictTensorDataset
+from data.data_utils import tokenizer_get_name
+from general_util.logger import get_child_logger
+from modules.trie import MarisaTrie
 
 logger = get_child_logger(__name__)
+
+
+def _torch_collate_batch(examples, tokenizer, pad_to_multiple_of: Optional[int] = None):
+    """Copied from transformers.data.data_collator import _torch_collate_batch."""
+    """Collate `examples` into a batch, using the information in `tokenizer` for padding if necessary."""
+    import numpy as np
+    import torch
+
+    # Tensorize if necessary.
+    if isinstance(examples[0], (list, tuple, np.ndarray)):
+        examples = [torch.tensor(e, dtype=torch.long) for e in examples]
+
+    length_of_first = examples[0].size(0)
+
+    # Check if padding is necessary.
+
+    are_tensors_same_length = all(x.size(0) == length_of_first for x in examples)
+    if are_tensors_same_length and (pad_to_multiple_of is None or length_of_first % pad_to_multiple_of == 0):
+        return torch.stack(examples, dim=0)
+
+    # If yes, check if we have a `pad_token`.
+    if tokenizer._pad_token is None:
+        raise ValueError(
+            "You are attempting to pad samples but the tokenizer you are using"
+            f" ({tokenizer.__class__.__name__}) does not have a pad token."
+        )
+
+    # Creating the full tensor and filling it with our data.
+    max_length = max(x.size(0) for x in examples)
+    if pad_to_multiple_of is not None and (max_length % pad_to_multiple_of != 0):
+        max_length = ((max_length // pad_to_multiple_of) + 1) * pad_to_multiple_of
+    result = examples[0].new_full([len(examples), max_length], tokenizer.pad_token_id)
+    for i, example in enumerate(examples):
+        if tokenizer.padding_side == "right":
+            result[i, : example.shape[0]] = example
+        else:
+            result[i, -example.shape[0]:] = example
+    return result
 
 
 def _align_sequence_with_special_token(input_ids: Union[Tensor, List[int]], sequence: List[int],
@@ -43,27 +82,66 @@ def _pad_sequence_to_max_len(sequence: List[List[int]], padding: int = 0):
     return padded_sequence
 
 
-def _roberta_whole_word_mask(input_tokens: List[str], max_predictions: int = 512, mlm_probability: float = 0.15):
+def _roberta_whole_word_mask_v1(input_tokens: List[str], max_predictions: int = 512, mlm_probability: float = 0.15,
+                                spans: List[Tuple[int, int]] = None, span_mlm_probability: float = -1, span_min_predictions: int = 2,
+                                pad_token: str = "<pad>"):
+    span_indicate = {span[0]: span[1] for span in spans} if spans is not None else {}
+
     cand_indices = []
+    cand_span_mask = {}  # `cand_span_mask[i] == 1` indicates the index set starting with index-i is a span to be masked.
+    true_token_num = 0
     for i, token in enumerate(input_tokens):
         if token == "<s>" or token == "</s>":
             continue
 
-        if len(cand_indices) >= 1 and token.startswith("Ġ"):
-            cand_indices[-1].append(i)
-        else:
-            cand_indices.append([i])
+        if token == pad_token or token == "<pad>":
+            break
 
-    random.shuffle(cand_indices)
-    num_to_predict = min(max_predictions, max(1, int(round(len(input_tokens) * mlm_probability))))
+        true_token_num += 1
+
+        if i in span_indicate:
+            cand_indices.append(list(range(i, span_indicate[i])))
+            cand_span_mask[i] = 1
+            continue
+
+        if len(cand_indices) >= 1 and i <= cand_indices[-1][-1]:  # For entity span
+            continue
+
+        if len(cand_indices) == 0 or token.startswith("Ġ"):
+            cand_indices.append([i])
+            cand_span_mask[i] = 0
+        else:
+            cand_indices[-1].append(i)
+
+    if spans is not None:
+        span_indices = [i for i, _index_set in enumerate(cand_indices) if cand_span_mask[_index_set[0]]]
+        span_num_to_predict = max(span_min_predictions, int(round(len(span_indices) * span_mlm_probability)))
+        random.shuffle(span_indices)
+        span_indices = set(span_indices[:span_num_to_predict])
+
+        re_organized_cand_indices_prefix = []
+        re_organized_cand_indices_suffix = []
+        for i, _index_set in enumerate(cand_indices):
+            if i in span_indices:
+                re_organized_cand_indices_prefix.append(_index_set)
+            else:
+                re_organized_cand_indices_suffix.append(_index_set)
+        random.shuffle(re_organized_cand_indices_suffix)
+        cand_indices = re_organized_cand_indices_prefix + re_organized_cand_indices_suffix
+    else:
+        span_num_to_predict = -1
+        random.shuffle(cand_indices)
+
+    num_to_predict = min(max_predictions, max(1, int(round(true_token_num * mlm_probability))))
     masked_lms = []
     covered_indexes = set()
-    for index_set in cand_indices:
-        if len(masked_lms) >= num_to_predict:
+    for i, index_set in enumerate(cand_indices):
+        # `span_num_to_predict` ensure that at least all the selected entities are to be masked.
+        if i > span_num_to_predict and len(masked_lms) >= num_to_predict:
             break
         # If adding a whole-word mask would exceed the maximum number of
         # predictions, then just skip this candidate.
-        if len(masked_lms) + len(index_set) > num_to_predict:
+        if i > span_num_to_predict and len(masked_lms) + len(index_set) > num_to_predict:
             continue
         is_any_index_covered = False
         for index in index_set:
@@ -256,7 +334,7 @@ class MLMTextDataset(Dataset):
     def __init__(self, file_path, tokenizer: PreTrainedTokenizer):
         super().__init__()
 
-        texts, spans = list(zip(*json.load(file_path)))
+        texts, spans = list(zip(*json.load(open(file_path, 'r'))))
         self.texts = texts
         self.spans = spans
 
@@ -415,26 +493,117 @@ class Seq2SeqEntityTextCollator(Seq2SeqTextCollator):
 
 
 class MLMTextCollator:
-    def __init__(self, tokenizer, max_seq_length: int, mask_ratio: float, ent_mask_ratio: float):
+    def __init__(self, tokenizer,
+                 max_seq_length: int,
+                 mlm_probability: float = 0.15,
+                 span_mlm_probability: float = 0.4,
+                 span_min_predictions: int = 2):
         self.tokenizer: PreTrainedTokenizer = AutoTokenizer.from_pretrained(tokenizer, use_fast=False)
         self.max_seq_length = max_seq_length
-        self.mask_ratio = mask_ratio
-        self.ent_mask_ratio = ent_mask_ratio
+        self.mlm_probability = mlm_probability
+        self.span_mlm_probability = span_mlm_probability
+        self.span_min_predictions = span_min_predictions
+        self.tokenizer_name = tokenizer_get_name(self.tokenizer)
+
+        # If yes, check if we have a `pad_token`.
+        if self.tokenizer.pad_token is None:
+            raise ValueError(
+                "You are attempting to pad samples but the tokenizer you are using"
+                f" ({tokenizer.__class__.__name__}) does not have a pad token."
+            )
 
     def __call__(self, batch):
         texts = [b.pop("text") for b in batch]
         spans = [b.pop("span") for b in batch]
+        del batch
 
-        input_tokens = self.tokenizer.tokenize(texts)
-
+        raw_token_ids = [self.tokenizer.convert_tokens_to_ids(self.tokenizer.tokenize(text)) for text in texts]
 
         model_inputs = self.tokenizer(texts,
-                                      padding=PaddingStrategy.LONGEST,
+                                      padding=PaddingStrategy.MAX_LENGTH,
                                       truncation=True,
                                       max_length=self.max_seq_length,
                                       return_tensors="pt")
 
-        input_ids = model_inputs["input_ids"]
+        input_ids = model_inputs["input_ids"].tolist()
+
+        mask_labels = []
+        for raw_input_id, input_id, item_spans in zip(raw_token_ids, input_ids, spans):
+            mask_labels.append(self._whole_word_mask(raw_input_id, input_id, item_spans))
+        mask_labels = torch.tensor(mask_labels, dtype=torch.int)
+
+        input_ids, labels = self.torch_mask_tokens(model_inputs["input_ids"], mask_labels)
+        model_inputs["input_ids"] = input_ids
+        model_inputs["labels"] = labels
+        return model_inputs
+
+    def _whole_word_mask(self, raw_input_ids: List[int], input_ids: List[int], spans: List[Tuple[int, int]]):
+        special_token_mask = self.tokenizer.get_special_tokens_mask(input_ids, already_has_special_tokens=True)
+
+        # Calculate the mapping from the original position to the new position after adding special tokens.
+        orig2now = []
+        for i, (token_mask, token_id) in enumerate(zip(special_token_mask, input_ids)):
+            if token_mask == 1:
+                continue
+            orig2now.append(i)
+            assert raw_input_ids[len(orig2now) - 1] == token_id
+
+        # Map the original spans to new positions.
+        mapped_spans = []
+        for span in spans:
+            if span[0] < len(orig2now) and span[1] < len(orig2now):
+                mapped_spans.append((orig2now[span[0]], orig2now[span[1]]))
+
+        mask_labels = _roberta_whole_word_mask_v1(self.tokenizer.convert_ids_to_tokens(input_ids),
+                                                  max_predictions=256,
+                                                  mlm_probability=self.mlm_probability,
+                                                  spans=mapped_spans,
+                                                  span_mlm_probability=self.span_mlm_probability,
+                                                  span_min_predictions=self.span_min_predictions,
+                                                  pad_token=self.tokenizer.pad_token)
+
+        assert len(mask_labels) == len(input_ids)
+
+        return mask_labels
+
+    def torch_mask_tokens(self, input_ids: Tensor, mask_labels: Tensor):
+        """
+            Prepare masked tokens inputs/labels for masked language modeling: 80% MASK, 10% random, 10% original. Set
+            'mask_labels' means we use whole word mask (wwm), we directly mask idxs according to it's ref.
+        """
+        if self.tokenizer.mask_token is None:
+            raise ValueError(
+                "This tokenizer does not have a mask token which is necessary for masked language modeling. Remove the"
+                " --mlm flag if you want to use this tokenizer."
+            )
+        labels = input_ids.clone()
+        # We sample a few tokens in each sequence for masked-LM training
+        # (with probability args.mlm_probability defaults to 0.15 in Bert/RoBERTa)
+
+        probability_matrix = mask_labels
+
+        special_tokens_mask = [
+            self.tokenizer.get_special_tokens_mask(val, already_has_special_tokens=True) for val in labels.tolist()
+        ]
+        probability_matrix.masked_fill_(torch.tensor(special_tokens_mask, dtype=torch.bool), value=0.0)
+        if self.tokenizer._pad_token is not None:
+            padding_mask = labels.eq(self.tokenizer.pad_token_id)
+            probability_matrix.masked_fill_(padding_mask, value=0.0)
+
+        masked_indices = probability_matrix.bool()
+        labels[~masked_indices] = -1  # We only compute loss on masked tokens
+
+        # 80% of the time, we replace masked input tokens with tokenizer.mask_token ([MASK])
+        indices_replaced = torch.bernoulli(torch.full(labels.shape, 0.8)).bool() & masked_indices
+        input_ids[indices_replaced] = self.tokenizer.convert_tokens_to_ids(self.tokenizer.mask_token)
+
+        # 10% of the time, we replace masked input tokens with random word
+        indices_random = torch.bernoulli(torch.full(labels.shape, 0.5)).bool() & masked_indices & ~indices_replaced
+        random_words = torch.randint(len(self.tokenizer), labels.shape, dtype=torch.long)
+        input_ids[indices_random] = random_words[indices_random]
+
+        # The rest of the time (10% of the time) we keep the masked input tokens unchanged
+        return input_ids, labels
 
 
 def seq2seq_text_trie(file_path, tokenizer: str, max_seq_length: int = 512):

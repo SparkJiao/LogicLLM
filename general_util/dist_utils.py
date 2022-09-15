@@ -27,6 +27,7 @@ def setup_slurm_distributed(cfg: DictConfig, backend="nccl", port=None):
     Most code are copied from https://github.com/BIGBALLON/distribuuuu/blob/master/tutorial/mnmc_ddp_slurm.py.
     """
     num_gpus = torch.cuda.device_count()
+    print(num_gpus)
     if num_gpus <= 1 or cfg.no_cuda:
         cfg.local_rank = -1
         cfg.device = str(torch.device("cuda" if torch.cuda.is_available() and not cfg.no_cuda else "cpu"))
