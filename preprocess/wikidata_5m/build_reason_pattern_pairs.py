@@ -16,6 +16,10 @@ First construct positive and negative pairs following specific rules:
         Entities are overlooked since the pattern is ignored with the entity.
         
         Positive examples retrieval process:
+            (1) Build the key-value map: relation-path -> list of original paths (including entities)
+            (2) Find a sub-relation-path in the original relation path -> find the corresponding paths through the map built in (1)
+            (3) Check if there exists a direct path connecting the ending entities of the found paths in (2)
+            (4)
         
 
 Then generate the corresponding text pairs.

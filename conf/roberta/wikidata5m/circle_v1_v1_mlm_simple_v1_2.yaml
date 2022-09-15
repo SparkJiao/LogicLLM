@@ -49,10 +49,10 @@ eval_sub_path:
 do_preprocess: False
 
 # Training hyper-parameters
-per_gpu_train_batch_size: 32
-per_gpu_eval_batch_size: 32
+per_gpu_train_batch_size: 8
+per_gpu_eval_batch_size: 8
 learning_rate: 5e-4
-gradient_accumulation_steps: 32
+gradient_accumulation_steps: 128
 weight_decay: 0.01
 adam_epsilon: 1e-6
 adam_betas: "(0.9, 0.98)"
@@ -78,7 +78,7 @@ seed: 42
 local_rank: -1
 fp16: True
 fp16_opt_level: O1
-fp16_bfloat16: False
+fp16_bfloat16: True
 
 # Prediction config
 prediction_cfg:
