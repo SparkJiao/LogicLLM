@@ -36,3 +36,21 @@ class RetrievalResultsBase:
             res[k] = sum(recall[k]) * 1.0 / len(recall[k]) if len(recall[k]) > 0 else 0.0
 
         return res, sorted_indices
+
+
+class MERItRetrieval:
+    def __init__(self):
+        self.scores_list = collections.defaultdict(list)
+
+    def __call__(self, meta_data: List[Dict[str, Any]], batch_model_outputs: Dict[str, Any]):
+        batch_size = len(meta_data)
+
+        logits = batch_model_outputs["logits"].reshape(batch_size).detach().cpu().float().tolist()
+        for meta, logit in zip(meta_data, logits):
+            self.scores_list[meta["que_id"]].append((logit, meta["ctx_id"]))
+
+    def get_results(self):
+        sorted_index = {
+            k: sorted(v, key=lambda x: x[0], reverse=True) for k, v in self.scores_list.items()
+        }
+        return {}, sorted_index

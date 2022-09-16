@@ -8,8 +8,11 @@ First construct positive and negative pairs following specific rules:
             (1) a -> b -> c; a -> c; if a -> c -> d exists (?). (double 2-hop)
             (2) a -> b -> c -> d; a -> d; (3-hop) 
                 but the involved entities/concepts/events are different (can be obtained by manual augmentation ?)
-            (3) a -> b -> c -> e -> d; 
+            (3) a -> b -> c -> e -> d;
+            (4) a -> d; The direct answer. 
         Any hard negative pairs?
+        
+        A quick experiments: If MERIt could be used for training samples retrieval quickly?
         
         For reader training, we may add a simple post-processing technique to choose the retrieved patterns.
         That is all the relations should be matched (we may need to seek the help from sentence bert to calculate semantic distance).
@@ -19,7 +22,7 @@ First construct positive and negative pairs following specific rules:
             (1) Build the key-value map: relation-path -> list of original paths (including entities)
             (2) Find a sub-relation-path in the original relation path -> find the corresponding paths through the map built in (1)
             (3) Check if there exists a direct path connecting the ending entities of the found paths in (2)
-            (4)
+            (4) To be continued.
         
 
 Then generate the corresponding text pairs.
