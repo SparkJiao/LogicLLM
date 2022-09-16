@@ -1,0 +1,118 @@
+hydra:
+  run:
+    dir: ./
+
+train_file: reclor_data/train.json
+dev_file: reclor_data/val.json
+#test_file: reclor_data/test.json
+test_file: reclor_data/train.json
+#test_file: reclor_data/val.json
+
+# Model
+model:
+  _target_: models.roberta.RobertaForMultipleChoiceForPreTrain.from_pretrained
+  mlp_hidden_size: 2048
+
+# Data loading
+read_tensor_train:
+  _target_: data.merit_examples_retrieval.ReClorIndexDataset
+  corpus_file_path: ${train_file}
+  remove_golden: True
+
+read_tensor_dev:
+  _target_: data.merit_examples_retrieval.ReClorIndexDataset
+  corpus_file_path: reclor_data/train_val.json
+  remove_golden: True
+
+read_tensor_test:
+  _target_: data.merit_examples_retrieval.ReClorIndexDataset
+#  corpus_file_path: reclor_data/train_val.json
+  corpus_file_path: reclor_data/train.json
+  remove_golden: True
+
+extended_vocab:
+
+# Data collator
+collator:
+  _target_: data.merit_examples_retrieval.ReClorIndexCollator
+  tokenizer: ${model_name_or_path}
+  max_seq_length: 512
+
+# Dataloader
+num_workers: 8
+prefetch_factor: 2
+
+# Wiki path pretrain v8.2
+model_name_or_path: pretrained-models/merit-roberta-large-v2
+pretrain:
+
+output_dir: pretrained-models/merit-roberta-large-v2
+predict_dir: experiments/reclor.merit-roberta-large-v2.example_retrieval.train
+
+do_train: False
+evaluate_during_training: True
+
+do_eval: True
+eval_sub_path:
+
+# Training hyper-parameters
+per_gpu_train_batch_size: 1
+per_gpu_eval_batch_size: 64
+learning_rate: 1e-5
+#learning_rate: 5e-6
+gradient_accumulation_steps: 12
+weight_decay: 0.01
+adam_epsilon: 1e-6
+adam_betas: "(0.9, 0.98)"
+#adam_betas: "(0.9, 0.999)"
+max_grad_norm: 0.0
+#max_grad_norm: 1.0
+num_train_epochs: 10
+max_steps: 0
+warmup_proportion: 0.1
+warmup_steps: 0
+
+
+logging_steps: 5
+save_steps: -1
+save_best: True
+eval_steps: 100
+ddp_eval: True
+no_cuda: False
+seed: 42
+local_rank: -1
+fp16: True
+fp16_opt_level: O1
+
+# Prediction config
+prediction_cfg:
+  metric: "acc"
+  measure: 1
+  best_checkpoint:
+  best_result:
+
+eval_forward_fn:
+  _target_: general_util.evaluator.DiscriminatorForwardFn
+
+post_process:
+  _target_: post_processors.retrieval.MERItRetrieval
+
+# fairscale.FullyShardedDP
+fairscale_config:
+  _target_: general_util.fsdp_utils.default_initialize
+  fp16: ${fp16}
+  reshard_after_forward: False
+  move_grads_to_cpu: False
+  move_params_to_cpu: False
+
+summary_helper:
+  _target_: general_util.tensorboard_helper.SummaryWriterHelper
+  batch_index_or_keys:
+  outputs_index_or_keys:
+
+# Temporary variables
+n_gpu:
+device:
+train_batch_size:
+eval_batch_size:
+world_size:

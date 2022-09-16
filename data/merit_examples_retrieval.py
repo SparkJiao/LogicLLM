@@ -22,7 +22,7 @@ def read_reclor_raw_data(file: str):
 
 
 class ReClorIndexDataset(Dataset):
-    def __init__(self, file_path: str, corpus_file_path: str, remove_golden: bool = True):
+    def __init__(self, file_path: str, tokenizer: PreTrainedTokenizer, corpus_file_path: str, remove_golden: bool = True):
         super().__init__()
 
         context, question, _, id_string = read_reclor_raw_data(file_path)
@@ -70,9 +70,10 @@ class ReClorIndexCollator:
 
         model_inputs = self.tokenizer(query,
                                       document,
-                                      padding=PaddingStrategy.MAX_LENGTH,
+                                      padding=PaddingStrategy.LONGEST,
                                       truncation=True,
-                                      max_length=self.max_seq_length)
+                                      max_length=self.max_seq_length,
+                                      return_tensors="pt")
 
         model_inputs["input_ids"] = model_inputs["input_ids"].unsqueeze(1)
         model_inputs["attention_mask"] = model_inputs["attention_mask"].unsqueeze(1)

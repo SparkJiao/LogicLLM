@@ -17,8 +17,10 @@ logger = get_child_logger(__name__)
 def evaluate(cfg: DictConfig, model: torch.nn.Module, tokenizer: PreTrainedTokenizer, prefix="", _split="dev"):
     dataset = load_and_cache_examples(cfg, tokenizer, _split=_split)
 
-    if cfg.local_rank in [-1, 0] and not os.path.exists(os.path.join(cfg.output_dir, prefix)):
-        os.makedirs(os.path.join(cfg.output_dir, prefix))
+    output_dir = getattr(cfg, "predict_dir", cfg.output_dir)
+
+    if cfg.local_rank in [-1, 0] and not os.path.exists(os.path.join(output_dir, prefix)):
+        os.makedirs(os.path.join(output_dir, prefix))
 
     cfg.eval_batch_size = cfg.per_gpu_eval_batch_size
     if cfg.ddp_eval and cfg.local_rank != -1:
@@ -146,9 +148,9 @@ def evaluate(cfg: DictConfig, model: torch.nn.Module, tokenizer: PreTrainedToken
     logger.info(metric_log)
 
     if cfg.local_rank == -1:
-        prediction_file = os.path.join(cfg.output_dir, prefix, "eval_predictions.json")
+        prediction_file = os.path.join(output_dir, prefix, "eval_predictions.json")
     else:
-        prediction_file = os.path.join(cfg.output_dir, prefix, f"eval_predictions_rank{cfg.local_rank}.json")
+        prediction_file = os.path.join(output_dir, prefix, f"eval_predictions_rank{cfg.local_rank}.json")
     json.dump(predictions, open(prediction_file, "w"), ensure_ascii=False, indent=2)
 
     torch.cuda.empty_cache()
@@ -159,8 +161,10 @@ def evaluate(cfg: DictConfig, model: torch.nn.Module, tokenizer: PreTrainedToken
 def evaluate_fn(cfg: DictConfig, model: torch.nn.Module, tokenizer: PreTrainedTokenizer, prefix="", _split="dev"):
     dataset = load_and_cache_examples(cfg, tokenizer, _split=_split)
 
-    if cfg.local_rank in [-1, 0] and not os.path.exists(os.path.join(cfg.output_dir, prefix)):
-        os.makedirs(os.path.join(cfg.output_dir, prefix))
+    output_dir = getattr(cfg, "predict_dir", cfg.output_dir)
+
+    if cfg.local_rank in [-1, 0] and not os.path.exists(os.path.join(output_dir, prefix)):
+        os.makedirs(os.path.join(output_dir, prefix))
 
     cfg.eval_batch_size = cfg.per_gpu_eval_batch_size
     if cfg.ddp_eval and cfg.local_rank != -1:
@@ -243,9 +247,9 @@ def evaluate_fn(cfg: DictConfig, model: torch.nn.Module, tokenizer: PreTrainedTo
     logger.info(metric_log)
 
     if cfg.local_rank == -1:
-        prediction_file = os.path.join(cfg.output_dir, prefix, "eval_predictions.json")
+        prediction_file = os.path.join(output_dir, prefix, "eval_predictions.json")
     else:
-        prediction_file = os.path.join(cfg.output_dir, prefix, f"eval_predictions_rank{cfg.local_rank}.json")
+        prediction_file = os.path.join(output_dir, prefix, f"eval_predictions_rank{cfg.local_rank}.json")
     json.dump(predictions, open(prediction_file, "w"), ensure_ascii=False, indent=2)
 
     torch.cuda.empty_cache()

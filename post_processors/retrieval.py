@@ -4,6 +4,8 @@ from typing import List, Union, Tuple, Dict, Any
 import torch
 
 from general_util.logger import get_child_logger
+import torch.distributed as dist
+from post_processors.dist_mixin import DistGatherMixin
 
 logger = get_child_logger(__name__)
 
@@ -38,16 +40,30 @@ class RetrievalResultsBase:
         return res, sorted_indices
 
 
-class MERItRetrieval:
+class MERItRetrieval(DistGatherMixin):
     def __init__(self):
         self.scores_list = collections.defaultdict(list)
 
-    def __call__(self, meta_data: List[Dict[str, Any]], batch_model_outputs: Dict[str, Any]):
+    def __call__(self, meta_data: List[Dict[str, Any]], batch_model_outputs: Dict[str, Any], ddp: bool = False):
         batch_size = len(meta_data)
 
         logits = batch_model_outputs["logits"].reshape(batch_size).detach().cpu().float().tolist()
+        outcome = []
         for meta, logit in zip(meta_data, logits):
-            self.scores_list[meta["que_id"]].append((logit, meta["ctx_id"]))
+            # scores_list[meta["que_id"]].append((logit, meta["ctx_id"]))
+            outcome.append((meta["que_id"], logit, meta["ctx_id"]))
+
+        if ddp:
+            obj = outcome
+            gather_res = self.gather_object(obj)
+            if dist.get_rank() == 0:
+                tmp = []
+                for item in gather_res:
+                    tmp.extend(item)
+                outcome = tmp
+
+        for que_id, logit, ctx_id in outcome:
+            self.scores_list[que_id].append((logit, ctx_id))
 
     def get_results(self):
         sorted_index = {
