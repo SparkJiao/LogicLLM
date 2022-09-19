@@ -2,6 +2,10 @@ import json
 from typing import List
 from data.data_utils import dfs_enumerate_all_assign
 
+from general_util.logger import get_child_logger
+
+
+logger = get_child_logger(__name__)
 
 class LSATReader:
     label2id = {'A': 0, 'B': 1, 'C': 2, 'D': 3, 'E': 4}
@@ -265,6 +269,41 @@ class ReClorReader:
         all_label = []
         for sample in data:
             all_context.append(sample["context"])
+            all_question.append(sample["question"])
+            if "label" not in sample:
+                all_label.append(-1)
+            else:
+                all_label.append(sample["label"])
+            all_option_list.append(sample["answers"])
+
+        return all_context, all_question, all_option_list, all_label
+
+
+class ReClorExampleReader:
+    def __init__(self, retrieval_results: str, corpus_file: str, top_k: int):
+        retrieval_results = json.load(open(retrieval_results))
+        corpus = json.load(open(corpus_file))
+        corpus = {item["id_string"]: f"{item['context']} {item['question']} {item['answers'][item['label']]}" for item in corpus}
+        # self.examples = [
+        #     [corpus[res[1]] for res in results[:top_k]] for results in retrieval_results
+        # ]
+        self.examples = {
+            q: [corpus[res[1]] for res in v[:top_k]] for q, v in retrieval_results.items()
+        }
+
+    def __call__(self, file):
+        data = json.load(open(file, 'r'))
+
+        if len(data) != len(self.examples):
+            logger.warning(f"Inconsistent data amount: {len(data)} v.s. {len(self.examples)}")
+
+        all_context = []
+        all_question = []
+        all_option_list = []
+        all_label = []
+        for sample in data:
+            examples = self.examples[sample["id_string"]]
+            all_context.append("<s>".join(examples + [sample["context"]]))  # FIXME: Hard coding here.
             all_question.append(sample["question"])
             if "label" not in sample:
                 all_label.append(-1)

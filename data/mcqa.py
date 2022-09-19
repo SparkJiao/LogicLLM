@@ -99,6 +99,8 @@ def multiple_choice_get_tensor(read_func, file_path: str, tokenizer: PreTrainedT
     else:
         inputs = (input_ids, attention_mask, op_mask, labels)
 
+    logger.info(f"Sequence length: {input_ids.size(2)}")
+
     logger.info(f"Saving processed tensors into {cached_file_path}.")
     torch.save(inputs, cached_file_path)
 

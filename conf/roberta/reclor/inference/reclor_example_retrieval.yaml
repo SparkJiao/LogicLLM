@@ -4,8 +4,8 @@ hydra:
 
 train_file: reclor_data/train.json
 dev_file: reclor_data/val.json
-#test_file: reclor_data/test.json
-test_file: reclor_data/train.json
+test_file: reclor_data/test.json
+#test_file: reclor_data/train.json
 #test_file: reclor_data/val.json
 
 # Model
@@ -26,8 +26,8 @@ read_tensor_dev:
 
 read_tensor_test:
   _target_: data.merit_examples_retrieval.ReClorIndexDataset
-#  corpus_file_path: reclor_data/train_val.json
-  corpus_file_path: reclor_data/train.json
+  corpus_file_path: reclor_data/train_val.json
+#  corpus_file_path: reclor_data/train.json
   remove_golden: True
 
 extended_vocab:
@@ -47,7 +47,7 @@ model_name_or_path: pretrained-models/merit-roberta-large-v2
 pretrain:
 
 output_dir: pretrained-models/merit-roberta-large-v2
-predict_dir: experiments/reclor.merit-roberta-large-v2.example_retrieval.train
+predict_dir: experiments/reclor.merit-roberta-large-v2.example_retrieval.test
 
 do_train: False
 evaluate_during_training: True
