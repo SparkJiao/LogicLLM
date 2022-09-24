@@ -1,4 +1,4 @@
- #!/bin/bash
+#!/bin/bash
 
 seed=42
 
@@ -10,4 +10,4 @@ python preprocess/wikidata_5m/build_reason_pattern_pairs.py \
   --id2rel wikidata5m/triplet_text_align_v1.0/id2rel.json \
   --pattern_pair_save_file wikidata5m/triplet_text_align_v1.0/logical_pattern_pairs/reason_pattern_pairs_v1_s${seed}.json  \
   --text_pair_save_file wikidata5m/triplet_text_align_v1.0/logical_pattern_pairs/reason_pattern_text_pairs_v1_5_5_${seed}.json \
-  --num_workers 16 --max_query_per_rel 5 --max_path_per_rel 5
+  --num_workers 32 --max_query_per_rel 5 --max_path_per_rel 5

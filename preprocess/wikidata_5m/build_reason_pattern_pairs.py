@@ -316,6 +316,9 @@ def triplet2texts(triplet: str, triplet2sent, id2ent, id2rel, skip_symbols: bool
     if skip_symbols:
         return texts
 
+    if s not in id2ent or t not in id2ent:
+        return texts
+
     s_alias = random.choice(id2ent[s])
     t_alias = random.choice(id2ent[t])
     # FIXED: KeyError here. Should be checked in `align_triplet_text.py`.
@@ -410,7 +413,7 @@ def main():
     id2ent = json.load(open(args.id2ent, "r"))
     triplet2sent = json.load(open(args.triplet2sent, "r"))
 
-    rel_key_candidates = rel_key_candidates[:1000]
+    # rel_key_candidates = rel_key_candidates[:1000]
     with Pool(args.num_workers, initializer=pattern2text_init,
               initargs=(path_rel_vocab, rel_mapping, rel_pos_pairs, triplet2sent, id2ent, id2rel)) as p:
         # pattern2text_init(path_rel_vocab, rel_mapping, rel_pos_pairs, triplet2sent, id2ent, id2rel)
@@ -432,13 +435,18 @@ def main():
         s, t = edge.split("\t")
         rel2edge[rel].append("\t".join([s, rel, t]))
 
+    pattern2text_init(path_rel_vocab, rel_mapping, rel_pos_pairs, triplet2sent, id2ent, id2rel)
+
     results = []
     for res_ls in pairs:
         for res in res_ls:
             if res["query_text"] == "":
                 continue
             if res["pos_text"] == "#REL":
-                res["pos_text"] = triplet2texts(random.choice(rel2edge[res["pos_rel_key"]]), id2ent, id2rel, args.skip_symbols)
+                # res["pos_text"] = triplet2texts(random.choice(rel2edge[res["pos_rel_key"]]), id2ent, id2rel, args.skip_symbols)
+                # FIXME: s_alias = random.choice(id2ent[s])
+                #   KeyError: 'Q5822626'
+                res["pos_text"] = path2text([random.choice(rel2edge[res["pos_rel_key"]])], skip_symbols=args.skip_symbols)
             if res["pos_text"] == "":
                 continue
             results.append(res)
