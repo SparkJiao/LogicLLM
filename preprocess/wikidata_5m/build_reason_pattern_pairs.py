@@ -438,7 +438,7 @@ def main():
     pattern2text_init(path_rel_vocab, rel_mapping, rel_pos_pairs, triplet2sent, id2ent, id2rel)
 
     results = []
-    for res_ls in pairs:
+    for res_ls in tqdm(pairs, total=len(pairs), desc="cleaning results"):
         for res in res_ls:
             if res["query_text"] == "":
                 continue
