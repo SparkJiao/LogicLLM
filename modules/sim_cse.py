@@ -7,6 +7,7 @@ from numpy import ndarray
 from simcse import SimCSE
 from torch import Tensor
 from tqdm import tqdm
+from typing import Tuple
 
 logging.basicConfig(format='%(asctime)s - %(levelname)s - %(name)s -   %(message)s', datefmt='%m/%d/%Y %H:%M:%S',
                     level=logging.INFO)
@@ -18,8 +19,11 @@ class ModifiedSimCSE(SimCSE):
                  device: str = None,
                  num_cells: int = 100,
                  num_cells_in_search: int = 10,
-                 pooler=None):
+                 pooler=None,
+                 shard: bool = False):
         super().__init__(model_name_or_path, device, num_cells, num_cells_in_search, pooler)
+
+        self.shard = shard
 
     def encode(self, sentence: Union[str, List[str]],
                device: str = None,
@@ -45,7 +49,7 @@ class ModifiedSimCSE(SimCSE):
         embedding_list = []
         with torch.no_grad():
             total_batch = len(sentence) // batch_size + (1 if len(sentence) % batch_size > 0 else 0)
-            for batch_id in tqdm(range(total_batch)):
+            for batch_id in tqdm(range(total_batch), dynamic_ncols=True, disable=(total_batch < 10)):
                 inputs = self.tokenizer(
                     sentence[batch_id * batch_size:(batch_id + 1) * batch_size],
                     padding=True,
@@ -124,8 +128,20 @@ class ModifiedSimCSE(SimCSE):
                 if hasattr(faiss, "StandardGpuResources"):
                     logger.info("Use GPU-version faiss")
                     res = faiss.StandardGpuResources()
-                    res.setTempMemory(20 * 1024 * 1024 * 1024)
-                    index = faiss.index_cpu_to_gpu(res, 0, index)
+                    res.setTempMemory(40 * 1024 * 1024 * 1024)
+                    n_gpu = torch.cuda.device_count()
+                    if n_gpu > 1:
+                        if self.shard:
+                            # There seems an unfixed bug here.
+                            # See: https://github.com/facebookresearch/faiss/issues/2064
+                            # And the documentation is here: https://github.com/facebookresearch/faiss/wiki/Faiss-on-the-GPU
+                            option = faiss.GpuMultipleClonerOptions()
+                            option.shard = True
+                            index = faiss.index_cpu_to_gpu_multiple(res, 0, index, options=option)
+                        else:
+                            index = faiss.index_cpu_to_all_gpus(index)
+                    else:
+                        index = faiss.index_cpu_to_gpu(res, 0, index)
                 else:
                     logger.info("Use CPU-version faiss")
             else:
@@ -141,3 +157,44 @@ class ModifiedSimCSE(SimCSE):
             self.is_faiss_index = False
         self.index["index"] = index
         logger.info("Finished")
+
+    def search(self, queries: Union[str, List[str]],
+               query_vecs: ndarray = None,
+               device: str = None,
+               threshold: float = 0.6,
+               top_k: int = 5) -> Union[List[Tuple[str, float]], List[List[Tuple[str, float]]]]:
+
+        if not self.is_faiss_index:
+            if isinstance(queries, list):
+                combined_results = []
+                for query in queries:
+                    results = self.search(query, device)
+                    combined_results.append(results)
+                return combined_results
+
+            similarities = self.similarity(queries, self.index["index"]).tolist()
+            id_and_score = []
+            for i, s in enumerate(similarities):
+                if s >= threshold:
+                    id_and_score.append((i, s))
+            id_and_score = sorted(id_and_score, key=lambda x: x[1], reverse=True)[:top_k]
+            results = [(self.index["sentences"][idx], score) for idx, score in id_and_score]
+            return results
+        else:
+            if query_vecs is None:
+                query_vecs = self.encode(queries, device=device, normalize_to_unit=True, keepdim=True, return_numpy=True)
+
+            distance, idx = self.index["index"].search(query_vecs.astype(np.float32), top_k)
+
+            def pack_single_result(dist, idx):
+                results = [(self.index["sentences"][i], s) for i, s in zip(idx, dist) if s >= threshold]
+                return results
+
+            if isinstance(queries, list):
+                combined_results = []
+                for i in range(len(queries)):
+                    results = pack_single_result(distance[i], idx[i])
+                    combined_results.append(results)
+                return combined_results
+            else:
+                return pack_single_result(distance[0], idx[0])

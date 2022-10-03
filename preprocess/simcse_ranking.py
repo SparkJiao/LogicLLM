@@ -66,7 +66,7 @@ def main():
 
     for _file_id, _file in enumerate(input_files):
         samples = json.load(open(_file))
-        for sample_id, sample in enumerate(tqdm(samples, desc="Searching over corpus", total=len(samples))):
+        for sample_id, sample in enumerate(tqdm(samples, desc="Searching over corpus", total=len(samples), dynamic_ncols=True)):
             sent_sim_results = []
             for sent_id, sent in enumerate(sample["sents"]):
                 sent = " ".join(sent)
