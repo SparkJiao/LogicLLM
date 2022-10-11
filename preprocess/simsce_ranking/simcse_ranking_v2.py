@@ -88,7 +88,7 @@ def main():
             tmp = []
             for res in sample_res_ls:
                 query_full_id = sent2full_id[res[0]]
-                if query_full_id[0] == _file_id and query_full_id[1] == full_id[0] and query_full_id[2] == full_id[2]:
+                if query_full_id[0] == _file_id and query_full_id[1] == full_id[0] and query_full_id[2] == full_id[1]:
                     continue
                 tmp.append((res[0], float(res[1]), query_full_id))
                 break
