@@ -2,9 +2,9 @@ hydra:
   run:
     dir: ./
 
-train_file: race-reclor/race-train-reclor.json
-dev_file: race-reclor/race-dev-reclor.json
-test_file: race-reclor/race-test-reclor.json
+train_file: reclor_data/train.json
+dev_file: reclor_data/val.json
+test_file: reclor_data/test.json
 
 # Model
 model:
@@ -16,7 +16,7 @@ read_tensor:
   _target_: data.mcqa.multiple_choice_get_tensor
   read_func:
     _target_: data.readers.ReClorReader
-  max_seq_length: 512
+  max_seq_length: 256
 
 extended_vocab:
 
@@ -29,17 +29,10 @@ num_workers: 4
 prefetch_factor: 2
 
 # Wiki path pretrain v8.2
-#model_name_or_path: pretrained-models/roberta.large.wiki_erica_path_v9_v9.0.1aug.seq320.w4.2080Ti.rerun/checkpoint-500
-#model_name_or_path: pretrained-models/roberta.large.wiki_erica_path_v9_v9.0.1aug.seq384.w4.adamw.mlm_0.5.500steps.8bit.2080Ti/checkpoint-500
-model_name_or_path: pretrained-models/roberta-large
-#model_name_or_path: pretrained-models/roberta.large.wiki_erica_path_v9_v9.0.1aug.seq384.w2.adamw.mlm_1.0.A100/checkpoint-500
+model_name_or_path: experiments/roberta.large.wiki_erica_path_v9.1_v9.1.pair.v1.4.1aug.seq512.w8.adamw.500steps.NA100/checkpoint-500
 pretrain:
 
-#output_dir: experiments/reclor.roberta.merit-v1.pv9.v9.0.rerun.cp500.w4.TitanXP.v1.0.s${seed}
-#output_dir: experiments/reclor.roberta.merit-v1.pv9.v9.0.rerun.cp500.w2.TitanXP.v1.0.s${seed}
-#output_dir: experiments/reclor.roberta.merit-v1.pv9.v9.0.seq384.A100-cp500-mlm_1.0.w2.A100.v1.0.s${seed}
-#output_dir: experiments/race.roberta.merit-v1.pv9.v9.0.seq384.A100-cp500-mlm_1.0.w2.3090.v1.0.s${seed}
-output_dir: experiments/race.roberta.w1.A100.v1.0.s${seed}
+output_dir: experiments/reclor.roberta.merit-v1.pv91.v91.pair-v1.4.cp500.w1.A40.v1.1.s${seed}
 
 do_train: True
 evaluate_during_training: True
@@ -47,23 +40,21 @@ evaluate_during_training: True
 do_eval: True
 eval_sub_path:
 
-do_preprocess: False
-
 # Training hyper-parameters
-per_gpu_train_batch_size: 4
-per_gpu_eval_batch_size: 8
-learning_rate: 1e-5
+per_gpu_train_batch_size: 12
+per_gpu_eval_batch_size: 24
+learning_rate: 2e-5
 #learning_rate: 5e-6
 gradient_accumulation_steps: 2
-weight_decay: 0.1
+weight_decay: 0.01
 adam_epsilon: 1e-6
 adam_betas: "(0.9, 0.98)"
 #adam_betas: "(0.9, 0.999)"
 max_grad_norm: 0.0
 #max_grad_norm: 1.0
-num_train_epochs: 4
+num_train_epochs: 10
 max_steps: 0
-warmup_proportion: 0.06
+warmup_proportion: 0.1
 warmup_steps: 0
 
 # Optimizer
@@ -74,7 +65,7 @@ bit_training:
 logging_steps: 5
 save_steps: -1
 save_best: True
-eval_steps: 2000
+eval_steps: 100
 ddp_eval: True
 no_cuda: False
 seed: 42
@@ -92,6 +83,7 @@ prediction_cfg:
 eval_forward_fn:
   _target_: general_util.evaluator.DiscriminatorForwardFn
 post_process:
+  _target_: post_processors.reclor.NumpySaver
 
 #dist_init:
 #  _target_: general_util.dist_utils.setup_slurm_distributed

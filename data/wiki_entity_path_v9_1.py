@@ -12,7 +12,7 @@ from torch.distributions.geometric import Geometric
 from tqdm import tqdm
 from transformers import PreTrainedTokenizer
 
-from data.collators.wiki import WikiPathDatasetV5
+from data.collators.wiki import WikiPathDatasetV6wPatternPair
 from data.data_utils import get_all_permutation
 from general_util.logger import get_child_logger
 
@@ -334,11 +334,15 @@ def insert_sentences(orig_sentences: List[str], new_sentences: List[str], shuffl
 
 
 def add_noise_sentence(num: int, item: Dict, orig_sentences: List[str], rep_pairs: Dict[int, str] = None, shuffle: bool = False) -> str:
+    if num == 0:
+        return " ".join(orig_sentences)
+
     noise_src_sent = sample_context_sentence(num, item)
     noise_tgt_sent = random.sample(list(item["selected_sentences"].values()), num)
     noise_sent = []
     for noise_tgt, noise_s in zip(noise_tgt_sent, noise_src_sent):
-        _res = replace_neg(noise_tgt, noise_s, rep_pairs=rep_pairs, out_of_domain=False)
+        # _res = replace_neg(noise_tgt, noise_s, rep_pairs=rep_pairs, out_of_domain=False)
+        _res, _ = context_replace_neg(noise_tgt, noise_s, rep_pairs=rep_pairs, out_of_domain=False)
         if len(_res) > 0:
             noise_sent.append(_res[0])
 
@@ -416,7 +420,8 @@ def _process_single_item(item, max_neg_num: int, aug_num: int, min_rep_num: int,
                 neg_data_item_id = random.choice(list(_all_neg_candidates.keys()))
             neg = random.choice(_all_neg_candidates[neg_data_item_id])
 
-            _rep_res = replace_neg(pos_candi, neg, rep_pairs=None, out_of_domain=False)
+            # _rep_res = replace_neg(pos_candi, neg, rep_pairs=None, out_of_domain=False)
+            _rep_res, _ = context_replace_neg(pos_candi, neg, rep_pairs=None, out_of_domain=False)
             if _rep_res:
                 neg_res.extend(_rep_res)
 
@@ -917,7 +922,7 @@ def read_examples(file_path: str, shuffle_context: bool = False,
     return examples, context_examples, raw_texts
 
 
-def convert_examples_into_features(file_path: str, tokenizer: PreTrainedTokenizer,
+def convert_examples_into_features(file_path: str, tokenizer: PreTrainedTokenizer, pattern_pair_file: str,
                                    shuffle_context: bool = False, max_neg_num: int = 3, aug_num: int = 10,
                                    max_seq_length: int = 512, geo_p: float = 0.5, min_rep_num: int = 1,
                                    deduct_ratio: float = 1.0, context_ratio: float = 1.0, noise_sent_ratio: float = 0.5,
@@ -930,13 +935,13 @@ def convert_examples_into_features(file_path: str, tokenizer: PreTrainedTokenize
     file_suffix = f"{tokenizer_name}_{shuffle_context}_{max_neg_num}_{aug_num}_" \
                   f"{max_seq_length}_{geo_p}_{min_rep_num}_" \
                   f"{deduct_ratio}_{context_ratio}_{noise_sent_ratio}_{max_neg_samples_num}_" \
-                  f"{'' if not remove_context else 'no-ctx-ex_'}{'' if not remove_deduct else 'no-duc-ex_'}path_v9"
+                  f"{'' if not remove_context else 'no-ctx-ex_'}{'' if not remove_deduct else 'no-duc-ex_'}path_v9.1"
 
     cached_file_path = f"{file_path}_{file_suffix}"
     if os.path.exists(cached_file_path):
         logger.info(f"Loading cached file from {cached_file_path}")
         all_examples, raw_texts = torch.load(cached_file_path)
-        dataset = WikiPathDatasetV5(all_examples, raw_texts)
+        dataset = WikiPathDatasetV6wPatternPair(all_examples, raw_texts, pattern_pair_file)
         return dataset
 
     examples, context_examples, raw_texts = read_examples(file_path, shuffle_context=shuffle_context, max_neg_num=max_neg_num,
@@ -952,11 +957,11 @@ def convert_examples_into_features(file_path: str, tokenizer: PreTrainedTokenize
     logger.info(f"Saving processed features into {cached_file_path}.")
     torch.save((all_examples, raw_texts), cached_file_path)
 
-    return WikiPathDatasetV5(all_examples, raw_texts)
+    return WikiPathDatasetV6wPatternPair(all_examples, raw_texts, pattern_pair_file)
 
 
-def _quick_loading(file_path: str, **kwargs):
+def _quick_loading(file_path: str, pattern_pair_file: str, **kwargs):
     logger.info(f"Quickly loading cached file from {file_path}")
     all_examples, raw_texts = torch.load(file_path)
-    dataset = WikiPathDatasetV5(all_examples, raw_texts)
+    dataset = WikiPathDatasetV6wPatternPair(all_examples, raw_texts, pattern_pair_file)
     return dataset

@@ -1,8 +1,9 @@
-import pickle
 import argparse
-from typing import Tuple, Dict, Union
-from multiprocessing import Pool
+import json
+import pickle
 from collections import defaultdict
+from typing import Tuple, Dict, Union
+
 from tqdm import tqdm
 
 RES: Union[Tuple[str, int], Tuple[str, str, int]]
@@ -62,6 +63,7 @@ def find_similar_pattern_w_rel(example):
 def parse_args():
     parser = argparse.ArgumentParser()
     parser.add_argument("--input_file", type=str)
+    parser.add_argument("--output_file", type=str)
     parser.add_argument("--num_workers", type=int, default=16)
     parser.add_argument("--kg", type=str)
 
@@ -123,15 +125,22 @@ def main():
 
         results.append((ent_path, rel_path, example_id))
 
+    id2pos_ls = defaultdict(list)
     cnt = 0
     for res in tqdm(results):
         ent_path, rel_path, example_id = res
-        cnt += sum([x != example_id for x in ent_path_set[ent_path]])
+        tmp_set = set()
+        tmp_set.update(set([x for x in ent_path_set[ent_path] if x != example_id]))
 
         if rel_path is not None:
-            cnt += sum([x != example_id for x in rel_path_set[rel_path]])
+            tmp_set.update(set([x for x in rel_path_set[rel_path] if x != example_id]))
+
+        id2pos_ls[example_id] = list(tmp_set)
+        cnt += len(id2pos_ls[example_id])
 
     print(f"{cnt} / {len(results)} = {cnt / len(results)}")
+
+    pickle.dump(id2pos_ls, open(args.output_file, "wb"))  # use pickle since the key are of type `int`.
 
 
 if __name__ == '__main__':

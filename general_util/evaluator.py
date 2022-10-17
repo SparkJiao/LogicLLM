@@ -1,5 +1,6 @@
 import json
 import os
+import inspect
 
 import hydra
 import torch
@@ -235,7 +236,14 @@ def evaluate_fn(cfg: DictConfig, model: torch.nn.Module, tokenizer: PreTrainedTo
         metric_log = ""
 
     if post_processor is not None:
-        post_results, post_predictions = post_processor.get_results()
+        sig = inspect.signature(post_processor.get_results)
+        post_kwargs = {}
+        # print(sig.parameters)
+        # print(sig.parameters.keys())
+        if "output_dir" in list(sig.parameters.keys()):
+            post_kwargs["output_dir"] = os.path.join(output_dir, prefix)
+
+        post_results, post_predictions = post_processor.get_results(**post_kwargs)
         results.update(post_results)
         metric_log = '\t'.join([f"{k}: {v}" for k, v in results.items()])
         predictions = post_predictions

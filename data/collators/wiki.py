@@ -1,7 +1,10 @@
+import collections
+import json
 import random
 from collections import Counter
 from typing import Tuple, Optional
 import os
+import pickle
 
 import torch
 import transformers
@@ -44,6 +47,49 @@ class WikiPathDatasetV5(Dataset):
             "text": text,
             "index": index,
         }
+
+
+class WikiPathDatasetV6wPatternPair(WikiPathDatasetV5):
+    def __init__(self, examples, raw_texts, pattern_pair_file: str):
+        super().__init__(examples, raw_texts)
+
+        self.id2exp = collections.defaultdict(list)
+        for exp_id, exp in enumerate(self.examples):
+            self.id2exp[exp["orig_id"]].append(exp_id)
+
+        self.pattern_pairs = pickle.load(open(pattern_pair_file, "rb"))
+
+        # uncontained = 0
+        # for exp in self.examples:
+        #     if exp["orig_id"] not in self.pattern_pairs:
+        #         uncontained += 1
+        # print(f" =========================================== {uncontained} ==================================")
+
+    def __getitem__(self, index) -> T_co:
+        item = super().__getitem__(index)
+
+        paired_example_ids = []
+        if item["example"]["orig_id"] in self.pattern_pairs and len(self.pattern_pairs[item["example"]["orig_id"]]):
+            paired_example_orig_ids = self.pattern_pairs[item["example"]["orig_id"]]
+            for paired_exp_id in paired_example_orig_ids:
+                paired_example_ids.extend(self.id2exp[paired_exp_id])
+        else:
+            paired_example_orig_ids = []
+            # If there is no paired examples, we add corresponding original examples of itself as the paired examples.
+            # The only thing to check is to avoid the specific example itself.
+            paired_example_ids.extend(self.id2exp[item["example"]["orig_id"]])
+
+        paired_example_ids = list(set(paired_example_ids) - {index})
+
+        if len(paired_example_ids) > 0:
+            paired_example = self.examples[random.choice(paired_example_ids)]
+        else:
+            paired_example = None
+
+        item["paired_example_orig_ids"] = paired_example_orig_ids
+        item["paired_example"] = paired_example
+
+        return item
 
 
 class WikiPathDatasetGenerate(Dataset):
@@ -252,6 +298,146 @@ class WikiPathDatasetCollatorWithContext(WikiPathDatasetCollator):
             "mlm_input_ids": mlm_input_ids,
             "mlm_attention_mask": mlm_attention_mask,
             "mlm_labels": mlm_labels
+        }
+        if "token_type_ids" in tokenizer_outputs:
+            res["token_type_ids"] = tokenizer_outputs["token_type_ids"]
+        return res
+
+
+class WikiPathDatasetCollatorWithContextAndPair(WikiPathDatasetCollator):
+    def __init__(self, max_seq_length: int, tokenizer: str, mlm_probability: float = 0.15, max_option_num: int = 4, swap: bool = False):
+        super().__init__(max_seq_length, tokenizer, mlm_probability, max_option_num)
+        self.swap = swap
+
+    def prepare_single_example(self, item):
+        input_a = []
+        input_b = []
+        if "negative_context" in item["example"]:
+            input_a.extend(([item["example"]["context"]] + item["example"]["negative_context"])[:self.max_option_num])
+            input_b.extend([item["example"]["condition"]] * self.max_option_num)
+        else:
+            op = ([item["example"]["positive"]] + item["example"]["negative"])[:self.max_option_num]
+            if self.swap:
+                input_a.extend([item["example"]["context"]] * len(op))
+                input_b.extend(op)
+            else:
+                input_a.extend(op)
+                input_b.extend([item["example"]["context"]] * len(op))
+
+        assert len(input_a) == len(input_b)
+
+        paired_input_a = self.tokenizer.pad_token
+        paired_input_b = self.tokenizer.pad_token
+        paired_example = item["paired_example"]
+        paired_example_id = -1
+        if paired_example is not None:
+            paired_example_id = paired_example["orig_id"]
+            if "negative_context" in paired_example:
+                paired_input_a = paired_example["context"]
+                paired_input_b = paired_example["condition"]
+            else:
+                if self.swap:
+                    paired_input_a = paired_example["context"]
+                    paired_input_b = paired_example["positive"]
+                else:
+                    paired_input_a = paired_example["positive"]
+                    paired_input_b = paired_example["context"]
+
+        return input_a, input_b, paired_input_a, paired_input_b, item["example"]["orig_id"], paired_example_id, \
+            item["paired_example_orig_ids"]
+
+    def __call__(self, batch):
+        input_a, input_b, texts = [], [], []
+        paired_input_a, paired_input_b, orig_ids, paired_orig_ids, paired_orig_id_list = [], [], [], [], []
+        for b in batch:
+            b_input_a, b_input_b, b_paired_input_a, b_paired_input_b, b_orig_id, b_paired_orig_id, b_pair_id_list = \
+                self.prepare_single_example(b)
+
+            input_a.extend(b_input_a)
+            input_b.extend(b_input_b)
+            paired_input_a.append(b_paired_input_a)
+            paired_input_b.append(b_paired_input_b)
+            orig_ids.append(b_orig_id)
+            paired_orig_ids.append(b_paired_orig_id)
+            paired_orig_id_list.append(b_pair_id_list)
+            texts.append(b["text"])
+
+        del batch
+
+        tokenizer_outputs = self.tokenizer(input_a, input_b, padding=PaddingStrategy.LONGEST,
+                                           truncation=TruncationStrategy.LONGEST_FIRST, max_length=self.max_seq_length,
+                                           return_tensors="pt")
+        input_ids = tokenizer_outputs["input_ids"]
+        attention_mask = tokenizer_outputs["attention_mask"]
+
+        pair_tokenizer_outputs = self.tokenizer(paired_input_a, paired_input_b, padding=PaddingStrategy.LONGEST,
+                                                truncation=TruncationStrategy.LONGEST_FIRST, max_length=self.max_seq_length,
+                                                return_tensors="pt")
+        pair_input_ids = pair_tokenizer_outputs["input_ids"]
+        pair_attention_mask = pair_tokenizer_outputs["attention_mask"]
+
+        # prepare pair labels and mask
+        pair_align_mask = []  # `1` for mask and `0` for true value.
+        pair_align_labels = []  # `-1` for non-pair examples.
+        assert len(paired_orig_id_list) == len(orig_ids) == len(paired_orig_ids)
+        for a_id, (a_orig_id, a_paired_orig_id_list) in enumerate(zip(orig_ids, paired_orig_id_list)):
+            # pair dot product
+            pair_mask = []
+            for b_id, b_paired_orig_id in enumerate(paired_orig_ids):
+                if a_id == b_id:
+                    if b_paired_orig_id != -1:
+                        pair_align_labels.append(b_id)
+                        assert b_paired_orig_id in a_paired_orig_id_list or b_paired_orig_id == a_orig_id
+                    else:
+                        pair_align_labels.append(-1)
+                    pair_mask.append(0)
+                else:
+                    if b_paired_orig_id in a_paired_orig_id_list or b_paired_orig_id == -1 or b_paired_orig_id == a_orig_id:
+                        pair_mask.append(1)
+                    else:
+                        pair_mask.append(0)
+
+            # self dot product
+            for c_id, c_orig_id in enumerate(orig_ids):
+                if c_id == a_id:
+                    pair_mask.append(1)
+                else:
+                    if c_orig_id in a_paired_orig_id_list or c_orig_id == a_orig_id:
+                        pair_mask.append(1)
+                    else:
+                        pair_mask.append(0)
+
+            # assert sum(pair_mask) + 2 <= len(pair_mask), pair_mask
+            assert len(pair_mask) == len(orig_ids) * 2
+            pair_align_mask.append(pair_mask)
+
+        pair_align_mask = torch.tensor(pair_align_mask, dtype=torch.int)
+        pair_align_labels = torch.tensor(pair_align_labels, dtype=torch.long)
+
+        mlm_tokenize_outputs = self.tokenizer(texts, padding=PaddingStrategy.LONGEST,
+                                              truncation=TruncationStrategy.LONGEST_FIRST, max_length=self.max_seq_length,
+                                              return_tensors="pt")
+        mlm_input_ids = mlm_tokenize_outputs["input_ids"]
+        mlm_attention_mask = mlm_tokenize_outputs["attention_mask"]
+
+        mlm_input_ids, mlm_labels = self.mask_tokens(mlm_input_ids)
+
+        batch_size = len(pair_input_ids)
+        option_num = self.max_option_num
+
+        res = {
+            "input_ids": input_ids.reshape(batch_size, option_num, -1),
+            "attention_mask": attention_mask.reshape(batch_size, option_num, -1),
+            "labels": torch.zeros(batch_size, dtype=torch.long),
+            "mlm_input_ids": mlm_input_ids,
+            "mlm_attention_mask": mlm_attention_mask,
+            "mlm_labels": mlm_labels,
+            "pair_input_ids": pair_input_ids,
+            "pair_attention_mask": pair_attention_mask,
+            "pair_mask": pair_align_mask,
+            "pair_labels": pair_align_labels,
+            "pair_label_num": (pair_align_labels > -1).sum(),
+            "pair_value_num": (1 - pair_align_mask).sum(dim=-1)[pair_align_labels > -1].sum() / batch_size,
         }
         if "token_type_ids" in tokenizer_outputs:
             res["token_type_ids"] = tokenizer_outputs["token_type_ids"]
