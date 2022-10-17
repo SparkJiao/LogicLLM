@@ -50,7 +50,7 @@ class WikiPathDatasetV5(Dataset):
 
 
 class WikiPathDatasetV6wPatternPair(WikiPathDatasetV5):
-    def __init__(self, examples, raw_texts, pattern_pair_file: str):
+    def __init__(self, examples, raw_texts, pattern_pair_file: str, add_cf_pair_data: bool = True):
         super().__init__(examples, raw_texts)
 
         self.id2exp = collections.defaultdict(list)
@@ -59,11 +59,7 @@ class WikiPathDatasetV6wPatternPair(WikiPathDatasetV5):
 
         self.pattern_pairs = pickle.load(open(pattern_pair_file, "rb"))
 
-        # uncontained = 0
-        # for exp in self.examples:
-        #     if exp["orig_id"] not in self.pattern_pairs:
-        #         uncontained += 1
-        # print(f" =========================================== {uncontained} ==================================")
+        self.add_cf_pair_data = add_cf_pair_data
 
     def __getitem__(self, index) -> T_co:
         item = super().__getitem__(index)
@@ -75,9 +71,10 @@ class WikiPathDatasetV6wPatternPair(WikiPathDatasetV5):
                 paired_example_ids.extend(self.id2exp[paired_exp_id])
         else:
             paired_example_orig_ids = []
-            # If there is no paired examples, we add corresponding original examples of itself as the paired examples.
-            # The only thing to check is to avoid the specific example itself.
-            paired_example_ids.extend(self.id2exp[item["example"]["orig_id"]])
+            if self.add_cf_pair_data:
+                # If there is no paired examples, we add corresponding original examples of itself as the paired examples.
+                # The only thing to check is to avoid the specific example itself.
+                paired_example_ids.extend(self.id2exp[item["example"]["orig_id"]])
 
         paired_example_ids = list(set(paired_example_ids) - {index})
 

@@ -6,10 +6,10 @@ _root_name = 'FK'
 
 
 def get_child_logger(child_name):
-    _local_rank = getattr(os.environ, "LOCAL_RANK", "")
-
-    if _root_name == "FK" and _local_rank:
-        return logging.getLogger(_root_name + '.' + _local_rank + '.' + child_name)
+    # _local_rank = getattr(os.environ, "LOCAL_RANK", "")
+    #
+    # if _root_name == "FK" and _local_rank:
+    #     return logging.getLogger(_root_name + '.' + _local_rank + '.' + child_name)
 
     return logging.getLogger(_root_name + '.' + child_name)
 
@@ -21,9 +21,9 @@ def setting_logger(log_file: str, local_rank: int = -1):
                         datefmt='%m/%d/%Y %H:%M:%S',
                         level=logging.INFO if local_rank in [-1, 0] else logging.WARNING)
 
-    global _root_name
-    if local_rank != -1 and _root_name == "FK":
-        _root_name = _root_name + '.' + str(local_rank)
+    # global _root_name
+    # if local_rank != -1 and _root_name == "FK":
+    #     _root_name = _root_name + '.' + str(local_rank)
     logger = logging.getLogger(_root_name)
     logger.setLevel(logging.INFO if local_rank in [-1, 0] else logging.WARNING)
 

@@ -160,6 +160,8 @@ def evaluate(cfg: DictConfig, model: torch.nn.Module, tokenizer: PreTrainedToken
 
 
 def evaluate_fn(cfg: DictConfig, model: torch.nn.Module, tokenizer: PreTrainedTokenizer, prefix="", _split="dev"):
+    logger = get_child_logger(__name__)
+
     dataset = load_and_cache_examples(cfg, tokenizer, _split=_split)
 
     output_dir = getattr(cfg, "predict_dir", cfg.output_dir)

@@ -927,7 +927,8 @@ def convert_examples_into_features(file_path: str, tokenizer: PreTrainedTokenize
                                    max_seq_length: int = 512, geo_p: float = 0.5, min_rep_num: int = 1,
                                    deduct_ratio: float = 1.0, context_ratio: float = 1.0, noise_sent_ratio: float = 0.5,
                                    remove_deduct: bool = False, remove_context: bool = False,
-                                   max_neg_samples_num: int = 8, num_workers=48):
+                                   max_neg_samples_num: int = 8, num_workers=48,
+                                   add_cf_pair_data: bool = True):
     tokenizer_name = tokenizer.__class__.__name__
     tokenizer_name = tokenizer_name.replace('TokenizerFast', '')
     tokenizer_name = tokenizer_name.replace('Tokenizer', '').lower()
@@ -941,7 +942,7 @@ def convert_examples_into_features(file_path: str, tokenizer: PreTrainedTokenize
     if os.path.exists(cached_file_path):
         logger.info(f"Loading cached file from {cached_file_path}")
         all_examples, raw_texts = torch.load(cached_file_path)
-        dataset = WikiPathDatasetV6wPatternPair(all_examples, raw_texts, pattern_pair_file)
+        dataset = WikiPathDatasetV6wPatternPair(all_examples, raw_texts, pattern_pair_file, add_cf_pair_data=add_cf_pair_data)
         return dataset
 
     examples, context_examples, raw_texts = read_examples(file_path, shuffle_context=shuffle_context, max_neg_num=max_neg_num,
@@ -957,7 +958,7 @@ def convert_examples_into_features(file_path: str, tokenizer: PreTrainedTokenize
     logger.info(f"Saving processed features into {cached_file_path}.")
     torch.save((all_examples, raw_texts), cached_file_path)
 
-    return WikiPathDatasetV6wPatternPair(all_examples, raw_texts, pattern_pair_file)
+    return WikiPathDatasetV6wPatternPair(all_examples, raw_texts, pattern_pair_file, add_cf_pair_data=add_cf_pair_data)
 
 
 def _quick_loading(file_path: str, pattern_pair_file: str, **kwargs):
