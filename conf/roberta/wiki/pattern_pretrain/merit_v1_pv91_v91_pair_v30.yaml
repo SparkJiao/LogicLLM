@@ -67,7 +67,8 @@ pretrain:
 #output_dir: experiments/roberta.large.wiki_erica_path_v9_v9.0.1aug.seq320.w4.2080Ti.rerun
 #output_dir: experiments/roberta.large.wiki_erica_path_v9_v9.0.1aug.seq384.w4.adamw.mlm_0.5.2080Ti
 #output_dir: experiments/roberta.large.wiki_erica_path_v9.1_v9.1.pair.v2.0.1aug.seq512.w8.adamw.500steps.NA100
-output_dir: experiments/roberta.large.wiki_erica_path_v9.1_v9.1.pair.v3.0.1aug.seq512.w4.adamw.500steps.NA100
+#output_dir: experiments/roberta.large.wiki_erica_path_v9.1_v9.1.pair.v3.0.1aug.seq512.w4.adamw.500steps.NA100
+output_dir: experiments/roberta.large.wiki_erica_path_v9.1_v9.1.pair.v3.0.1aug.seq512.w4.lamb.500steps.NA100
 
 do_train: True
 #do_train: False
@@ -91,8 +92,8 @@ warmup_proportion: 0.1
 warmup_steps: 0
 
 # Optimizer
-optimizer:
-use_nvlamb:
+optimizer: lamb
+use_nvlamb: True
 bit_training:
 
 
