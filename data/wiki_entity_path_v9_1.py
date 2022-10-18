@@ -12,7 +12,7 @@ from torch.distributions.geometric import Geometric
 from tqdm import tqdm
 from transformers import PreTrainedTokenizer
 
-from data.collators.wiki import WikiPathDatasetV6wPatternPair
+from data.collators.wiki import WikiPathDatasetV6wPatternPair, WikiPathDatasetV6wPatternPairFull
 from data.data_utils import get_all_permutation
 from general_util.logger import get_child_logger
 
@@ -959,6 +959,44 @@ def convert_examples_into_features(file_path: str, tokenizer: PreTrainedTokenize
     torch.save((all_examples, raw_texts), cached_file_path)
 
     return WikiPathDatasetV6wPatternPair(all_examples, raw_texts, pattern_pair_file, add_cf_pair_data=add_cf_pair_data)
+
+
+def convert_examples_into_features_v2(file_path: str, tokenizer: PreTrainedTokenizer, pattern_pair_file: str,
+                                      shuffle_context: bool = False, max_neg_num: int = 3, aug_num: int = 10,
+                                      max_seq_length: int = 512, geo_p: float = 0.5, min_rep_num: int = 1,
+                                      deduct_ratio: float = 1.0, context_ratio: float = 1.0, noise_sent_ratio: float = 0.5,
+                                      remove_deduct: bool = False, remove_context: bool = False,
+                                      max_neg_samples_num: int = 8, num_workers=48):
+    tokenizer_name = tokenizer.__class__.__name__
+    tokenizer_name = tokenizer_name.replace('TokenizerFast', '')
+    tokenizer_name = tokenizer_name.replace('Tokenizer', '').lower()
+
+    file_suffix = f"{tokenizer_name}_{shuffle_context}_{max_neg_num}_{aug_num}_" \
+                  f"{max_seq_length}_{geo_p}_{min_rep_num}_" \
+                  f"{deduct_ratio}_{context_ratio}_{noise_sent_ratio}_{max_neg_samples_num}_" \
+                  f"{'' if not remove_context else 'no-ctx-ex_'}{'' if not remove_deduct else 'no-duc-ex_'}path_v9.1"
+
+    cached_file_path = f"{file_path}_{file_suffix}"
+    if os.path.exists(cached_file_path):
+        logger.info(f"Loading cached file from {cached_file_path}")
+        all_examples, raw_texts = torch.load(cached_file_path)
+        dataset = WikiPathDatasetV6wPatternPairFull(all_examples, raw_texts, pattern_pair_file)
+        return dataset
+
+    examples, context_examples, raw_texts = read_examples(file_path, shuffle_context=shuffle_context, max_neg_num=max_neg_num,
+                                                          aug_num=aug_num, geo_p=geo_p, min_rep_num=min_rep_num,
+                                                          deduct_ratio=deduct_ratio, context_ratio=context_ratio,
+                                                          noise_sent_ratio=noise_sent_ratio,
+                                                          remove_deduct=remove_deduct, remove_context=remove_context,
+                                                          max_neg_samples_num=max_neg_samples_num,
+                                                          num_workers=num_workers)
+    all_examples = examples + context_examples
+
+    # Save
+    logger.info(f"Saving processed features into {cached_file_path}.")
+    torch.save((all_examples, raw_texts), cached_file_path)
+
+    return WikiPathDatasetV6wPatternPairFull(all_examples, raw_texts, pattern_pair_file)
 
 
 def _quick_loading(file_path: str, pattern_pair_file: str, **kwargs):

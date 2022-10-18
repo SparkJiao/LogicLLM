@@ -89,6 +89,69 @@ class WikiPathDatasetV6wPatternPair(WikiPathDatasetV5):
         return item
 
 
+class WikiPathDatasetV6wPatternPairFull(WikiPathDatasetV5):
+    def __init__(self, examples, raw_texts, pattern_pair_file: str):
+        super().__init__(examples, raw_texts)
+
+        self.id2exp = collections.defaultdict(list)
+        for exp_id, exp in enumerate(self.examples):
+            self.id2exp[exp["orig_id"]].append(exp_id)
+
+        pattern_pairs = pickle.load(open(pattern_pair_file, "rb"))
+        pattern_pair_cnt = 0
+        self.pattern_pairs = {}
+        for orig_id in pattern_pairs:
+            if len(pattern_pairs[orig_id]):
+                self.pattern_pairs[orig_id] = pattern_pairs[orig_id]
+                pattern_pair_cnt += len(pattern_pairs[orig_id])
+        self.pattern_pair_keys = list(self.pattern_pairs.keys())
+        logger.info(f"Pattern pair keys: {len(self.pattern_pair_keys)}")
+        logger.info(f"Total pattern pairs: {pattern_pair_cnt}")
+
+    def __getitem__(self, index) -> T_co:
+        item = super().__getitem__(index)
+
+        # paired_example_ids = []
+        # if item["example"]["orig_id"] in self.pattern_pairs and len(self.pattern_pairs[item["example"]["orig_id"]]):
+        #     paired_example_orig_ids = self.pattern_pairs[item["example"]["orig_id"]]
+        #     for paired_exp_id in paired_example_orig_ids:
+        #         paired_example_ids.extend(self.id2exp[paired_exp_id])
+        # else:
+        #     paired_example_orig_ids = []
+        #     if self.add_cf_pair_data:
+        #         # If there is no paired examples, we add corresponding original examples of itself as the paired examples.
+        #         # The only thing to check is to avoid the specific example itself.
+        #         paired_example_ids.extend(self.id2exp[item["example"]["orig_id"]])
+        #
+        # paired_example_ids = list(set(paired_example_ids) - {index})
+        #
+        # if len(paired_example_ids) > 0:
+        #     paired_example = self.examples[random.choice(paired_example_ids)]
+        # else:
+        #     paired_example = None
+        if index < len(self.pattern_pairs):
+            _idx = index
+        else:
+            _idx = random.choice(list(range(len(self.pattern_pair_keys))))
+        pair_example = self.examples[random.choice(self.id2exp[self.pattern_pair_keys[_idx]])]
+        assert pair_example["orig_id"] == self.pattern_pair_keys[_idx]
+
+        paired_example_orig_ids = self.pattern_pairs[pair_example["orig_id"]]
+        paired_example_ids = []
+        for paired_exp_orig_id in paired_example_orig_ids:
+            paired_example_ids.extend(self.id2exp[paired_exp_orig_id])
+        assert len(paired_example_ids)
+
+        paired_example = self.examples[random.choice(paired_example_ids)]
+        assert paired_example["orig_id"] in paired_example_orig_ids
+
+        item["pair_q"] = pair_example
+        item["pair_k_orig_ids"] = paired_example_orig_ids
+        item["pair_k"] = paired_example
+
+        return item
+
+
 class WikiPathDatasetGenerate(Dataset):
     """
     It seems that the dataset class is not relevant to ``generation``.
@@ -341,7 +404,7 @@ class WikiPathDatasetCollatorWithContextAndPair(WikiPathDatasetCollator):
                     paired_input_b = paired_example["context"]
 
         return input_a, input_b, paired_input_a, paired_input_b, item["example"]["orig_id"], paired_example_id, \
-            item["paired_example_orig_ids"]
+               item["paired_example_orig_ids"]
 
     def __call__(self, batch):
         input_a, input_b, texts = [], [], []
@@ -438,6 +501,162 @@ class WikiPathDatasetCollatorWithContextAndPair(WikiPathDatasetCollator):
         }
         if "token_type_ids" in tokenizer_outputs:
             res["token_type_ids"] = tokenizer_outputs["token_type_ids"]
+        return res
+
+
+class WikiPathDatasetCollatorWithContextAndPairComplete(WikiPathDatasetCollator):
+    def __init__(self, max_seq_length: int, tokenizer: str, mlm_probability: float = 0.15, max_option_num: int = 4, swap: bool = False,
+                 option_dropout: float = 0.0):
+        super().__init__(max_seq_length, tokenizer, mlm_probability, max_option_num)
+        self.swap = swap
+        self.option_dropout = option_dropout
+
+    @staticmethod
+    def prepare_single_example_positive(example):
+        if "negative_context" in example:
+            input_a = example["context"]
+            input_b = example["condition"]
+        else:
+            # Remove `swap` for easy implementation of `option` dropout.
+            # if self.swap:
+            #     input_a = example["context"]
+            #     input_b = example["positive"]
+            # else:
+            #     input_a = example["positive"]
+            #     input_b = example["context"]
+            input_a = example["context"]
+            input_b = example["positive"]
+        return input_a, input_b
+
+    def prepare_single_example(self, item):
+        input_a = []
+        input_b = []
+        if "negative_context" in item["example"]:
+            input_a.extend(([item["example"]["context"]] + item["example"]["negative_context"])[:self.max_option_num])
+            input_b.extend([item["example"]["condition"]] * self.max_option_num)
+        else:
+            op = ([item["example"]["positive"]] + item["example"]["negative"])[:self.max_option_num]
+            if self.swap:
+                input_a.extend([item["example"]["context"]] * len(op))
+                input_b.extend(op)
+            else:
+                input_a.extend(op)
+                input_b.extend([item["example"]["context"]] * len(op))
+
+        assert len(input_a) == len(input_b) == self.max_option_num
+
+        pair_q_input_a, pair_q_input_b = self.prepare_single_example_positive(item["pair_q"])
+        pair_k_input_a, pair_k_input_b = self.prepare_single_example_positive(item["pair_k"])
+
+        return input_a, input_b, item["pair_q"]["orig_id"], pair_q_input_a, pair_q_input_b, \
+            item["pair_k"]["orig_id"], pair_k_input_a, pair_k_input_b, \
+            item["pair_k_orig_ids"]
+
+    def __call__(self, batch):
+        input_a, input_b, texts = [], [], []
+        pair_q_orig_ids, pair_q_a, pair_q_b, pair_k_orig_ids, pair_k_a, pair_k_b, all_paired_orig_ids = [], [], [], [], [], [], []
+        dropped_op_cnt = 0
+        for b in batch:
+            b_input_a, b_input_b, b_pair_q_orig_id, b_pair_q_a, b_pair_q_b, \
+                b_pair_k_orig_id, b_pair_k_a, b_pair_k_b, \
+                b_pair_k_orig_ids = self.prepare_single_example(b)
+
+            input_a.extend(b_input_a)
+            input_b.extend(b_input_b)
+            pair_q_orig_ids.append(b_pair_q_orig_id)
+            pair_q_a.append(b_pair_q_a)
+
+            _r = random.random()
+            if _r < self.option_dropout:
+                pair_q_b.append("")
+                dropped_op_cnt += 1
+            else:
+                pair_q_b.append(b_pair_q_b)
+
+            pair_k_orig_ids.append(b_pair_k_orig_id)
+            pair_k_a.append(b_pair_k_a)
+            pair_k_b.append(b_pair_k_b)
+            all_paired_orig_ids.append(b_pair_k_orig_ids)
+            texts.append(b["text"])
+
+        del batch
+        _tokenize_kwargs = {
+            "padding": PaddingStrategy.LONGEST,
+            "truncation": TruncationStrategy.LONGEST_FIRST,
+            "max_length": self.max_seq_length,
+            "return_tensors": "pt"
+        }
+
+        tokenizer_outputs = self.tokenizer(input_a, input_b, **_tokenize_kwargs)
+        input_ids = tokenizer_outputs["input_ids"]
+        attention_mask = tokenizer_outputs["attention_mask"]
+
+        pair_q_tokenizer_outputs = self.tokenizer(pair_q_a, pair_q_b, **_tokenize_kwargs)
+        pair_q_input_ids = pair_q_tokenizer_outputs["input_ids"]
+        pair_q_attention_mask = pair_q_tokenizer_outputs["attention_mask"]
+
+        pair_k_tokenizer_outputs = self.tokenizer(pair_k_a, pair_k_b, **_tokenize_kwargs)
+        pair_k_input_ids = pair_k_tokenizer_outputs["input_ids"]
+        pair_k_attention_mask = pair_k_tokenizer_outputs["attention_mask"]
+
+        # prepare pair labels and mask
+        pair_align_mask = []  # `1` for mask and `0` for true value.
+        pair_align_labels = []  # `-1` for non-pair examples.
+        assert len(pair_q_orig_ids) == len(pair_k_orig_ids) == len(all_paired_orig_ids)
+        for q_id, (q_orig_id, q_paired_orig_id_list) in enumerate(zip(pair_q_orig_ids, all_paired_orig_ids)):
+            # pair dot product
+            pair_mask = []
+            for k_id, k_orig_id in enumerate(pair_k_orig_ids):
+                if q_id == k_id:
+                    assert k_orig_id in q_paired_orig_id_list
+                    pair_mask.append(0)
+                else:
+                    if k_orig_id in q_paired_orig_id_list or k_orig_id == q_orig_id:
+                        pair_mask.append(1)
+                    else:
+                        pair_mask.append(0)
+            if sum(pair_mask) + 1 == len(pair_k_orig_ids):
+                pair_align_labels.append(-1)
+            else:
+                pair_align_labels.append(q_id)
+
+            # TODO: Add self-product for more negative samples? Then the option dropout should be modified.
+
+            pair_align_mask.append(pair_mask)
+
+        pair_align_mask = torch.tensor(pair_align_mask, dtype=torch.int)
+        pair_align_labels = torch.tensor(pair_align_labels, dtype=torch.long)
+        num_labels = (pair_align_labels > -1).sum()
+
+        mlm_tokenize_outputs = self.tokenizer(texts, **_tokenize_kwargs)
+        mlm_input_ids = mlm_tokenize_outputs["input_ids"]
+        mlm_attention_mask = mlm_tokenize_outputs["attention_mask"]
+
+        mlm_input_ids, mlm_labels = self.mask_tokens(mlm_input_ids)
+
+        batch_size = len(pair_q_input_ids)
+        option_num = self.max_option_num
+
+        res = {
+            "input_ids": input_ids.reshape(batch_size, option_num, -1),
+            "attention_mask": attention_mask.reshape(batch_size, option_num, -1),
+            "labels": torch.zeros(batch_size, dtype=torch.long),
+            "mlm_input_ids": mlm_input_ids,
+            "mlm_attention_mask": mlm_attention_mask,
+            "mlm_labels": mlm_labels,
+            "pair_q_input_ids": pair_q_input_ids,
+            "pair_q_attention_mask": pair_q_attention_mask,
+            "pair_k_input_ids": pair_k_input_ids,
+            "pair_k_attention_mask": pair_k_attention_mask,
+            "pair_mask": pair_align_mask,
+            "pair_labels": pair_align_labels,
+            "pair_label_num": num_labels,
+            "pair_value_num": (1 - pair_align_mask).sum(dim=-1)[pair_align_labels > -1].sum() / num_labels,
+            "dropped_op_cnt": torch.tensor([dropped_op_cnt])
+        }
+        if "token_type_ids" in tokenizer_outputs:
+            res["token_type_ids"] = tokenizer_outputs["token_type_ids"]
+        # print("pair_value_num", res["pair_value_num"])
         return res
 
 
