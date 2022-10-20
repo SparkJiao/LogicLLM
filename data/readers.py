@@ -4,8 +4,8 @@ from data.data_utils import dfs_enumerate_all_assign
 
 from general_util.logger import get_child_logger
 
-
 logger = get_child_logger(__name__)
+
 
 class LSATReader:
     label2id = {'A': 0, 'B': 1, 'C': 2, 'D': 3, 'E': 4}
@@ -310,5 +310,49 @@ class ReClorExampleReader:
             else:
                 all_label.append(sample["label"])
             all_option_list.append(sample["answers"])
+
+        return all_context, all_question, all_option_list, all_label
+
+
+class LogiQAReader:
+    label2id = {'a': 0, 'b': 1, 'c': 2, 'd': 3, 'e': 4}
+
+    def __call__(self, file):
+        all_context = []
+        all_question = []
+        all_option_list = []
+        all_label = []
+
+        with open(file, 'r') as f:
+            line = f.readline()
+            idx = 0
+            while line:
+                idx += 1
+
+                # blank line
+
+                # right choice
+                line = f.readline()
+                all_label.append(self.label2id[line.strip()])
+                idx += 1
+
+                # context
+                line = f.readline()
+                all_context.append(line.strip())
+                idx += 1
+
+                # question
+                line = f.readline()
+                all_question.append(line.strip())
+                idx += 1
+
+                # options
+                options = []
+                for _ in range(4):
+                    line = f.readline()
+                    options.append(line.strip())
+                all_option_list.append(options)
+
+                line = f.readline()
 
         return all_context, all_question, all_option_list, all_label
