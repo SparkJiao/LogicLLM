@@ -1,3 +1,4 @@
+import datetime
 import os
 import subprocess
 
@@ -16,7 +17,7 @@ def vanilla_torch_dist(cfg: DictConfig, backend="nccl"):
     else:  # Initializes the distributed backend which will take care of synchronizing nodes/GPUs
         torch.cuda.set_device(cfg.local_rank)
         device = str(torch.device("cuda", cfg.local_rank))
-        dist.init_process_group(backend=backend)
+        dist.init_process_group(backend=backend, timeout=datetime.timedelta(seconds=7200))
         cfg.n_gpu = 1
         cfg.world_size = dist.get_world_size()
     cfg.device = device

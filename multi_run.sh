@@ -1,4 +1,3 @@
-
 conf=$1
 conf_name=$2
 gpu=$3
