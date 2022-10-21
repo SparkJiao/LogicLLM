@@ -310,7 +310,7 @@ def main(cfg: DictConfig):
         dist.barrier()  # Make sure only the first process in distributed training will download model & vocab
 
     if cfg.local_rank == -1:  # For FullyShardedDDP, place the model on cpu first.
-        if cfg.n_gpu in [0, 1]:
+        if cfg.n_gpu in [0, 1] or cfg.no_cuda:
             model.to(cfg.device)
         else:
             # For model parallel (of mT5)

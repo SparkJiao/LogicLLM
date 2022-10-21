@@ -2,7 +2,7 @@ import collections
 import pickle
 import random
 from collections import Counter
-from typing import Tuple, Optional
+from typing import Tuple, Optional, Dict, Any
 
 import torch
 import transformers
@@ -675,9 +675,22 @@ class WikiPathDatasetCollatorWithContextAndPairCompleteDropout(WikiPathDatasetCo
         if "negative_context" in item["pair_q"]:
             item["pair_q"]["negative_context"] = [" ".join(ctx) for ctx in item["pair_q"]["negative_context"]]
 
+        k_sent_drop_cnt = 0
+        if self.k_context_dropout > 0:
+            dropped_context = []
+            for _sent in item["pair_k"]["context"]:
+                _r = random.random()
+                if _r < self.k_context_dropout:
+                    k_sent_drop_cnt += 1
+                else:
+                    dropped_context.append(_sent)
+            item["pair_k"]["context"] = dropped_context
+
         item["pair_k"]["context"] = " ".join(item["pair_k"]["context"])
         if "negative_context" in item["pair_k"]:
             item["pair_k"]["negative_context"] = [" ".join(ctx) for ctx in item["pair_k"]["negative_context"]]
+
+        return item, k_sent_drop_cnt
 
 
     @staticmethod
@@ -718,7 +731,11 @@ class WikiPathDatasetCollatorWithContextAndPairCompleteDropout(WikiPathDatasetCo
         input_a, input_b, texts = [], [], []
         pair_q_orig_ids, pair_q_a, pair_q_b, pair_k_orig_ids, pair_k_a, pair_k_b, all_paired_orig_ids = [], [], [], [], [], [], []
         dropped_op_cnt = 0
+        k_sent_drop_cnt = 0
         for b in batch:
+            b, b_k_sent_drop_cnt = self.concat_sentence_and_dropout(b)
+            k_sent_drop_cnt += b_k_sent_drop_cnt
+
             b_input_a, b_input_b, b_pair_q_orig_id, b_pair_q_a, b_pair_q_b, \
             b_pair_k_orig_id, b_pair_k_a, b_pair_k_b, \
             b_pair_k_orig_ids = self.prepare_single_example(b)
@@ -729,7 +746,7 @@ class WikiPathDatasetCollatorWithContextAndPairCompleteDropout(WikiPathDatasetCo
             pair_q_a.append(b_pair_q_a)
 
             _r = random.random()
-            if _r < self.option_dropout:
+            if _r < self.q_option_dropout:
                 pair_q_b.append("")
                 dropped_op_cnt += 1
             else:
@@ -814,7 +831,8 @@ class WikiPathDatasetCollatorWithContextAndPairCompleteDropout(WikiPathDatasetCo
             "pair_labels": pair_align_labels,
             "pair_label_num": num_labels,
             "pair_value_num": (1 - pair_align_mask).sum(dim=-1)[pair_align_labels > -1].sum() / num_labels,
-            "dropped_op_cnt": torch.tensor([dropped_op_cnt])
+            "dropped_op_cnt": torch.tensor([dropped_op_cnt]),
+            "k_sent_drop_cnt": k_sent_drop_cnt / batch_size
         }
         if "token_type_ids" in tokenizer_outputs:
             res["token_type_ids"] = tokenizer_outputs["token_type_ids"]

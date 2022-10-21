@@ -241,25 +241,6 @@ def pos2str(ent_s, ent_e, tokens):
     return " ".join(tokens[ent_s: ent_e])
 
 
-# def sample_entity(pool, src_id, k):
-#     all_data_id_ls = list(pool.keys())
-#
-#     res = []
-#     pool_vis = set()
-#     for _ in range(k):
-#         pool_id = random.choice(all_data_id_ls)
-#         while pool_id == src_id:
-#             pool_id = random.choice(all_data_id_ls)
-#
-#         pool_vis.add(pool_id)
-#
-#         entity_ls = list(pool[pool_id].values())  # all entities, each one contains a list of all positions.
-#         entity = random.choice(entity_ls)  # sample an entity.
-#         entity_str = random.choice(entity)  # sample an position (mention).
-#         res.append(entity_str)
-#     return res
-
-
 def sample_entity(pool, path_ent_ids, k):
     all_ent_id_ls = list(pool.keys())
 
@@ -632,7 +613,8 @@ def _process_single_item(item, max_neg_num: int, aug_num: int, min_rep_num: int,
             # Add simple negative samples from the ``rest_sentences`` from the sampled data item.
             if len(neg_res) < MAX_NEG_SAMPLE_NUM:
                 for neg in _all_neg_candidates[_sampled_neg_item_key]:
-                    _rep_res = replace_neg(sampled_neg_candidates[0], neg, rep_pairs=_cur_aug_rep_pairs, out_of_domain=False)
+                    # _rep_res = replace_neg(sampled_neg_candidates[0], neg, rep_pairs=_cur_aug_rep_pairs, out_of_domain=False)
+                    _rep_res, _ = context_replace_neg(sampled_neg_candidates[0], neg, rep_pairs=_cur_aug_rep_pairs, out_of_domain=False)
                     if _rep_res:
                         neg_res.extend(_rep_res)
                     if len(neg_res) >= MAX_NEG_SAMPLE_NUM:
@@ -648,7 +630,8 @@ def _process_single_item(item, max_neg_num: int, aug_num: int, min_rep_num: int,
                     neg_data_item_id = random.choice(list(_all_neg_candidates.keys()))
                 neg = random.choice(_all_neg_candidates[neg_data_item_id])
 
-                _rep_res = replace_neg(sampled_neg_candidates[0], neg, rep_pairs=_cur_aug_rep_pairs, out_of_domain=False)
+                # _rep_res = replace_neg(sampled_neg_candidates[0], neg, rep_pairs=_cur_aug_rep_pairs, out_of_domain=False)
+                _rep_res, _ = context_replace_neg(sampled_neg_candidates[0], neg, rep_pairs=_cur_aug_rep_pairs, out_of_domain=False)
                 if _rep_res:
                     neg_res.extend(_rep_res)
 

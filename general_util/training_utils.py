@@ -46,7 +46,10 @@ def batch_to_device(batch: Dict[str, torch.Tensor], device):
 
     batch_on_device = {}
     for k, v in batch.items():
-        batch_on_device[k] = v.to(device)
+        if isinstance(v, torch.Tensor):
+            batch_on_device[k] = v.to(device)
+        else:
+            batch_on_device[k] = v
     return batch_on_device
 
 
