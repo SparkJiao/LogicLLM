@@ -692,7 +692,6 @@ class WikiPathDatasetCollatorWithContextAndPairCompleteDropout(WikiPathDatasetCo
 
         return item, k_sent_drop_cnt
 
-
     @staticmethod
     def prepare_single_example_positive(example):
         if "negative_context" in example:
@@ -831,7 +830,7 @@ class WikiPathDatasetCollatorWithContextAndPairCompleteDropout(WikiPathDatasetCo
             "pair_labels": pair_align_labels,
             "pair_label_num": num_labels,
             "pair_value_num": (1 - pair_align_mask).sum(dim=-1)[pair_align_labels > -1].sum() / num_labels,
-            "dropped_op_cnt": torch.tensor([dropped_op_cnt]),
+            "dropped_op_cnt": dropped_op_cnt,
             "k_sent_drop_cnt": k_sent_drop_cnt / batch_size
         }
         if "token_type_ids" in tokenizer_outputs:

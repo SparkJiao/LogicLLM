@@ -286,6 +286,7 @@ def main(cfg: DictConfig):
     logger = setting_logger(cfg.output_dir, local_rank=cfg.local_rank)
     logger.warning("Process rank: %s, device: %s, n_gpu: %s, distributed training: %s, 16-bits training: %s",
                    cfg.local_rank, cfg.device, cfg.n_gpu, bool(cfg.local_rank != -1), cfg.fp16)
+    logger.warning(f"CPU cores: {os.cpu_count()}")
 
     # Set seed
     set_seed(cfg)

@@ -179,7 +179,10 @@ def evaluate_fn(cfg: DictConfig, model: torch.nn.Module, tokenizer: PreTrainedTo
     eval_dataloader = DataLoader(dataset,
                                  sampler=eval_sampler,
                                  batch_size=cfg.eval_batch_size,
-                                 collate_fn=eval_collator)
+                                 collate_fn=eval_collator,
+                                 num_workers=cfg.num_workers,
+                                 pin_memory=True,
+                                 prefetch_factor=cfg.prefetch_factor)
 
     post_processor = hydra.utils.instantiate(cfg.post_process) if "post_process" in cfg and cfg.post_process else None
 
