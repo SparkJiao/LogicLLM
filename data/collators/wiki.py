@@ -13,7 +13,7 @@ from transformers.tokenization_utils import PaddingStrategy, TruncationStrategy
 
 from general_util.logger import get_child_logger
 
-logger = get_child_logger("Wiki.Entity.Path.V5")
+logger = get_child_logger("Wiki.Entity.Path")
 
 
 class WikiPathDatasetV5(Dataset):
@@ -90,6 +90,13 @@ class WikiPathDatasetV6wPatternPair(WikiPathDatasetV5):
 class WikiPathDatasetV6wPatternPairFull(WikiPathDatasetV5):
     def __init__(self, examples, raw_texts, pattern_pair_file: str):
         super().__init__(examples, raw_texts)
+
+        logger.info(f"Concatenating example sentences...")
+        for exp in self.examples:
+            exp["context_sentences"] = exp["context"]
+            exp["context"] = " ".join(exp["context"])
+            if "negative_context" in exp:
+                exp["negative_context"] = [" ".join(neg_ctx) for neg_ctx in exp["negative_context"]]
 
         self.id2exp = collections.defaultdict(list)
         for exp_id, exp in enumerate(self.examples):
@@ -667,28 +674,26 @@ class WikiPathDatasetCollatorWithContextAndPairCompleteDropout(WikiPathDatasetCo
         self.k_context_dropout = k_context_dropout
 
     def concat_sentence_and_dropout(self, item):
-        item["example"]["context"] = " ".join(item["example"]["context"])
-        if "negative_context" in item["example"]:
-            item["example"]["negative_context"] = [" ".join(ctx) for ctx in item["example"]["negative_context"]]
-
-        item["pair_q"]["context"] = " ".join(item["pair_q"]["context"])
-        if "negative_context" in item["pair_q"]:
-            item["pair_q"]["negative_context"] = [" ".join(ctx) for ctx in item["pair_q"]["negative_context"]]
+        # item["example"]["context"] = " ".join(item["example"]["context"])
+        # if "negative_context" in item["example"]:
+        #     item["example"]["negative_context"] = [" ".join(ctx) for ctx in item["example"]["negative_context"]]
+        #
+        # item["pair_q"]["context"] = " ".join(item["pair_q"]["context"])
 
         k_sent_drop_cnt = 0
         if self.k_context_dropout > 0:
             dropped_context = []
-            for _sent in item["pair_k"]["context"]:
+            for _sent in item["pair_k"]["context_sentences"]:
                 _r = random.random()
                 if _r < self.k_context_dropout:
                     k_sent_drop_cnt += 1
                 else:
                     dropped_context.append(_sent)
-            item["pair_k"]["context"] = dropped_context
+            item["pair_k"]["context"] = " ".join(dropped_context)
 
-        item["pair_k"]["context"] = " ".join(item["pair_k"]["context"])
-        if "negative_context" in item["pair_k"]:
-            item["pair_k"]["negative_context"] = [" ".join(ctx) for ctx in item["pair_k"]["negative_context"]]
+        # item["pair_k"]["context"] = " ".join(item["pair_k"]["context"])
+        # if "negative_context" in item["pair_k"]:
+        #     item["pair_k"]["negative_context"] = [" ".join(ctx) for ctx in item["pair_k"]["negative_context"]]
 
         return item, k_sent_drop_cnt
 
