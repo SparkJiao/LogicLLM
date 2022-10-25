@@ -667,11 +667,12 @@ class WikiPathDatasetCollatorWithContextAndPairComplete(WikiPathDatasetCollator)
 
 class WikiPathDatasetCollatorWithContextAndPairCompleteDropout(WikiPathDatasetCollator):
     def __init__(self, max_seq_length: int, tokenizer: str, mlm_probability: float = 0.15, max_option_num: int = 4, swap: bool = False,
-                 q_option_dropout: float = 0.0, k_context_dropout: float = 0.0):
+                 q_option_dropout: float = 0.0, k_context_dropout: float = 0.0, add_tagging: bool = False):
         super().__init__(max_seq_length, tokenizer, mlm_probability, max_option_num)
         self.swap = swap
         self.q_option_dropout = q_option_dropout
         self.k_context_dropout = k_context_dropout
+        self.add_tagging = add_tagging
 
     def concat_sentence_and_dropout(self, item):
         # item["example"]["context"] = " ".join(item["example"]["context"])
@@ -762,6 +763,11 @@ class WikiPathDatasetCollatorWithContextAndPairCompleteDropout(WikiPathDatasetCo
             all_paired_orig_ids.append(b_pair_k_orig_ids)
             texts.append(b["text"])
 
+        if self.add_tagging:
+            tagging_labels = [b["example"].pop("tagging_label") for b in batch]
+        else:
+            tagging_labels = None
+
         del batch
         _tokenize_kwargs = {
             "padding": PaddingStrategy.LONGEST,
@@ -840,6 +846,13 @@ class WikiPathDatasetCollatorWithContextAndPairCompleteDropout(WikiPathDatasetCo
         }
         if "token_type_ids" in tokenizer_outputs:
             res["token_type_ids"] = tokenizer_outputs["token_type_ids"]
+
+        if self.add_tagging:
+            tagging_labels = torch.tensor(tagging_labels, dtype=torch.long)
+            tagging_labels = tagging_labels[:, :input_ids.size(1)]
+            tagging_labels[res["input_ids"][:, 0] == self.tokenizer.pad_token_id] = -1
+            res["tagging_labels"] = tagging_labels
+
         # print("pair_value_num", res["pair_value_num"])
         return res
 

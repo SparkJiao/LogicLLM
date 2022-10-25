@@ -11,7 +11,6 @@ import torch
 from torch.distributions.geometric import Geometric
 from tqdm import tqdm
 from transformers import PreTrainedTokenizer
-from transformers.tokenization_utils import PaddingStrategy, TruncationStrategy
 
 from data.collators.wiki import WikiPathDatasetV6wPatternPair, WikiPathDatasetV6wPatternPairFull
 from data.data_utils import get_all_permutation
@@ -33,23 +32,23 @@ Version 8.2:
     1.  Add hyper-parameters to control how much negative samples of each category to be involved in.
 Version 9.0:
     1.  Add random sentences into context as noise.
+Version 9.1:
+    1.  Use the unique entity id in Wikidata to avoid repeat entity replacement.
 Version split:
     1.  Don't combine the sentences together.
-Version ent:
-    1.  Extract the path entities for further prediction.
-        We only extract the entities along the reasoning path.
-        
-        TODO: 是否需要考虑增加一些包含不同于ending entities的负样本以增加多样性？
+Version 9.2:
+    1.  Replace the entities that are not included in the path as different entities of different mentions. Applied only to context.
+Version 9.2.1:
+    1.  The above replacement is also applied to the positive candidate. 
 """
 
-logger = get_child_logger("Wiki.Entity.Path.V9.1.split.entity")
+logger = get_child_logger("Wiki.Entity.Path.V9.2.split")
 
 _entity_pool: Dict
 _negative_pool: Dict
 _all_neg_candidates: Dict
 _all_path_sentences: Dict
 _geometric_dist: torch.distributions.Distribution
-_tokenizer: PreTrainedTokenizer
 
 _permutation_sample_num: int = 6
 MAX_NEG_SAMPLE_NUM: int = 8
@@ -252,6 +251,7 @@ def sample_entity(pool, path_ent_ids, k):
     all_ent_id_ls = list(pool.keys())
 
     res = []
+    res_ent_ids = []
     pool_vis = copy.deepcopy(path_ent_ids)
     for _ in range(k):
         ent_id = random.choice(all_ent_id_ls)
@@ -259,10 +259,11 @@ def sample_entity(pool, path_ent_ids, k):
             ent_id = random.choice(all_ent_id_ls)
 
         pool_vis.add(ent_id)
+        res_ent_ids.append(ent_id)
 
         entity_str = random.choice(list(pool[ent_id]))
         res.append(entity_str)
-    return res
+    return res, res_ent_ids
 
 
 def rep_context_sent(selected_sentences, tgt_sent_id, rep_tgt_sent, return_sentences: bool = False):
@@ -343,23 +344,32 @@ def add_noise_sentence(num: int, item: Dict, orig_sentences: List[str], rep_pair
     return noise_ctx
 
 
-def extract_replaced_path_entity(sent, rep_pairs: Dict[int, str] = None):
-    ent_str_ls = []
-    h_id = sent["h"]
-    t_id = sent["t"]
-    if rep_pairs is not None and h_id in rep_pairs:
-        ent_str_ls.append(rep_pairs[h_id])
-    else:
-        ent_str_ls.append(get_ent_str(sent, h_id))
+def extract_bias_entity(sentences):
+    """
+    1.  Select all entities not included in the path but has appeared more than once across different sentences.
+    2.  Generate a series pair of <sentence id, entity id> for following replacement.
+        Note that there should be at least one mention of a specific entity that is kept.
+    3.  Replace the entity mentions with randomly sampled tgg
+    """
+    pass
+    #   一些思考：
+    #   这个问题的核心在于，如果一个entity在某个example里出现了很多次，那么对于每一个mention我们希望替换成不同的entity，来避免潜在的边。
+    #   具体实现上，我们需要对于每一个sentence在处理的时候，动态的generate一个`rep_pairs`。
+    #
+    #   此处需要考虑常识问题，我们其实是希望在下游任务里保留一定的implicit的常识知识的，（但具体怎样做不清楚）。比如要求被替换的实体在wikidata里不能和
+    #   已有的entity存在relation（可能在实现上有点复杂）；再比如如果某个实体和path entities中的某个entity存在Wikidata上的relation，我们需要考虑替换掉他。
+    #
+    #   现阶段，我希望直接替换掉全部的非path上的entity试试，同时保证不同的mention替换的效果不同。
 
-    if rep_pairs is not None and t_id in rep_pairs:
-        ent_str_ls.append(rep_pairs[t_id])
-    else:
-        ent_str_ls.append(get_ent_str(sent, t_id))
 
-    assert len(ent_str_ls) == 2, (sent, rep_pairs)
+def bias_entity_generate_rep_pairs(sentence, existing_ent_ids: set):
+    src_ent_ids = []
+    for ent_id in sentence["ent"]:
+        if ent_id not in [sentence["h"], sentence["t"]]:
+            src_ent_ids.append(ent_id)
 
-    return ent_str_ls
+    tgt_ent_str, tgt_ent_ids = sample_entity(_entity_pool, existing_ent_ids, len(src_ent_ids))
+    return {src_ent_id: tgt_str for src_ent_id, tgt_str in zip(src_ent_ids, tgt_ent_str)}
 
 
 def _initializer(entity_pool: Dict, negative_pool: Dict, all_neg_candidates: Dict, all_path_sentences: Dict,
@@ -397,6 +407,12 @@ def _process_single_item(item, max_neg_num: int, aug_num: int, min_rep_num: int,
     path_sent2rep = [(s_id, s) for s_id, s in selected_sentences.items() if s["h"] != -1 and s["t"] != -1]
 
     neg_candidates = [x for x in item["rest_sentences"].values() if len(x["ent"]) > 1]
+
+    path_ent_ids = []
+    for sent in selected_sentences.values():
+        path_ent_ids.extend([sent["h"], sent["t"]])
+    path_ent_ids = set(path_ent_ids)
+    assert -1 not in path_ent_ids
 
     for pos_idx, pos_candi in enumerate(item["pos"]):
         # Statistics
@@ -441,23 +457,30 @@ def _process_single_item(item, max_neg_num: int, aug_num: int, min_rep_num: int,
 
         assert len(neg_res) >= max_neg_num
 
-        path_ent_str_ls = []
-        for sent in selected_sentences.values():
-            path_ent_str_ls.extend(extract_replaced_path_entity(sent))
-        path_ent_str_ls = list(set(path_ent_str_ls))
-
         _r = random.random()
         if not remove_deduct and _r < deduct_ratio:
+            # replace the mentions of non-path-entities with randomly sampled entities.
+            augmented_sentences = []
+            for sent in selected_sentences.values():
+                augmented_rep_pairs = bias_entity_generate_rep_pairs(sent, path_ent_ids)
+                augmented_sentences.append(_replace_entities_w_str(sent, augmented_rep_pairs))
+
+            # replace all entities except the head-tail entities in positive candidate.
+            augmented_pos_candi_rep_pairs = bias_entity_generate_rep_pairs(pos_candi, path_ent_ids)
+            augmented_pos_candi = _replace_entities_w_str(pos_candi, augmented_pos_candi_rep_pairs)
+
             examples.append({
                 # "context": context,
-                "context": add_noise_sentence(num=noise_sent_num, item=item, orig_sentences=orig_sentences, rep_pairs=None, shuffle=True),
+                # "context": add_noise_sentence(num=noise_sent_num, item=item, orig_sentences=orig_sentences, rep_pairs=None, shuffle=True),
+                "context": add_noise_sentence(num=noise_sent_num, item=item, orig_sentences=augmented_sentences,
+                                              rep_pairs=None, shuffle=True),
                 "negative": random.sample(neg_res, max_neg_num),
-                "positive": " ".join(pos_candi["sent"]),
+                # "positive": " ".join(pos_candi["sent"]),  # We didn't augment the non-path-entities in the positive candidate anymore.
+                "positive": augmented_pos_candi,
                 "orig_id": item["id"],
                 "pos_aug_num": _pos_aug,
                 "res_aug_num": _res_aug,
-                "sim_aug_num": _sim_aug,
-                "path_ent_str": path_ent_str_ls
+                "sim_aug_num": _sim_aug
             })
 
         # ============= context replaced-based examples ==================== #
@@ -514,17 +537,29 @@ def _process_single_item(item, max_neg_num: int, aug_num: int, min_rep_num: int,
                 add_noise_sentence(noise_sent_num, item, neg_ctx, rep_pairs=None, shuffle=True) for neg_ctx in negative_context
             ]
 
+            # replace the mentions of non-path-entities with randomly sampled entities.
+            augmented_sentences = []
+            for sent in selected_sentences.values():
+                augmented_rep_pairs = bias_entity_generate_rep_pairs(sent, path_ent_ids)
+                augmented_sentences.append(_replace_entities_w_str(sent, augmented_rep_pairs))
+
+            # replace all entities except the head-tail entities in positive candidate.
+            augmented_pos_candi_rep_pairs = bias_entity_generate_rep_pairs(pos_candi, path_ent_ids)
+            augmented_pos_candi = _replace_entities_w_str(pos_candi, augmented_pos_candi_rep_pairs)
+
             context_examples.append({
                 # "context": context,
-                "context": add_noise_sentence(num=noise_sent_num, item=item, orig_sentences=orig_sentences, rep_pairs=None, shuffle=True),
-                "condition": " ".join(pos_candi["sent"]),
+                # "context": add_noise_sentence(num=noise_sent_num, item=item, orig_sentences=orig_sentences, rep_pairs=None, shuffle=True),
+                "context": add_noise_sentence(num=noise_sent_num, item=item, orig_sentences=augmented_sentences,
+                                              rep_pairs=None, shuffle=True),
+                # "condition": " ".join(pos_candi["sent"]),
+                "condition": augmented_pos_candi,
                 # "negative_context": [rep_context_sent(selected_sentences, _neg_sent[0], _neg_sent[1]) for _neg_sent in neg_ctx_sent],
                 "negative_context": negative_noise_context,
                 "orig_id": item["id"],
                 "pos_aug_num": _ctx_pos_aug,
                 "res_aug_num": _ctx_res_aug,
-                "sim_aug_num": _ctx_sim_aug,
-                "path_ent_str": path_ent_str_ls,
+                "sim_aug_num": _ctx_sim_aug
             })
 
     # Augment the context
@@ -575,8 +610,7 @@ def _process_single_item(item, max_neg_num: int, aug_num: int, min_rep_num: int,
             else:
                 sampled_ent_ids = h_t_ent_ids + random.sample(list(path_ent_ids), _sampled_ent_num - 2)
 
-            # target_ent_str = sample_entity(_entity_pool, item["id"], _sampled_ent_num)
-            target_ent_str = sample_entity(_entity_pool, path_ent_ids | set(h_t_ent_ids), _sampled_ent_num)
+            target_ent_str, target_ent_ids = sample_entity(_entity_pool, path_ent_ids | set(h_t_ent_ids), _sampled_ent_num)
             sampled_rep_pairs = {_ent_id: _rep_str for _ent_id, _rep_str in zip(sampled_ent_ids, target_ent_str)}
 
             # ======================================================================== #
@@ -601,15 +635,16 @@ def _process_single_item(item, max_neg_num: int, aug_num: int, min_rep_num: int,
             # TODO: Should other entities in ``sampled_rep_paris`` be replaced with the entity strings from the same negative sample item?
 
             new_sentences = []
+            existing_ent_ids = path_ent_ids | set(h_t_ent_ids) | set(target_ent_ids) | {sampled_neg_candidates[0]["h"],
+                                                                                        sampled_neg_candidates[0]["t"]}
             for _, sent in selected_sentences.items():
-                new_sentences.append(_replace_entities_w_str(sent, _cur_aug_rep_pairs))
+                augmented_rep_pairs = bias_entity_generate_rep_pairs(sent, existing_ent_ids)
+                assert len(set(list(augmented_rep_pairs.keys())) & set(list(_cur_aug_rep_pairs))) == 0
+                augmented_rep_pairs.update(_cur_aug_rep_pairs)
+                new_sentences.append(_replace_entities_w_str(sent, augmented_rep_pairs))
 
-            path_ent_str_ls = []
-            for sent in selected_sentences.values():
-                path_ent_str_ls.extend(extract_replaced_path_entity(sent, _cur_aug_rep_pairs))
-            path_ent_str_ls = list(set(path_ent_str_ls))
-
-            new_pos_candi_sent = _replace_entities_w_str(pos_candi, _cur_aug_rep_pairs)
+            # new_pos_candi_sent = _replace_entities_w_str(pos_candi, _cur_aug_rep_pairs)
+            new_pos_candi_sent = _replace_entities_w_str(pos_candi, bias_entity_generate_rep_pairs(pos_candi, existing_ent_ids))
 
             # Statistics
             _res_aug = 0
@@ -697,12 +732,11 @@ def _process_single_item(item, max_neg_num: int, aug_num: int, min_rep_num: int,
                     "pos_aug_num": _pos_aug,
                     "res_aug_num": _res_aug,
                     "sim_aug_num": _sim_aug,
-                    "rep_ent_num": _sampled_ent_num,
-                    "path_ent_str": path_ent_str_ls,
+                    "rep_ent_num": _sampled_ent_num
                 })
 
             # ============= context replaced-based examples ==================== #
-            # FIXED: Check这里的``rep_pairs``参数是否有问题
+            # TODO: Check这里的``rep_pairs``参数是否有问题
             if len(path_sent2rep) == 0:
                 continue
 
@@ -710,6 +744,8 @@ def _process_single_item(item, max_neg_num: int, aug_num: int, min_rep_num: int,
             _ctx_pos_aug = 0
             _ctx_res_aug = 0
             _ctx_sim_aug = 0
+
+            new_pos_candi_sent = _replace_entities_w_str(pos_candi, bias_entity_generate_rep_pairs(pos_candi, existing_ent_ids))
 
             for neg in mutual_samples + neg_candidates:
                 tgt_ctx_sent_id, tgt_ctx_sent = random.choice(path_sent2rep)
@@ -770,10 +806,13 @@ def _process_single_item(item, max_neg_num: int, aug_num: int, min_rep_num: int,
             # To avoid shuffling, re-generate the new sentences
             new_sentences = dict()
             for s_id, sent in selected_sentences.items():
-                new_sentences[s_id] = _replace_entities_w_str(sent, _cur_aug_rep_pairs)
+                augmented_rep_pairs = bias_entity_generate_rep_pairs(sent, existing_ent_ids)
+                assert len(set(list(augmented_rep_pairs.keys())) & set(list(_cur_aug_rep_pairs))) == 0
+                augmented_rep_pairs.update(_cur_aug_rep_pairs)
+                new_sentences[s_id] = _replace_entities_w_str(sent, augmented_rep_pairs)
 
             negative_context = []
-            for _neg_sent in neg_ctx_sent:
+            for _neg_sent in neg_ctx_sent:  # 负样本应该也不需要对head-tail entity以外的entities做特殊处理？
                 _new_context = copy.deepcopy(new_sentences)
                 _new_context[_neg_sent[0]] = _neg_sent[1]
                 _new_context_sentences = list(_new_context.values())
@@ -800,8 +839,7 @@ def _process_single_item(item, max_neg_num: int, aug_num: int, min_rep_num: int,
                     "sim_aug_num": _ctx_sim_aug,
                     "h": _cur_aug_rep_pairs[h_t_ent_ids[0]] if h_t_ent_ids[0] in _cur_aug_rep_pairs else _h_str,
                     "t": _cur_aug_rep_pairs[h_t_ent_ids[1]] if h_t_ent_ids[1] in _cur_aug_rep_pairs else _t_str,
-                    "rep_ent_num": _sampled_ent_num,
-                    "path_ent_str": path_ent_str_ls,
+                    "rep_ent_num": _sampled_ent_num
                 })
 
     return examples, context_examples
@@ -950,61 +988,9 @@ def read_examples(file_path: str, shuffle_context: bool = False,
     return examples, context_examples, raw_texts
 
 
-def _annotation_init(tokenizer: PreTrainedTokenizer):
-    global _tokenizer
-    _tokenizer = tokenizer
-
-
-def annotate_ent_str_per_example_for_tagging(example, max_seq_length: int):
-    input_a = " ".join(example["context"])
-    input_b = example["positive"] if "positive" in example else example["condition"]
-    path_ent_str = set(example["path_ent_str"])
-
-    max_ent_token_len = max([len(_tokenizer.tokenize(ent)) for ent in path_ent_str])
-
-    _tokenize_kwargs = {
-        "padding": PaddingStrategy.MAX_LENGTH,
-        "truncation": TruncationStrategy.LONGEST_FIRST,
-        "max_length": max_seq_length,
-    }
-
-    tokenizer_outputs = _tokenizer(input_a, input_b, **_tokenize_kwargs)
-    tokens = _tokenizer.convert_ids_to_tokens(tokenizer_outputs["input_ids"])
-    labels = [0] * len(tokens)
-    # ent_str_to_pos = collections.defaultdict(list)
-    all_pos = []
-
-    for i in range(len(tokens)):
-        if tokens[i] == _tokenizer.pad_token:
-            break
-        for j in range(i, len(tokens)):
-            if j - i + 1 > max_ent_token_len + 1:  # one extra length for safety.
-                break
-            tmp = _tokenizer.convert_tokens_to_string(tokens[i: j + 1]).strip()
-            if tmp in path_ent_str:
-                # ent_str_to_pos[tmp].append((i, j + 1))
-                all_pos.append((i, j + 1))
-                labels[i: j + 1] = [1] * (j - i + 1)
-
-    sorted_pos = sorted(all_pos, key=lambda x: x[0])
-    overlapped_cnt = 0
-    # Non-overlapping check.
-    for _tmp_id, _tmp in enumerate(sorted_pos):
-        if _tmp_id == 0:
-            continue
-        if _tmp[0] >= sorted_pos[_tmp_id - 1][1]:
-            # print("warning: overlapped path entity position")
-            overlapped_cnt += 1
-
-    example["tagging_label"] = labels
-    example["overlapped_cnt"] = overlapped_cnt
-
-    return example
-
-
 def convert_examples_into_features(file_path: str, tokenizer: PreTrainedTokenizer, pattern_pair_file: str,
                                    shuffle_context: bool = False, max_neg_num: int = 3, aug_num: int = 10,
-                                   max_seq_length: int = 512, geo_p: float = 0.5, min_rep_num: int = 1,
+                                   geo_p: float = 0.5, min_rep_num: int = 1,
                                    deduct_ratio: float = 1.0, context_ratio: float = 1.0, noise_sent_ratio: float = 0.5,
                                    remove_deduct: bool = False, remove_context: bool = False,
                                    max_neg_samples_num: int = 8, num_workers=48):
@@ -1013,9 +999,9 @@ def convert_examples_into_features(file_path: str, tokenizer: PreTrainedTokenize
     tokenizer_name = tokenizer_name.replace('Tokenizer', '').lower()
 
     file_suffix = f"{tokenizer_name}_{shuffle_context}_{max_neg_num}_{aug_num}_" \
-                  f"{max_seq_length}_{geo_p}_{min_rep_num}_" \
+                  f"{geo_p}_{min_rep_num}_" \
                   f"{deduct_ratio}_{context_ratio}_{noise_sent_ratio}_{max_neg_samples_num}_" \
-                  f"{'' if not remove_context else 'no-ctx-ex_'}{'' if not remove_deduct else 'no-duc-ex_'}path_v9.1_split_ent"
+                  f"{'' if not remove_context else 'no-ctx-ex_'}{'' if not remove_deduct else 'no-duc-ex_'}path_v9.2.1_split"
 
     cached_file_path = f"{file_path}_{file_suffix}"
     if os.path.exists(cached_file_path):
@@ -1032,21 +1018,6 @@ def convert_examples_into_features(file_path: str, tokenizer: PreTrainedTokenize
                                                           max_neg_samples_num=max_neg_samples_num,
                                                           num_workers=num_workers)
     all_examples = examples + context_examples
-
-    overlapped_cnt = 0
-    with Pool(num_workers, initializer=_annotation_init, initargs=(tokenizer,)) as p:
-        _annotate = partial(annotate_ent_str_per_example_for_tagging, max_seq_length=max_seq_length)
-        _results = list(tqdm(
-            p.imap(_annotate, all_examples, chunksize=32),
-            total=len(all_examples),
-            desc="Reading examples"
-        ))
-    for _res in _results:
-        _res_overlap = _res.pop("overlapped_cnt")
-        overlapped_cnt += _res_overlap
-    all_examples = _results
-
-    logger.info(f"Overlapped instances: {overlapped_cnt} / {len(all_examples)} = {overlapped_cnt / len(all_examples)}")
 
     # Save
     logger.info(f"Saving processed features into {cached_file_path}.")
