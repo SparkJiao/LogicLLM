@@ -1,7 +1,7 @@
 import copy
 from abc import ABC
 from dataclasses import dataclass
-
+import torch.distributed as dist
 import torch
 from fairscale.nn.checkpoint.checkpoint_activations import checkpoint_wrapper
 from torch import nn, Tensor
@@ -441,8 +441,12 @@ class RobertaForMultipleChoiceForPreTrainWithPairFull(RobertaForMultipleChoiceFo
     def __init__(self, config: RobertaConfig,
                  mlp_hidden_size: int = 768,
                  mlm_alpha: float = 1.0,
-                 mlm_disabled: bool = False):
+                 mlm_disabled: bool = False,
+                 stop_key_gradient: bool = False,
+                 dist_neg_sampling: bool = False):
         super().__init__(config, mlp_hidden_size, mlm_alpha, mlm_disabled)
+        self.stop_key_gradient = stop_key_gradient
+        self.dist_neg_sampling = dist_neg_sampling
 
     @staticmethod
     def fold_tensor(x: Tensor):
@@ -505,6 +509,22 @@ class RobertaForMultipleChoiceForPreTrainWithPairFull(RobertaForMultipleChoiceFo
 
         pair_q = self.pair_proj(self.dropout(self.pair_pooler(pair_q_pooled_output)))
         pair_k = self.pair_proj(self.dropout(self.pair_pooler(pair_k_pooled_output)))
+
+        if self.stop_key_gradient:
+            pair_k = pair_k.detach()
+
+        if dist.is_initialized() and self.dist_neg_sampling:
+            k_list = [torch.zeros_like(pair_k) for _ in range(dist.get_world_size())]
+            dist.all_gather(k_list, pair_k.contiguous())
+
+            re_arranged_k_list = [pair_k]
+            for i in range(dist.get_world_size()):
+                if i == dist.get_rank():
+                    continue
+                re_arranged_k_list.append(k_list[i])
+            pair_k = torch.cat(re_arranged_k_list, dim=0)
+            ex_pair_mask = pair_mask.new_zeros(batch_size, batch_size * 3)
+            pair_mask = torch.cat([pair_mask, ex_pair_mask], dim=1)
 
         align_logits = torch.einsum("ah,bh->ab", pair_q, pair_k)
         align_logits = align_logits + pair_mask * -10000.0
@@ -595,6 +615,9 @@ class RobertaForMultipleChoiceForPreTrainWithPairFullTagging(RobertaForMultipleC
             nn.Tanh(),
             nn.Linear(config.hidden_size, 2),
         )
+
+        self.init_metric("loss", "acc", "mlm_loss", "mlm_acc", "cls_loss", "pair_acc", "pair_loss",
+                         "pair_true_label_num", "pair_value_num", "tagging_loss", "tagging_acc")
 
     @staticmethod
     def fold_tensor(x: Tensor):
@@ -1084,17 +1107,26 @@ class RobertaForMultipleChoiceForZeroShot(RobertaPreTrainedModel, LogMixin, ABC)
                  fs_checkpoint_offload_to_cpu: bool = False,
                  fs_checkpoint_start_layer_id: int = 0,
                  freeze_encoder: bool = False,
-                 freeze_pooler: bool = False):
+                 freeze_pooler: bool = False,
+                 override_pooler: bool = True):
         super().__init__(config)
 
         self.roberta = RobertaModel(config)
         self.dropout = nn.Dropout(p=getattr(config, "pooler_dropout", config.hidden_dropout_prob))
+        self.override_pooler = override_pooler
 
-        self.pooler = nn.Sequential(
-            nn.Linear(config.hidden_size, mlp_hidden_size),
-            nn.Tanh()
-        )
-        self.cls = nn.Linear(mlp_hidden_size, 1)
+        if self.override_pooler:
+            self.pooler = nn.Sequential(
+                nn.Linear(config.hidden_size, mlp_hidden_size),
+                nn.Tanh()
+            )
+            self.cls = nn.Linear(mlp_hidden_size, 1)
+        else:
+            self.n_pooler = nn.Sequential(
+                nn.Linear(config.hidden_size, mlp_hidden_size),
+                nn.Tanh()
+            )
+            self.classifier = nn.Linear(mlp_hidden_size, 1)
 
         if fs_checkpoint:
             for i in range(fs_checkpoint_start_layer_id, config.num_hidden_layers):
@@ -1103,7 +1135,10 @@ class RobertaForMultipleChoiceForZeroShot(RobertaPreTrainedModel, LogMixin, ABC)
 
         self.freeze_pooler = freeze_pooler
         if self.freeze_pooler:
-            layers.freeze_module(self.pooler)
+            if self.override_pooler:
+                layers.freeze_module(self.pooler)
+            else:
+                layers.freeze_module(self.n_pooler)
 
         self.freeze_encoder = freeze_encoder
         if self.freeze_encoder:
@@ -1153,7 +1188,10 @@ class RobertaForMultipleChoiceForZeroShot(RobertaPreTrainedModel, LogMixin, ABC)
         )
         pooled_output = outputs[0][:, 0]
 
-        logits = self.cls(self.dropout(self.pooler(pooled_output)))
+        if self.override_pooler:
+            logits = self.cls(self.dropout(self.pooler(pooled_output)))
+        else:
+            logits = self.classifier(self.dropout(self.n_pooler(pooled_output)))
         reshaped_logits = logits.view(-1, num_choices)
 
         loss = None

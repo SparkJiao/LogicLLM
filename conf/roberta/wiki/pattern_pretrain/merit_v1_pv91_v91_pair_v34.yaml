@@ -14,10 +14,11 @@ model:
 
 # Data loading
 read_tensor_train:
-  _target_: data.wiki_entity_path_v9_2_3_split.convert_examples_into_features
+  _target_: data.wiki_entity_path_v9_1.convert_examples_into_features_v2
   pattern_pair_file: wiki_erica_path/v9.1/similar_pattern.train.0.pkl
   max_neg_num: 3
   aug_num: 1
+  max_seq_length: 384
   shuffle_context: True
   min_rep_num: 5
   geo_p: 0.4
@@ -27,10 +28,11 @@ read_tensor_train:
   num_workers: 48
 
 read_tensor_dev:
-  _target_: data.wiki_entity_path_v9_2_3_split.convert_examples_into_features
+  _target_: data.wiki_entity_path_v9_1.convert_examples_into_features_v2
   pattern_pair_file: wiki_erica_path/v9.1/similar_pattern.dev.shuffle.pkl
   max_neg_num: 3
   aug_num: 1
+  max_seq_length: 384
   shuffle_context: True
   min_rep_num: 5
   geo_p: 0.4
@@ -49,7 +51,8 @@ collator:
   mlm_probability: 0.15
   max_option_num: 4
   swap: True
-  option_dropout: 0.5
+  option_dropout: 1.0
+  k_option_dropout: 1.0
 
 # Dataloader
 num_workers: 8
@@ -66,19 +69,21 @@ pretrain:
 #output_dir: experiments/roberta.large.wiki_erica_path_v9_v9.0.1aug.seq384.w4.adamw.mlm_0.5.2080Ti
 #output_dir: experiments/roberta.large.wiki_erica_path_v9.1_v9.1.pair.v2.0.1aug.seq512.w8.adamw.500steps.NA100
 #output_dir: experiments/roberta.large.wiki_erica_path_v9.1_v9.1.pair.v3.0.1aug.seq512.w4.adamw.500steps.NA100
-output_dir: experiments/roberta.large.wiki_erica_path_v9.1_v9.2.3.pair.v6.4.1aug.seq512.qd0.5.w4.lamb.500steps.RTX6K
+#output_dir: experiments/roberta.large.wiki_erica_path_v9.1_v9.1.pair.v3.4.1aug.seq512.w4.lamb.500steps.NA100
+output_dir: experiments/roberta.large.wiki_erica_path_v9.1_v9.1.pair.v3.4.1aug.seq512.w4.adamw.500steps.NA100
 
 do_train: True
+#do_train: False
 evaluate_during_training: True
 
 do_eval: False
 eval_sub_path:
 
 # Training hyper-parameters
-per_gpu_train_batch_size: 4
+per_gpu_train_batch_size: 8
 per_gpu_eval_batch_size: 32
 learning_rate: 1e-4
-gradient_accumulation_steps: 256
+gradient_accumulation_steps: 128
 weight_decay: 0.01
 adam_epsilon: 1e-6
 adam_betas: "(0.9, 0.98)"
@@ -89,12 +94,13 @@ warmup_proportion: 0.1
 warmup_steps: 0
 
 # Optimizer
-optimizer: lamb
-use_nvlamb: True
+optimizer:
+use_nvlamb:
 bit_training:
 
 
 logging_steps: 1
+#save_best: True
 save_best: False
 save_steps: 100
 eval_steps: 100

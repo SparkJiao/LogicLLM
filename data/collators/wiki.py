@@ -511,10 +511,11 @@ class WikiPathDatasetCollatorWithContextAndPair(WikiPathDatasetCollator):
 
 class WikiPathDatasetCollatorWithContextAndPairComplete(WikiPathDatasetCollator):
     def __init__(self, max_seq_length: int, tokenizer: str, mlm_probability: float = 0.15, max_option_num: int = 4, swap: bool = False,
-                 option_dropout: float = 0.0):
+                 option_dropout: float = 0.0, k_option_dropout: float = 0.0):
         super().__init__(max_seq_length, tokenizer, mlm_probability, max_option_num)
         self.swap = swap
         self.option_dropout = option_dropout
+        self.k_option_dropout = k_option_dropout
 
     @staticmethod
     def prepare_single_example_positive(example):
@@ -580,7 +581,13 @@ class WikiPathDatasetCollatorWithContextAndPairComplete(WikiPathDatasetCollator)
 
             pair_k_orig_ids.append(b_pair_k_orig_id)
             pair_k_a.append(b_pair_k_a)
-            pair_k_b.append(b_pair_k_b)
+
+            _r = random.random()
+            if _r < self.k_option_dropout:
+                pair_k_b.append("")
+            else:
+                pair_k_b.append(b_pair_k_b)
+
             all_paired_orig_ids.append(b_pair_k_orig_ids)
             texts.append(b["text"])
 
@@ -667,10 +674,11 @@ class WikiPathDatasetCollatorWithContextAndPairComplete(WikiPathDatasetCollator)
 
 class WikiPathDatasetCollatorWithContextAndPairCompleteDropout(WikiPathDatasetCollator):
     def __init__(self, max_seq_length: int, tokenizer: str, mlm_probability: float = 0.15, max_option_num: int = 4, swap: bool = False,
-                 q_option_dropout: float = 0.0, k_context_dropout: float = 0.0, add_tagging: bool = False):
+                 q_option_dropout: float = 0.0, k_option_dropout: float = 0.0, k_context_dropout: float = 0.0, add_tagging: bool = False):
         super().__init__(max_seq_length, tokenizer, mlm_probability, max_option_num)
         self.swap = swap
         self.q_option_dropout = q_option_dropout
+        self.k_option_dropout = k_option_dropout
         self.k_context_dropout = k_context_dropout
         self.add_tagging = add_tagging
 
@@ -759,7 +767,13 @@ class WikiPathDatasetCollatorWithContextAndPairCompleteDropout(WikiPathDatasetCo
 
             pair_k_orig_ids.append(b_pair_k_orig_id)
             pair_k_a.append(b_pair_k_a)
-            pair_k_b.append(b_pair_k_b)
+
+            _r = random.random()
+            if _r < self.k_option_dropout:
+                pair_k_b.append("")
+            else:
+                pair_k_b.append(b_pair_k_b)
+
             all_paired_orig_ids.append(b_pair_k_orig_ids)
             texts.append(b["text"])
 

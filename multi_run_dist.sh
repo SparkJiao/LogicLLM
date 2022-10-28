@@ -8,5 +8,5 @@ gpu=$4
 #done;
 
 for seed in 42 43 44 45 46; do
-  CUDA_VISIBLE_DEVICES=$gpu torchrun --nproc_per_node $num_rank --master_port 10080 trainer_base_fsdp_v3.py -cp $conf -cn $conf_name seed=$seed
+  CUDA_VISIBLE_DEVICES=$gpu torchrun --nproc_per_node $num_rank --master_port 10082 trainer_base_fsdp_v3.py -cp $conf -cn $conf_name seed=$seed
 done;
