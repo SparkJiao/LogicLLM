@@ -21,11 +21,12 @@ def extract_path_and_parse(example):
     return ent_path, example_id
 
 
-def extract_path_w_rel_and_parse(example, edge2rel: Dict[str, str]):
+def extract_path_w_rel_and_parse(example, edge2rel: Dict[str, str], limit: int = 1):
     path = example["path"]
     example_id = example["id"]
     rels = []
     ent_path = []
+    empty_rel_cnt = 0
     for i, item in enumerate(path):
         ent_path.append(item[0])
         if i == 0:
@@ -34,8 +35,15 @@ def extract_path_w_rel_and_parse(example, edge2rel: Dict[str, str]):
         if edge in edge2rel:
             rels.append(edge2rel[edge])
         else:
-            rels.append(None)
-    return "\t".join(ent_path), "\t".join(rels) if None not in rels else None, example_id
+            rels.append("<unk>")
+            empty_rel_cnt += 1
+
+    if empty_rel_cnt > limit:
+        return "\t".join(ent_path), None, example_id
+    else:
+        return "\t".join(ent_path), "\t".join(rels), example_id
+
+    # return "\t".join(ent_path), "\t".join(rels) if None not in rels else None, example_id
 
 
 def init(res):
@@ -75,6 +83,7 @@ def parse_args():
     parser.add_argument("--rel_vocab", type=str, default=None)
     parser.add_argument("--reid_examples", type=str, default=None)
     parser.add_argument("--hop", type=int, default=2)
+    parser.add_argument("--limit", type=int, default=1)
 
     args = parser.parse_args()
     return args
@@ -177,6 +186,10 @@ def main():
 
     edge2rel, _, rels, rel_vocab, g = load_kg(args.kg)
 
+    # Add <unk>
+    rel_vocab["<unk>"] = len(rels)
+    rels.append("<unk>")
+
     # for _ in range(args.hop - 1):
     for _hop in range(2, args.hop + 1):
         print(f"Before relaxation: {len(rels)}")
@@ -198,7 +211,7 @@ def main():
     rel_path_set = defaultdict(list)
     results = []
     for example in tqdm(examples):
-        ent_path, rel_path, example_id = extract_path_w_rel_and_parse(example, edge2rel)
+        ent_path, rel_path, example_id = extract_path_w_rel_and_parse(example, edge2rel, limit=args.limit)
         ent_path_set[ent_path].append(example_id)
 
         if rel_path is not None:
@@ -226,7 +239,10 @@ def main():
 
             ent_path = ent_path.split("\t")
             direct_edge = f"{ent_path[0]}\t{ent_path[-1]}"
-            rel_path_decode_id_b = rel_vocab[direct_edge] if direct_edge in rel_vocab else -1
+            if direct_edge in edge2rel and edge2rel[direct_edge] in rel_vocab:
+                rel_path_decode_id_b = rel_vocab[edge2rel[direct_edge]]
+            else:
+                rel_path_decode_id_b = -1
 
             id2rel_path_decode_ids[example_id] = {
                 "input_a": rel_path_decode_id_a,

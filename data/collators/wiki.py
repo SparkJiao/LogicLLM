@@ -157,6 +157,29 @@ class WikiPathDatasetV6wPatternPairFull(WikiPathDatasetV5):
         return item
 
 
+class WikiPathDatasetRelGenerateV1(WikiPathDatasetV5):
+    def __init__(self, examples, raw_texts, id2rel_path_decode_id_file: str, rel_vocab: str):
+        super().__init__(examples, raw_texts)
+
+        self.id2rel_path_decode_ids = pickle.load(open(id2rel_path_decode_id_file, "rb"))
+        self.rel_vocab = pickle.load(open(rel_vocab, "rb"))
+
+    def __getitem__(self, index):
+        item = super().__getitem__(index)
+
+        example_id = item["example"]["orig_id"]
+
+        path_decode_input_a = self.id2rel_path_decode_ids[example_id]["input_a"]
+        path_decode_input_b = self.id2rel_path_decode_ids[example_id]["input_b"]
+
+        if path_decode_input_b == -1:
+            item["decoder_input_ids"] = path_decode_input_a + [len(self.rel_vocab)]  # as </s> token
+        else:
+            item["decoder_input_ids"] = path_decode_input_a + [path_decode_input_b, len(self.rel_vocab)]
+
+        return item
+
+
 class WikiPathDatasetGenerate(Dataset):
     """
     It seems that the dataset class is not relevant to ``generation``.
@@ -1111,3 +1134,23 @@ class WikiPathDatasetCollatorSeq2SeqV2:
         model_inputs["labels"] = labels
 
         return model_inputs
+
+
+class WikiPathDatasetCollatorRelSeqGenV1(WikiPathDatasetCollatorWithContext):
+    def __init__(self, max_seq_length: int, tokenizer: str, mlm_probability: float = 0.15, max_option_num: int = 4, swap: bool = False):
+        super().__init__(max_seq_length, tokenizer, mlm_probability, max_option_num, swap)
+
+    def __call__(self, batch):
+        rel_decode = []
+        for b in batch:
+            rel_decode.append(b["decoder_input_ids"])
+
+        max_input_len = max(map(len, rel_decode))
+        decoder_input_ids = torch.zeros(len(batch), max_input_len)
+        for b, b_decoder_inputs in enumerate(rel_decode):
+            decoder_input_ids[b, :len(b_decoder_inputs)] = torch.tensor(b_decoder_inputs, dtype=torch.long)
+
+        res = super().__call__(batch)
+        res["decoder_input_ids"] = decoder_input_ids
+
+        return res

@@ -10,6 +10,10 @@ from transformers.modeling_outputs import MultipleChoiceModelOutput
 from transformers.models.roberta.modeling_roberta import RobertaModel, RobertaPreTrainedModel, RobertaConfig, RobertaLMHead, \
     MaskedLMOutput, SequenceClassifierOutput, RobertaEncoder
 from transformers.models.t5.modeling_t5 import T5Stack, T5Config
+from transformers.utils import is_torch_fx_proxy
+import pickle
+import transformers.models.bert.modeling_bert
+from transformers.models.encoder_decoder.modeling_encoder_decoder import EncoderDecoderModel
 
 from general_util.logger import get_child_logger
 from general_util.mixin import LogMixin
@@ -1954,3 +1958,43 @@ class RobertaForMultipleChoicePathV3(RobertaForMultipleChoice, ABC):
         flat_rep = flat_rep.sum(dim=3) / true_occur_num  # (batch_size, option_num, max_span_num, h)
 
         return flat_rep
+
+
+class RobertaForMultipleChoicePreTrainWPathGen(EncoderDecoderModel, ABC):
+    def __init__(self, config: RobertaConfig,
+                 num_decoder_layers: int,
+                 rel_vocab: str,
+                 mlp_hidden_size: int = 768,
+                 mlm_alpha: float = 1.0,
+                 mlm_disabled: bool = False,
+                 fs_checkpoint: bool = False,
+                 fs_checkpoint_offload_to_cpu: bool = False,
+                 fs_checkpoint_start_layer_id: int = 0):
+        super().__init__(config, mlp_hidden_size, mlm_alpha, mlm_disabled,
+                         fs_checkpoint, fs_checkpoint_offload_to_cpu, fs_checkpoint_start_layer_id)
+
+        self.rel_vocab = pickle.load(open(rel_vocab, "rb"))
+
+        self.t5_config = T5Config()
+        self.t5_config.is_decoder = True
+        self.t5_config.is_encoder_decoder = False
+        self.t5_config.num_layers = num_decoder_layers
+
+        self.enc_proj = nn.Linear(config.hidden_size, self.t5_config.d_model)
+
+        self.decoder = T5Stack(self.t5_config)
+        self.decoder.post_init()
+
+        self.lm_head = nn.Linear(self.t5_config.d_model, len(self.rel_vocab) + 1, bias=False)
+
+        self.init_weights()
+        self.init_metric("loss", "acc", "mlm_loss", "mlm_acc", "cls_loss", "seq2seq_acc", "seq2seq_bleu", "seq2seq_loss")
+
+    @classmethod
+    def from_encoder_pretrained(cls, encoder_pretrained_model_name_or_path: str,
+                                ):
+        t5_decoder_config = T5Config()
+        t5_decoder_config.is_decoder = True
+        t5_decoder_config.add_cross_attention = True
+
+
