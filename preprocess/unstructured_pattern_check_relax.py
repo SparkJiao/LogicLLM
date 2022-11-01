@@ -221,19 +221,19 @@ def main():
 
     print(len(rel_path_set))
 
-    id2pos_ls = defaultdict(list)
+    # id2pos_ls = defaultdict(list)
     id2rel_path_decode_ids = {}
     ent_matching_cnt = 0
     no_direct_rel_cnt = 0
     cnt = 0
     for res in tqdm(results):
         ent_path, rel_path, example_id = res
-        tmp_set = set()
-        tmp_set.update(set([x for x in ent_path_set[ent_path] if x != example_id]))
-        ent_matching_cnt += len(tmp_set)
+        # tmp_set = set()
+        # tmp_set.update(set([x for x in ent_path_set[ent_path] if x != example_id]))
+        # ent_matching_cnt += len(tmp_set)
 
         if rel_path is not None:
-            tmp_set.update(set([x for x in rel_path_set[rel_path] if x != example_id]))
+            # tmp_set.update(set([x for x in rel_path_set[rel_path] if x != example_id]))
 
             rel_path_decode_id_a = [rel_vocab[_rel] for _rel in rel_path.split("\t")]
 
@@ -252,14 +252,14 @@ def main():
             if rel_path_decode_id_b == -1:
                 no_direct_rel_cnt += 1
 
-        id2pos_ls[example_id] = list(tmp_set)
-        cnt += len(id2pos_ls[example_id])
+        # id2pos_ls[example_id] = list(tmp_set)
+        # cnt += len(id2pos_ls[example_id])
 
     print(f"{cnt} / {len(results)} = {cnt / len(results)}")
     print(f"{cnt - ent_matching_cnt} / {len(results)} = {(cnt - ent_matching_cnt) / len(results)}")
     print(f"{no_direct_rel_cnt} / {len(id2rel_path_decode_ids)} = {no_direct_rel_cnt / len(id2rel_path_decode_ids)}")
 
-    pickle.dump(id2pos_ls, open(args.output_file, "wb"))  # use pickle since the key are of type `int`.
+    # pickle.dump(id2pos_ls, open(args.output_file, "wb"))  # use pickle since the key are of type `int`.
     if args.path_output_file is not None:
         pickle.dump(id2rel_path_decode_ids, open(args.path_output_file, "wb"))
     if args.rel_vocab is not None:

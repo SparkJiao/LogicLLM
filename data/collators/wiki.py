@@ -163,19 +163,24 @@ class WikiPathDatasetRelGenerateV1(WikiPathDatasetV5):
 
         self.id2rel_path_decode_ids = pickle.load(open(id2rel_path_decode_id_file, "rb"))
         self.rel_vocab = pickle.load(open(rel_vocab, "rb"))
+        self.eos_token_id = len(self.rel_vocab)
+        self.pad_token_id = len(self.rel_vocab) + 1
 
     def __getitem__(self, index):
         item = super().__getitem__(index)
 
         example_id = item["example"]["orig_id"]
 
-        path_decode_input_a = self.id2rel_path_decode_ids[example_id]["input_a"]
-        path_decode_input_b = self.id2rel_path_decode_ids[example_id]["input_b"]
+        if example_id in self.id2rel_path_decode_ids:
+            path_decode_input_a = self.id2rel_path_decode_ids[example_id]["input_a"]
+            path_decode_input_b = self.id2rel_path_decode_ids[example_id]["input_b"]
 
-        if path_decode_input_b == -1:
-            item["decoder_input_ids"] = path_decode_input_a + [len(self.rel_vocab)]  # as </s> token
+            if path_decode_input_b == -1:
+                item["rel_labels"] = path_decode_input_a + [len(self.rel_vocab)]  # as </s> token
+            else:
+                item["rel_labels"] = path_decode_input_a + [path_decode_input_b, len(self.rel_vocab)]
         else:
-            item["decoder_input_ids"] = path_decode_input_a + [path_decode_input_b, len(self.rel_vocab)]
+            item["rel_labels"] = [-1]
 
         return item
 
@@ -1143,14 +1148,18 @@ class WikiPathDatasetCollatorRelSeqGenV1(WikiPathDatasetCollatorWithContext):
     def __call__(self, batch):
         rel_decode = []
         for b in batch:
-            rel_decode.append(b["decoder_input_ids"])
+            rel_decode.append(b["rel_labels"])
 
         max_input_len = max(map(len, rel_decode))
-        decoder_input_ids = torch.zeros(len(batch), max_input_len)
+        invalid = 0
+        decoder_input_ids = torch.zeros(len(batch), max_input_len, dtype=torch.long).fill_(-1)
         for b, b_decoder_inputs in enumerate(rel_decode):
             decoder_input_ids[b, :len(b_decoder_inputs)] = torch.tensor(b_decoder_inputs, dtype=torch.long)
+            if len(b_decoder_inputs[0]) == -1:
+                invalid += 1
 
         res = super().__call__(batch)
-        res["decoder_input_ids"] = decoder_input_ids
+        res["rel_labels"] = decoder_input_ids
+        res["invalid_path"] = invalid
 
         return res
