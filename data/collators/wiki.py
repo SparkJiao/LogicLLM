@@ -1155,7 +1155,7 @@ class WikiPathDatasetCollatorRelSeqGenV1(WikiPathDatasetCollatorWithContext):
         decoder_input_ids = torch.zeros(len(batch), max_input_len, dtype=torch.long).fill_(-1)
         for b, b_decoder_inputs in enumerate(rel_decode):
             decoder_input_ids[b, :len(b_decoder_inputs)] = torch.tensor(b_decoder_inputs, dtype=torch.long)
-            if len(b_decoder_inputs[0]) == -1:
+            if b_decoder_inputs[0] == -1:
                 invalid += 1
 
         res = super().__call__(batch)
