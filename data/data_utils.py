@@ -370,3 +370,37 @@ def dfs_load_assignment(assignment_list, res: List[Tuple[str, str]], cur_assign:
             dfs_load_assignment(assignment['assignment'], res, cur_assign + ' ' + assignment['deduction'])
         else:
             raise ValueError('Unknown flag: {}'.format(assignment['flag']))
+
+
+def word_seq_to_word_char_starts(words: List[str]):
+    """
+    Args:
+        words: The input word sequence (not subwords).
+    """
+    word2char_starts = []
+    text = ""
+    for word in words:
+        if len(text) > 0:
+            text = " " + text
+        word2char_starts.append(len(text))
+        text += word
+    return word2char_starts, text
+
+def char_to_subword_ids(text, tokenizer: PreTrainedTokenizer):
+    subwords = tokenizer.tokenize(text)
+
+    char2subword_ids = []
+    char_lens = 0
+    subword_idx = 0
+    subwords_max_num = len(subwords)
+    while subword_idx < subwords_max_num:
+        subword_list = []
+        prev_subword_idx = subword_idx
+        while subword_idx < subwords_max_num:
+            subword_list.append(subwords[subword_idx])
+            subword_idx += 1
+            subword = tokenizer.convert_tokens_to_string(subword_list)
+            subword_len = len(subword)
+            if subword == tokenizer.sep_token:
+                char_lens += 1
+            if text[char_lens: char_lens + ]
