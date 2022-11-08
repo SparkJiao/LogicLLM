@@ -1,19 +1,19 @@
 import copy
+import pickle
 from abc import ABC
 from dataclasses import dataclass
-import torch.distributed as dist
+
 import torch
+import torch.distributed as dist
 from fairscale.nn.checkpoint.checkpoint_activations import checkpoint_wrapper
 from torch import nn, Tensor
 from torch.nn import CrossEntropyLoss
 from transformers.modeling_outputs import MultipleChoiceModelOutput
+from transformers.models.encoder_decoder.modeling_encoder_decoder import EncoderDecoderModel
 from transformers.models.roberta.modeling_roberta import RobertaModel, RobertaPreTrainedModel, RobertaConfig, RobertaLMHead, \
     MaskedLMOutput, SequenceClassifierOutput, RobertaEncoder
 from transformers.models.t5.modeling_t5 import T5Stack, T5Config
 from transformers.utils import is_torch_fx_proxy
-import pickle
-import transformers.models.bert.modeling_bert
-from transformers.models.encoder_decoder.modeling_encoder_decoder import EncoderDecoderModel
 
 from general_util.logger import get_child_logger
 from general_util.mixin import LogMixin
@@ -1976,12 +1976,12 @@ class RobertaForMultipleChoicePreTrainWPathGenV1(RobertaForMultipleChoiceForPreT
                          fs_checkpoint, fs_checkpoint_offload_to_cpu, fs_checkpoint_start_layer_id)
 
         self.rel_vocab = pickle.load(open(rel_vocab, "rb"))
-        self.unk_token_id = -1
+        self.unk_token_id = -2
         for token_id, token in enumerate(self.rel_vocab):
             if token == "<unk>":
                 self.unk_token_id = token_id
                 break
-        assert self.unk_token_id != -1
+        # assert self.unk_token_id != -1
 
         self.t5_config = T5Config()
         self.t5_config.is_decoder = True

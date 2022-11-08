@@ -386,6 +386,7 @@ def word_seq_to_word_char_starts(words: List[str]):
         text += word
     return word2char_starts, text
 
+
 def char_to_subword_ids(text, tokenizer: PreTrainedTokenizer):
     subwords = tokenizer.tokenize(text)
 
@@ -396,6 +397,8 @@ def char_to_subword_ids(text, tokenizer: PreTrainedTokenizer):
     while subword_idx < subwords_max_num:
         subword_list = []
         prev_subword_idx = subword_idx
+        subword_len = 0
+        subword = ""
         while subword_idx < subwords_max_num:
             subword_list.append(subwords[subword_idx])
             subword_idx += 1
@@ -403,4 +406,19 @@ def char_to_subword_ids(text, tokenizer: PreTrainedTokenizer):
             subword_len = len(subword)
             if subword == tokenizer.sep_token:
                 char_lens += 1
-            if text[char_lens: char_lens + ]
+            if text[char_lens: char_lens + subword_len] == subword:
+                break
+        assert text[char_lens: char_lens + subword_len] == subword
+        if subword == "</s>":
+            char2subword_ids.extend([prev_subword_idx] * (subword_len + 1))
+        else:
+            char2subword_ids.extend([prev_subword_idx] * subword_len)
+
+        char_lens += len(subword)
+
+    if len(text) != len(char2subword_ids):
+        flag = False
+    else:
+        flag = True
+
+    return char2subword_ids, subwords, flag

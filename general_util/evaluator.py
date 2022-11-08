@@ -259,15 +259,27 @@ def evaluate_fn(cfg: DictConfig, model: torch.nn.Module, tokenizer: PreTrainedTo
     logger.info(f"Global Steps: {prefix}")
     logger.info(metric_log)
 
-    if cfg.local_rank == -1:
-        prediction_file = os.path.join(output_dir, prefix, "eval_predictions.json")
-    else:
-        prediction_file = os.path.join(output_dir, prefix, f"eval_predictions_rank{cfg.local_rank}.json")
-    json.dump(predictions, open(prediction_file, "w"), ensure_ascii=False, indent=2)
+    if len(predictions) > 0:
+        if cfg.local_rank == -1:
+            prediction_file = os.path.join(output_dir, prefix, "eval_predictions.json")
+        else:
+            prediction_file = os.path.join(output_dir, prefix, f"eval_predictions_rank{cfg.local_rank}.json")
+        json.dump(predictions, open(prediction_file, "w"), ensure_ascii=False, indent=2)
 
     torch.cuda.empty_cache()
 
     return results
+
+
+class DefaultForwardFn:
+    def __init__(self, cfg: DictConfig, model: torch.nn.Module, tokenizer: PreTrainedTokenizer):
+        self.cfg = cfg
+        self.model = model
+        self.tokenizer = tokenizer
+
+    def __call__(self, batch):
+        outputs = self.model(**batch)
+        return outputs, []
 
 
 class DiscriminatorForwardFn:
