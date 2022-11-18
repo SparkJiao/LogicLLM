@@ -55,3 +55,36 @@ class ERICAPredictionSaver(DistGatherMixin):
         },
             output_file)
         return {}, []
+
+
+class WikiPathInferencePostProcessor(DistGatherMixin):
+    def __init__(self):
+        self.indices = []
+        self.codes = []
+
+    def __call__(self, meta_data: Dict[str, Any], batch_model_outputs: Dict[str, Any], ddp: bool = False):
+        indices = meta_data["indices"]
+        codes = batch_model_outputs["code_indices"]
+
+        if ddp:
+            obj = [codes, indices]
+            gather_res = self.gather_object(obj)
+            if dist.get_rank() == 0:
+                tmp_a = []
+                tmp_b = []
+                for item in gather_res:
+                    tmp_a.extend(item[0])
+                    tmp_b.extend(item[1])
+                codes = tmp_a
+                indices = tmp_b
+
+        self.indices.extend(indices)
+        self.codes.extend(codes)
+
+    def get_results(self, output_dir: str):
+        output_file = os.path.join(output_dir, f"predictions-rank{dist.get_rank()}.pt")
+        torch.save({
+            "indices": self.indices,
+            "codes": self.codes,
+        }, output_file)
+        return {}, []
