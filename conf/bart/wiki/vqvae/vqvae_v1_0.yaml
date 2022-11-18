@@ -1,0 +1,127 @@
+hydra:
+  run:
+    dir: ./
+
+train_file: wiki_erica_path/sampled_data_roberta/train_distant_[1-9].json
+dev_file: wiki_erica_path/sampled_data_roberta/train_distant_0.json
+test_file: wiki_erica_path/sampled_data_roberta/train_distant_0.json
+
+# Model
+model:
+  _target_: models.bart.BartDVAE.from_pretrained
+  codebook_size: 2048
+  code_dim: 128
+  commitment_cost: 0.25
+
+# Data loading
+read_tensor_train:
+  _target_: data.erica_data_readin.ERICASentenceDataset
+  cached_path: wiki_erica_path/v9.1/erica_train_1-9.pkl
+
+read_tensor_dev:
+  _target_: data.erica_data_readin.ERICASentenceDataset
+  cached_path: wiki_erica_path/v9.1/erica_train_0.pkl
+
+read_tensor_test:
+  _target_: data.erica_data_readin.ERICASentenceDataset
+  cached_path: wiki_erica_path/v9.1/erica_train_0.pkl
+
+extended_vocab: 4
+
+# Data collator
+collator:
+  _target_: data.erica_data_readin.ERICASentenceCollator
+  max_seq_length: 128
+  tokenizer: facebook/bart-large
+
+# Dataloader
+num_workers: 4
+prefetch_factor: 2
+
+do_preprocess: False
+
+# Wiki path pretrain v8.2
+model_name_or_path: facebook/bart-large
+pretrain:
+
+#output_dir: experiments/bart.large.vqvae.raw_wiki.v1.0.w4.RTXA6K
+output_dir: experiments/bart.large.vqvae.raw_wiki.v1.0.w4.A40
+
+do_train: True
+evaluate_during_training: True
+
+do_eval: True
+eval_sub_path:
+
+# Training hyper-parameters
+per_gpu_train_batch_size: 64
+per_gpu_eval_batch_size: 128
+learning_rate: 6e-4
+gradient_accumulation_steps: 32
+weight_decay: 0.01
+adam_epsilon: 1e-6
+adam_betas: "(0.9, 0.98)"
+max_grad_norm: 5.0
+num_train_epochs: 10
+max_steps: 10000
+warmup_proportion: 0.1
+warmup_steps: 0
+
+# Optimizer
+optimizer:
+use_nvlamb:
+bit_training:
+
+
+logging_steps: 1
+save_best: False
+save_steps: 500
+eval_steps: 500
+ddp_eval: True
+no_cuda: False
+seed: 42
+local_rank: -1
+fp16: True
+fp16_opt_level: O1
+fp16_bfloat16: True
+
+# Prediction config
+prediction_cfg:
+  metric: "acc"
+  measure: 1
+  best_checkpoint:
+  best_result:
+eval_forward_fn:
+  _target_: general_util.evaluator.DefaultForwardFn
+post_process:
+  _target_: post_processors.erica_post_processor.ERICAPredictionSaver
+
+#dist_init:
+#  _target_: general_util.dist_utils.setup_slurm_distributed
+
+
+# fairscale.FullyShardedDP
+fairscale_config:
+#  _target_: general_util.fsdp_utils.recursive_initialize
+  _target_: general_util.fsdp_utils.default_initialize
+  fp16: ${fp16}
+  move_grads_to_cpu: False
+  move_params_to_cpu: False
+
+# Lightseq config
+with_lightseq: False
+
+summary_helper:
+  _target_: general_util.tensorboard_helper.SummaryWriterHelper
+  batch_index_or_keys:
+  outputs_index_or_keys:
+    "train/vq_loss": vq_loss
+    "train/commitment_loss": commitment_loss
+    "train/mlm_loss": mlm_loss
+
+# Temporary variables
+n_gpu:
+device:
+train_batch_size:
+eval_batch_size:
+world_size:

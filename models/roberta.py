@@ -1971,7 +1971,8 @@ class RobertaForMultipleChoicePreTrainWPathGenV1(RobertaForMultipleChoiceForPreT
                  mlm_disabled: bool = False,
                  fs_checkpoint: bool = False,
                  fs_checkpoint_offload_to_cpu: bool = False,
-                 fs_checkpoint_start_layer_id: int = 0):
+                 fs_checkpoint_start_layer_id: int = 0,
+                 decoder_config_path: str = None):
         super().__init__(config, mlp_hidden_size, mlm_alpha, mlm_disabled,
                          fs_checkpoint, fs_checkpoint_offload_to_cpu, fs_checkpoint_start_layer_id)
 
@@ -1983,7 +1984,7 @@ class RobertaForMultipleChoicePreTrainWPathGenV1(RobertaForMultipleChoiceForPreT
                 break
         # assert self.unk_token_id != -1
 
-        self.t5_config = T5Config()
+        self.t5_config = T5Config() if decoder_config_path is None else T5Config.from_pretrained(decoder_config_path)
         self.t5_config.is_decoder = True
         self.t5_config.is_encoder_decoder = False
         self.t5_config.add_cross_attention = True

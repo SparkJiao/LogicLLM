@@ -1,3 +1,4 @@
+import collections
 import copy
 import glob
 import json
@@ -67,11 +68,13 @@ Version 9.0 Update:
         可能会引发与我们的预训练目标的不一致
 Version 9.1 Update:
     1.  保存实体的时候用实体在wikidata里的id取代现在的enumerate得到的id，方便后续处理的时候判断是否是同一实体。
-        
+Version 9.2 Update:
+    1.  通过指定path的长度增加更多的且更复杂的样本，原始的v9.1版本path（后续考虑增加从其他样本中找句子的可能）
 """
 
 
-def bfs(src_e_id, s_vis: Set, e_vis: Set, sent2ent, ent2sent, tgt_e_id, min_len: int = 4):
+# TODO: 是不是考虑用DFS更好一些
+def bfs(src_e_id, s_vis: Set, e_vis: Set, sent2ent, ent2sent, tgt_e_id, min_len):
     orig_path = ((src_e_id, -1),)
     queue = [(src_e_id, orig_path)]
     while len(queue) > 0:
@@ -118,14 +121,6 @@ def process_path(path: Tuple, sentences, entities, sent2ent):
     for edge_id, (e_id, e_sent_id) in enumerate(path):
         if edge_id == 0:
             assert e_sent_id == -1
-            # _h = e_id
-            # assert edge_id + 1 < len(path)
-            # _t = path[edge_id + 1][0]
-            # assert _h in sent2ent[e_sent_id]
-            # sent_h_t_tuple[e_sent_id] = {
-            #     "h": _h,
-            #     "t": _t if _t in sent2ent[e_sent_id] else -1
-            # }
         else:
             selected_sent_ids.add(e_sent_id)
             _h = _last_ent_id
@@ -177,7 +172,7 @@ def process_path(path: Tuple, sentences, entities, sent2ent):
     return True, selected_sentences, rest_sentences
 
 
-def workflow(sample, min_len: int = 4):
+def workflow(sample, max_min_len: int = 5):
     sample_id, sample = sample
 
     entities = sample["vertexSet"]
@@ -209,62 +204,58 @@ def workflow(sample, min_len: int = 4):
     # Version 4.1: Enumerate over each entity pair <e_i, e_j> such that e_i and e_j has the common sentences.
     examples = []
     ent_pair_vis = set()
+    ent_path_vis = set()
     for h in ent_id2item.keys():
         for t in ent_id2item.keys():
             if h == t:
                 continue
-            if (h, t) in ent_pair_vis:
+            if (h, t) in ent_pair_vis or (t, h) in ent_pair_vis:
                 continue
-            # h, t = item["h"], item["t"]
-            # h_sent_ids = set([_e["sent_id"] for _e in entities[h]])
-            # t_sent_ids = set([_e["sent_id"] for _e in entities[t]])
             h_sent_ids = ent2sent[h]
             t_sent_ids = ent2sent[t]
             common_sent_ids = h_sent_ids & t_sent_ids
             if len(common_sent_ids) == 0:
                 continue
-            # FIXME:
+            # FIXED:
             #  这里不要遍历 entity h 的每一个句子的位置 可能有重复
             #  此外从 entity h 出发，初始化的 sent_vis 里面只需要包含 common_sent_ids 因为出发的这个句子也可能包含其他实体，是可以被检索的
             #  可以考虑找到一条path就返回，如果追求数量可以寻找足够多的path
             #  目前的写法影响除了可能产生比较多重复的数据意外应该没有其他的问题了
-            # for h_e_pos in entities[h]:
-            #     if h_e_pos["sent_id"] in common_sent_ids:
-            #         continue
             sent_vis = deepcopy(common_sent_ids)
-            # sent_vis.add(h_e_pos["sent_id"])
-            # res, rel_connect_ent = dfs(h, sent2ent, ent2sent, rel_edges, h, t, {h}, sent_vis,
-            #                            path=((h, -1),), rel_ent=set())
-            res = bfs(h, sent_vis, set(), sent2ent, ent2sent, t, min_len=min_len)
-            if res:
-                assert len(res) >= 3
-                # assert len(res) >= 2
-                flag, selected, rest = process_path(res, sentences, entities, sent2ent)
-                if not flag:
-                    print(11111)
-                    continue
-                pos = [
-                    {
-                        "sent": sentences[pos_sent_id],
-                        "h": h,
-                        "t": t,
-                        "ent": extract_entities_of_sent(pos_sent_id, sent2ent, entities)
-                    } for pos_sent_id in common_sent_ids
-                ]
-                for c_s_id in common_sent_ids:
-                    rest.pop(c_s_id)
-                examples.append({
-                    "selected_sentences": selected,
-                    "pos": pos,
-                    "rest_sentences": rest,
-                    "path": res,
-                    # "relation_connect_ent": list(rel_connect_ent),
-                    "entity": {ent[0]["id"]: ent for ent in entities},
-                    "all_sentences": sentences,
-                    "id": sample_id,
-                })
-                ent_pair_vis.update((h, t))
-                ent_pair_vis.update((t, h))
+            for _min_len in range(3, max_min_len + 1):
+                res = bfs(h, sent_vis, set(), sent2ent, ent2sent, t, min_len=_min_len)
+                if res:
+                    ent_path = "\t".join([tmp[0] for tmp in res])
+                    if ent_path in ent_path_vis:
+                        continue
+                    ent_path_vis.add(ent_path)
+
+                    assert len(res) >= 3
+                    flag, selected, rest = process_path(res, sentences, entities, sent2ent)
+                    if not flag:
+                        print(11111)
+                        continue
+                    pos = [
+                        {
+                            "sent": sentences[pos_sent_id],
+                            "h": h,
+                            "t": t,
+                            "ent": extract_entities_of_sent(pos_sent_id, sent2ent, entities)
+                        } for pos_sent_id in common_sent_ids
+                    ]
+                    for c_s_id in common_sent_ids:
+                        rest.pop(c_s_id)
+                    examples.append({
+                        "selected_sentences": selected,
+                        "pos": pos,
+                        "rest_sentences": rest,
+                        "path": res,
+                        "entity": {ent[0]["id"]: ent for ent in entities},
+                        "all_sentences": sentences,
+                        "id": sample_id,
+                    })
+                    ent_pair_vis.update((h, t))
+                    ent_pair_vis.update((t, h))
 
     return examples
 
@@ -281,7 +272,7 @@ if __name__ == '__main__':
     parser.add_argument('--output_dir', type=str, default='')
     parser.add_argument('--num_workers', type=int, default=16)
     parser.add_argument('--sample', default=False, action='store_true')
-    parser.add_argument('--min_len', type=int, default=4)
+    parser.add_argument('--max_min_len', type=int, default=5)
 
     args = parser.parse_args()
 
@@ -290,16 +281,17 @@ if __name__ == '__main__':
     else:
         input_files = list(glob.glob(args.input_file))
 
-    file_suffix = f'.path_v9.1.pkl'
+    file_suffix = f'.path_v9.2_mm{args.max_min_len}.pkl'
     if args.output_dir and not os.path.exists(args.output_dir):
         os.makedirs(args.output_dir)
 
+    all_examples_cnt = 0
     for _file in input_files:
         samples = json.load(open(_file))
 
         processed_samples = []
         with Pool(args.num_workers) as p:
-            _annotate = partial(workflow, min_len=args.min_len)
+            _annotate = partial(workflow, max_min_len=args.max_min_len)
             _results = list(tqdm(
                 p.imap(_annotate, list(enumerate(samples)), chunksize=32),
                 total=len(samples),
@@ -307,17 +299,21 @@ if __name__ == '__main__':
             ))
 
         no_negative_num = 0
+        path_len_cnt = collections.Counter()
         for ex_id, _res in enumerate(_results):
             if _res:
                 for _r in _res:
-                    _r["id"] = ex_id
+                    _r["id"] = all_examples_cnt
+                    all_examples_cnt += 1
                     processed_samples.append(_r)
+                    path_len_cnt[len(_r["path"])] += 1
 
         for ex in processed_samples:
             if len(ex["rest_sentences"]) == 0:
                 no_negative_num += 1
 
         print(f"Processed examples: {len(processed_samples)}")
+        print(f"Example path length counter: {path_len_cnt}")
         print(f"Examples without hard negative samples: {no_negative_num}.")
 
         avg_sent_num = sum(map(lambda x: len(x["sents"]), samples)) / len(samples)

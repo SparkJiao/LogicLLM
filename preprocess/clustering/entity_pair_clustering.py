@@ -85,6 +85,7 @@ def parse_args():
     parser.add_argument("--batch_size", type=int, default=32)
     parser.add_argument("--seed", type=int, default=42)
     parser.add_argument("--processed_clusters", type=str, default=None)
+    parser.add_argument("--num_clusters", type=int, default=50)
     args = parser.parse_args()
 
     return args
@@ -124,7 +125,7 @@ def main():
         for i in trange(0, edge_hidden_tensor.size(0), args.batch_size):
             batch = edge_hidden_tensor[i: (i + args.batch_size)]
             _, cluster_centers = kmeans(
-                X=batch, num_clusters=50, distance="cosine", cluster_centers=cluster_centers, device=torch.device("cuda:0"),
+                X=batch, num_clusters=args.num_clusters, distance="cosine", cluster_centers=cluster_centers, device=torch.device("cuda:0"),
                 seed=args.seed, tqdm_flag=False
             )
     else:

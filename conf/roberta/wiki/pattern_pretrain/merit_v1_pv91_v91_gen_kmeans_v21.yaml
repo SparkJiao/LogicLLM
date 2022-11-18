@@ -9,15 +9,16 @@ test_file:
 # Model
 model:
   _target_: models.roberta.RobertaForMultipleChoicePreTrainWPathGenV1.from_pretrained
-  num_decoder_layers: 4
-  rel_vocab: wiki_erica_path/v9.1/pattern_rel_id_kmeans_v10/rel_vocab.pt
+  num_decoder_layers: 3
+  rel_vocab: wiki_erica_path/v9.1/pattern_rel_id_kmeans_v10/rel_vocab_c2000.pt
   mlp_hidden_size: 2048
   mlm_alpha: 1.0
+  decoder_config_path: pretrained-models/t5-large-lm-adapt
 
 # Data loading
 read_tensor_train:
   _target_: data.wiki_entity_path_v9_1.convert_examples_into_features_v3
-  id2rel_path_decode_id_file: wiki_erica_path/v9.1/pattern_rel_id_kmeans_v10/pattern_decode_id.train.0.limit0.pkl
+  id2rel_path_decode_id_file: wiki_erica_path/v9.1/pattern_rel_id_kmeans_v10/pattern_decode_id.0.c2000.limit.pkl
   rel_vocab: ${model.rel_vocab}
   max_neg_num: 3
   aug_num: 1
@@ -32,7 +33,7 @@ read_tensor_train:
 
 read_tensor_dev:
   _target_: data.wiki_entity_path_v9_1.convert_examples_into_features_v3
-  id2rel_path_decode_id_file: wiki_erica_path/v9.1/pattern_rel_id_kmeans_v10/pattern_decode_id.dev.shuffle.limit0.pkl
+  id2rel_path_decode_id_file: wiki_erica_path/v9.1/pattern_rel_id_kmeans_v10/pattern_decode_id.dev.shuffle.c2000.limit0.pkl
   rel_vocab: ${model.rel_vocab}
   max_neg_num: 3
   aug_num: 1
@@ -72,7 +73,7 @@ pretrain:
 #output_dir: experiments/roberta.large.wiki_erica_path_v9.1_v9.1.pair.v2.0.1aug.seq512.w8.adamw.500steps.NA100
 #output_dir: experiments/roberta.large.wiki_erica_path_v9.1_v9.1.pair.v3.0.1aug.seq512.w4.lamb.500steps.NA100
 #output_dir: experiments/roberta.large.wiki_erica_path_v9.1_v9.1.gen.v1.0.1aug.seq512.w2.lamb.500steps.RTXA6K
-output_dir: experiments/roberta.large.wiki_erica_path_v9.1_v9.1.gen.kmeans.v1.0.1aug.seq512.w4.adamw.500steps.RTXA6K
+output_dir: experiments/roberta.large.wiki_erica_path_v9.1_v9.1.gen.kmeans.c2000.v2.1.1aug.seq512.w4.lamb.500steps.RTXA6K
 #output_dir: experiments/roberta.large.wiki_erica_path_v9.1_v9.1.gen.kmeans.v1.0.1aug.seq512.w2.lamb.500steps.NA100
 
 do_train: True
@@ -96,8 +97,8 @@ warmup_proportion: 0.1
 warmup_steps: 0
 
 # Optimizer
-optimizer:
-use_nvlamb:
+optimizer: lamb
+use_nvlamb: True
 bit_training:
 
 

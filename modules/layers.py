@@ -36,11 +36,12 @@ def keep_grad_prompt(input_embeds: Tensor, prompt_pos: Tensor):
     return input_embeds
 
 
-def get_accuracy(logits: Tensor, labels: Tensor):
+def get_accuracy(logits: Tensor, labels: Tensor, pad_id: int = -1):
     assert logits.size()[:-1] == labels.size()
 
+    # logits = logits.detach().cpu()
     _, pred = logits.max(dim=-1)
-    true_label_num = (labels != -1).sum().item()
+    true_label_num = (labels != pad_id).sum().item()
     correct = (pred == labels).sum().item()
     if true_label_num == 0:
         return 0, 0
