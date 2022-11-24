@@ -49,6 +49,7 @@ def parse_args():
     parser.add_argument("--path_output_file", type=str, default=None)
     parser.add_argument("--rel_vocab", type=str, default=None)
     parser.add_argument("--reid_examples", type=str, default=None)
+    parser.add_argument("--edge_weights_save", type=str, default=None)
     parser.add_argument("--limit", type=int, default=0)
 
     args = parser.parse_args()
@@ -100,7 +101,7 @@ def main():
     args = parse_args()
 
     data = pickle.load(open(args.input_file, "rb"))
-    examples = rearrange_example_id(data["examples"])
+    examples = data["examples"]
     print(len(set([exp["id"] for exp in examples])))
     print(len(examples))
 
@@ -118,12 +119,14 @@ def main():
     assert _sorted_edge_labels[0][1] == 0, _sorted_edge_labels[0][1]
     edge_label_vocab = [x[0] for x in _sorted_edge_labels]
 
-    # ent_path_set = defaultdict(list)
+    edge_hidden, _, _ = torch.load(args.edge_relation_file, map_location="cpu")
+    edge_pretrained_weights = torch.stack([
+        edge_hidden[edge] for edge in tqdm(edge_label_vocab, total=len(edge_label_vocab))], dim=0)
+
     rel_path_set = defaultdict(list)
     results = []
     for example in tqdm(examples):
         ent_path, rel_path, example_id = extract_path_w_rel_and_parse(example, edge_labels, limit=args.limit)
-        # ent_path_set[ent_path].append(example_id)
 
         if rel_path is not None:
             rel_path_set["\t".join(map(str, rel_path))].append(example_id)
@@ -173,13 +176,16 @@ def main():
     print(f"{no_direct_rel_cnt} / {len(id2rel_path_decode_ids)} = {no_direct_rel_cnt / len(id2rel_path_decode_ids)}")
 
     # pickle.dump(id2pos_ls, open(args.output_file, "wb"))  # use pickle since the key are of type `int`.
+    pickle.dump(rel_path_set, open(args.output_file, "wb"))  # V2.0
     if args.path_output_file is not None:
         pickle.dump(id2rel_path_decode_ids, open(args.path_output_file, "wb"))
     if args.rel_vocab is not None:
         pickle.dump(edge_label_vocab, open(args.rel_vocab, "wb"))  # id2rel_id
-    if args.reid_examples is not None:
-        data["examples"] = examples
-        pickle.dump(data, open(args.reid_examples, "wb"))
+    if args.edge_weights_save is not None:
+        torch.save(edge_pretrained_weights, args.edge_weights_save)
+    # if args.reid_examples is not None:
+    #     data["examples"] = examples
+    #     pickle.dump(data, open(args.reid_examples, "wb"))
 
 
 if __name__ == '__main__':

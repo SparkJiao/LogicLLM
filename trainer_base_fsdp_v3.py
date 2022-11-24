@@ -257,6 +257,7 @@ def train(cfg, train_dataset, model, tokenizer, continue_from_global_step=0):
                                 tokenizer.save_pretrained(cfg.output_dir)
                                 OmegaConf.save(cfg, os.path.join(cfg.output_dir, "training_config.yaml"))
                                 logger.info("Saving best model checkpoint to %s", cfg.output_dir)
+                    torch.cuda.empty_cache()
 
                 del batch
                 del last_outputs
