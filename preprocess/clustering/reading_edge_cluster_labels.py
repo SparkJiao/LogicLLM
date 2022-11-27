@@ -49,7 +49,7 @@ def parse_args():
     parser.add_argument("--path_output_file", type=str, default=None)
     parser.add_argument("--rel_vocab", type=str, default=None)
     parser.add_argument("--reid_examples", type=str, default=None)
-    parser.add_argument("--edge_weights_save", type=str, default=None)
+    # parser.add_argument("--edge_weights_save", type=str, default=None)
     parser.add_argument("--limit", type=int, default=0)
 
     args = parser.parse_args()
@@ -115,13 +115,13 @@ def main():
         # edge_label_vocab = list(edge_label_vocab.keys())
         # print(f"Combined edge labels: {len(edge_label_vocab)}")
 
-    _sorted_edge_labels = sorted(edge_labels.items(), key=lambda x: x[1])
-    assert _sorted_edge_labels[0][1] == 0, _sorted_edge_labels[0][1]
-    edge_label_vocab = [x[0] for x in _sorted_edge_labels]
+    # _sorted_edge_labels = sorted(edge_labels.items(), key=lambda x: x[1])
+    # assert _sorted_edge_labels[0][1] == 0, _sorted_edge_labels[0][1]
+    # edge_label_vocab = [x[0] for x in _sorted_edge_labels]
 
-    edge_hidden, _, _ = torch.load(args.edge_relation_file, map_location="cpu")
-    edge_pretrained_weights = torch.stack([
-        edge_hidden[edge] for edge in tqdm(edge_label_vocab, total=len(edge_label_vocab))], dim=0)
+    # edge_hidden, _, _ = torch.load(args.edge_relation_file, map_location="cpu")
+    # edge_pretrained_weights = torch.stack([
+    #     edge_hidden[edge] for edge in tqdm(edge_label_vocab, total=len(edge_label_vocab))], dim=0)
 
     rel_path_set = defaultdict(list)
     results = []
@@ -180,9 +180,9 @@ def main():
     if args.path_output_file is not None:
         pickle.dump(id2rel_path_decode_ids, open(args.path_output_file, "wb"))
     if args.rel_vocab is not None:
-        pickle.dump(edge_label_vocab, open(args.rel_vocab, "wb"))  # id2rel_id
-    if args.edge_weights_save is not None:
-        torch.save(edge_pretrained_weights, args.edge_weights_save)
+        pickle.dump(edge_labels, open(args.rel_vocab, "wb"))  # id2rel_id
+    # if args.edge_weights_save is not None:
+        # torch.save(edge_pretrained_weights, args.edge_weights_save)
     # if args.reid_examples is not None:
     #     data["examples"] = examples
     #     pickle.dump(data, open(args.reid_examples, "wb"))

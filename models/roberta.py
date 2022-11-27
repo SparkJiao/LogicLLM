@@ -13,6 +13,7 @@ from transformers.models.encoder_decoder.modeling_encoder_decoder import Encoder
 from transformers.models.roberta.modeling_roberta import RobertaModel, RobertaPreTrainedModel, RobertaConfig, RobertaLMHead, \
     MaskedLMOutput, SequenceClassifierOutput, RobertaEncoder
 from transformers.models.t5.modeling_t5 import T5Stack, T5Config
+from transformers.activations import gelu
 from transformers.utils import is_torch_fx_proxy
 
 from general_util.logger import get_child_logger
@@ -1982,6 +1983,7 @@ class RobertaForMultipleChoicePreTrainWPathGenV1(RobertaForMultipleChoiceForPreT
             if token == "<unk>":
                 self.unk_token_id = token_id
                 break
+        # TODO: Fix the vocabulary bug. The structure of relation vocabulary has changed to `edge (str) -> id (int)`
         # assert self.unk_token_id != -1
 
         self.t5_config = T5Config() if decoder_config_path is None else T5Config.from_pretrained(decoder_config_path)
@@ -2159,42 +2161,173 @@ class RobertaForMultipleChoicePreTrainWPathGenV1(RobertaForMultipleChoiceForPreT
         return shifted_input_ids
 
 
-class RobertaForMultipleChoicePreTrainWPathGenV2(EncoderDecoderModel, ABC):
+class RelDecoderHead(nn.Module):
+    def __init__(self, input_size, hidden_size, vocab_size):
+        super().__init__()
+        self.dense = nn.Linear(input_size, hidden_size)
+        self.layer_norm = nn.LayerNorm(hidden_size)
+
+        self.decoder = nn.Linear(hidden_size, vocab_size)
+        self.bias = nn.Parameter(torch.zeros(vocab_size))
+        self.decoder.bias = self.bias
+
+    def forward(self, x):
+        x = self.dense(x)
+        x = gelu(x)
+        x = self.layer_norm(x)
+
+        x = self.decoder(x)
+        return x
+
+
+class RobertaForMultipleChoicePreTrainWPathGenV2(RobertaForMultipleChoiceForPreTrain, ABC):
     def __init__(self, config: RobertaConfig,
-                 num_decoder_layers: int,
                  rel_vocab: str,
                  mlp_hidden_size: int = 768,
                  mlm_alpha: float = 1.0,
                  mlm_disabled: bool = False,
                  fs_checkpoint: bool = False,
                  fs_checkpoint_offload_to_cpu: bool = False,
-                 fs_checkpoint_start_layer_id: int = 0):
+                 fs_checkpoint_start_layer_id: int = 0,
+                 rel_emb_weights: str = None):
         super().__init__(config, mlp_hidden_size, mlm_alpha, mlm_disabled,
                          fs_checkpoint, fs_checkpoint_offload_to_cpu, fs_checkpoint_start_layer_id)
 
         self.rel_vocab = pickle.load(open(rel_vocab, "rb"))
+        self.rel_vocab_size = len(set(list(self.rel_vocab.values())))
+        self.eos_token_id = self.rel_vocab_size
+        self.pad_token_id = self.rel_vocab_size + 1
+        self.unk_token_id = -2
+        for token, token_id in self.rel_vocab.items():
+            if token == "<unk>":
+                self.unk_token_id = token_id
+                break
+            assert token_id < self.rel_vocab_size
 
-        self.t5_config = T5Config()
-        self.t5_config.is_decoder = True
-        self.t5_config.is_encoder_decoder = False
-        self.t5_config.num_layers = num_decoder_layers
+        rel_decoding_config = copy.deepcopy(config)
+        rel_decoding_config.vocab_size = self.rel_vocab_size
+        print(self.rel_vocab_size)
+        if rel_emb_weights is not None:
+            _, _, rel_emb_weights = torch.load(rel_emb_weights, map_location="cpu")  # item_hidden_states, cluster_ids_x, cluster_centers
+            rel_emb_weights = rel_emb_weights.to(dtype=self.lm_head.decoder.weight.data.dtype)
+            print(rel_emb_weights.size())
+            self.rel_decoder = RelDecoderHead(config.hidden_size, rel_emb_weights.size(1), self.rel_vocab_size)
+            self.rel_decoder.decoder.weight.data.copy_(rel_emb_weights)
+            assert self.rel_decoder.decoder.weight.requires_grad
+        else:
+            self.rel_decoder = RobertaLMHead(rel_decoding_config)
 
-        self.enc_proj = nn.Linear(config.hidden_size, self.t5_config.d_model)
+        self.post_init()
+        self.init_metric("loss", "acc", "mlm_loss", "mlm_acc", "cls_loss", "path_gen_acc", "path_gen_loss")
 
-        self.decoder = T5Stack(self.t5_config)
-        self.decoder.post_init()
+    def forward(
+            self,
+            input_ids: Tensor,
+            attention_mask: Tensor = None,
+            token_type_ids: Tensor = None,
+            labels: Tensor = None,
+            mlm_input_ids: Tensor = None,
+            mlm_attention_mask: Tensor = None,
+            rel_labels: Tensor = None,
+            sep_index: Tensor = None,
+            mlm_labels: Tensor = None,
+            output_attentions=None,
+            output_hidden_states=None,
+            return_dict=None,
+            **kwargs
+    ):
+        r"""
+        labels (:obj:`torch.LongTensor` of shape :obj:`(batch_size,)`, `optional`):
+            Labels for computing the multiple choice classification loss. Indices should be in ``[0, ...,
+            num_choices-1]`` where :obj:`num_choices` is the size of the second dimension of the input tensors. (See
+            :obj:`input_ids` above)
+        """
+        return_dict = return_dict if return_dict is not None else self.config.use_return_dict
+        batch_size, num_choices, seq_len = input_ids.size()
 
-        self.lm_head = nn.Linear(self.t5_config.d_model, len(self.rel_vocab) + 1, bias=False)
+        input_ids = self.fold_tensor(input_ids)
+        attention_mask = self.fold_tensor(attention_mask)
+        token_type_ids = self.fold_tensor(token_type_ids)
 
-        self.init_weights()
-        self.init_metric("loss", "acc", "mlm_loss", "mlm_acc", "cls_loss", "seq2seq_acc", "seq2seq_bleu", "seq2seq_loss")
+        outputs = self.roberta(
+            input_ids,
+            token_type_ids=token_type_ids,
+            attention_mask=attention_mask,
+            output_attentions=output_attentions,
+            output_hidden_states=output_hidden_states,
+            return_dict=return_dict,
+        )
+        pooled_output = outputs[0][:, 0]
 
-    @classmethod
-    def from_encoder_pretrained(cls, encoder_pretrained_model_name_or_path: str,
-                                ):
-        t5_decoder_config = T5Config()
-        t5_decoder_config.is_decoder = True
-        t5_decoder_config.add_cross_attention = True
+        logits = self.cls(self.dropout(self.pooler(pooled_output)))
+        reshaped_logits = logits.view(-1, num_choices)
+
+        sent_hidden = self.dropout(torch.gather(outputs[0].reshape(batch_size, num_choices, seq_len, -1)[:, 0],
+                                                index=sep_index.unsqueeze(-1).expand(-1, -1, pooled_output.size(-1)), dim=1))
+        sent_rel_logits = self.rel_decoder(sent_hidden)
+
+        loss = 0.
+        mlm_loss = 0.
+        cls_loss = 0.
+        path_gen_loss = 0.
+        if labels is not None:
+            loss_fct = CrossEntropyLoss(ignore_index=-1)
+            cls_loss = loss_fct(reshaped_logits, labels)
+            loss = loss + cls_loss
+
+            if mlm_labels is not None and (self.mlm_disabled is False or self.training is False):
+                if mlm_attention_mask is None:
+                    mlm_attention_mask = attention_mask.reshape(reshaped_logits.size(0), num_choices, -1)[:, 0]
+
+                mlm_outputs = self.roberta(
+                    mlm_input_ids,
+                    attention_mask=mlm_attention_mask,
+                    return_dict=return_dict
+                )
+
+                mlm_scores = self.lm_head(mlm_outputs[0])
+                mlm_loss = self.mlm_alpha * loss_fct(mlm_scores.reshape(-1, self.vocab_size), mlm_labels.reshape(-1))
+                if not self.mlm_disabled:
+                    loss = loss + mlm_loss
+            else:
+                mlm_scores = None
+                mlm_loss = None
+
+            # print(rel_labels.size(), sent_rel_logits.size())
+            rel_labels[rel_labels == self.unk_token_id] = -1
+            rel_labels = rel_labels[:, :-1]  # remove <bos> token
+            rel_labels[rel_labels == self.eos_token_id] = -1
+            path_gen_loss = loss_fct(sent_rel_logits.reshape(-1, sent_rel_logits.size(-1)), rel_labels.reshape(-1))
+            loss = loss + path_gen_loss
+
+            if not self.training:
+                acc, true_label_num = layers.get_accuracy(reshaped_logits, labels)
+                self.eval_metrics.update("acc", val=acc, n=true_label_num)
+                self.eval_metrics.update("loss", val=loss.item(), n=true_label_num)
+                self.eval_metrics.update("cls_loss", val=cls_loss.item(), n=true_label_num)
+
+                acc, true_label_num = layers.get_accuracy(sent_rel_logits, rel_labels)
+                self.eval_metrics.update("path_gen_acc", val=acc, n=true_label_num)
+                self.eval_metrics.update("path_gen_loss", val=path_gen_loss.item(), n=true_label_num)
+
+                if mlm_labels is not None:
+                    acc, true_label_num = layers.get_accuracy(mlm_scores, mlm_labels)
+                    self.eval_metrics.update("mlm_acc", val=acc, n=true_label_num)
+                    self.eval_metrics.update("mlm_loss", val=mlm_loss.item(), n=true_label_num)
+
+        if not return_dict:
+            output = (reshaped_logits,) + outputs[2:] + (mlm_loss, cls_loss,)
+            return ((loss,) + output) if loss is not None else output
+
+        return MultipleChoicePreTrainModelOutput(
+            loss=loss,
+            logits=reshaped_logits,
+            hidden_states=outputs.hidden_states,
+            attentions=outputs.attentions,
+            mlm_loss=mlm_loss,
+            cls_loss=cls_loss,
+            path_gen_loss=path_gen_loss,
+        )
 
 
 class RobertaPathGenV1PreTrain(RobertaForMultipleChoiceForPreTrain, ABC):

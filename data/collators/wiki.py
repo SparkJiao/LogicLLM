@@ -164,11 +164,13 @@ class WikiPathDatasetV6wPatternPairsKMeans(WikiPathDatasetV5):
         self.id2exp = collections.defaultdict(list)
         for exp_id, exp in enumerate(self.examples):
             self.id2exp[exp["orig_id"]].append(exp_id)
+        self.exp_orig_id_set = set(list(self.id2exp.keys()))
 
         rel_path_set = pickle.load(open(rel_path_set_file, "rb"))
         cnt = 0
         rel_path_groups = []
         for pattern, pattern_exp_ls in rel_path_set.items():
+            pattern_exp_ls = [exp_id for exp_id in pattern_exp_ls if exp_id in self.exp_orig_id_set]
             if len(pattern_exp_ls) > 1:
                 rel_path_groups.append(pattern_exp_ls)
                 cnt += len(pattern_exp_ls)
@@ -202,9 +204,10 @@ class WikiPathDatasetRelGenerateV1(WikiPathDatasetV5):
         super().__init__(examples, raw_texts)
 
         self.id2rel_path_decode_ids = pickle.load(open(id2rel_path_decode_id_file, "rb"))
-        self.rel_vocab = pickle.load(open(rel_vocab, "rb"))
-        self.eos_token_id = len(self.rel_vocab)
-        self.pad_token_id = len(self.rel_vocab) + 1
+        rel_vocab = pickle.load(open(rel_vocab, "rb"))
+        self.rel_vocab_size = len(set(list(rel_vocab.values())))
+        self.eos_token_id = self.rel_vocab_size
+        self.pad_token_id = self.rel_vocab_size + 1
 
     def __getitem__(self, index):
         item = super().__getitem__(index)
@@ -216,9 +219,10 @@ class WikiPathDatasetRelGenerateV1(WikiPathDatasetV5):
             path_decode_input_b = self.id2rel_path_decode_ids[example_id]["input_b"]
 
             if path_decode_input_b == -1:
-                item["rel_labels"] = path_decode_input_a + [len(self.rel_vocab)]  # as </s> token
+                logger.info("Inconsistency checked.")
+                item["rel_labels"] = path_decode_input_a + [self.eos_token_id]  # as </s> token
             else:
-                item["rel_labels"] = path_decode_input_a + [path_decode_input_b, len(self.rel_vocab)]
+                item["rel_labels"] = path_decode_input_a + [path_decode_input_b, self.eos_token_id]
         else:
             item["rel_labels"] = [-1]
 
@@ -363,70 +367,96 @@ class WikiPathDatasetCollatorWithContext(WikiPathDatasetCollator):
         self.swap = swap
 
     def __call__(self, batch):
+        # FIXME:
+        #   这里的代码有问题，所有继承该类的代码需要重新检查（主要涉及path generation相关的code中，通过super()调用__call__()方法的代码段）
+        #   错误的原因在于，这里对batch内部的顺序做了重新排列，导致后续按照原有的顺序构造label的时候对应不上（主要是生成任务）
         # examples, texts = list(zip(*batch))
-        op_examples, ctx_examples, texts = [], [], []
+        # op_examples, ctx_examples, texts = [], [], []
+        # for b in batch:
+        #     example = b.pop("example")
+        #     if "negative_context" in example:
+        #         ctx_examples.append(example)
+        #     else:
+        #         op_examples.append(example)
+        #     # examples.append(b.pop("example"))
+        #     texts.append(b.pop("text"))
+        #     # assert isinstance(texts[-1], str), texts[-1]
+        # del batch
+        # batch_size = len(op_examples) + len(ctx_examples)
+        # assert batch_size == len(texts)
+        #
+        # # TODO: Check if other possible input formats are ok, e.g., <rest context> <sep> <pseudo/ground truth edge> <sep> <sep> <option>
+        #
+        # input_a = []
+        # input_b = []
+        # option_num = -1
+        #
+        # for e in op_examples:
+        #     op = ([e["positive"]] + e["negative"])[:self.max_option_num]
+        #     if self.swap:
+        #         input_a.extend([e["context"]] * len(op))
+        #         input_b.extend(op)
+        #     else:
+        #         input_a.extend(op)
+        #         input_b.extend([e["context"]] * len(op))
+        #     if option_num == -1:
+        #         option_num = len(op)
+        #     else:
+        #         assert option_num == len(op)
+        #
+        # for e in ctx_examples:
+        #     positive_context = e.pop("context")
+        #     negative_context = e.pop("negative_context")
+        #     op = e.pop("condition")
+        #     input_a.extend([positive_context] + negative_context)
+        #     input_b.extend([op] * (len(negative_context) + 1))
+        #     if option_num == -1:
+        #         option_num = len(negative_context) + 1
+        #     else:
+        #         assert option_num == len(negative_context) + 1, (option_num, len(negative_context))
+
+        # FIXED by 2022/11/27
+        input_a, input_b, texts = [], [], []
         for b in batch:
             example = b.pop("example")
             if "negative_context" in example:
-                ctx_examples.append(example)
+                positive_context = example.pop("context")
+                negative_context = example.pop("negative_context")
+                op = example.pop("condition")
+                input_a.extend([positive_context] + negative_context)
+                input_b.extend([op] * (len(negative_context) + 1))
+                assert self.max_option_num == len(negative_context) + 1, len(negative_context)
             else:
-                op_examples.append(example)
-            # examples.append(b.pop("example"))
+                op = ([example["positive"]] + example["negative"])[:self.max_option_num]
+                if self.swap:
+                    input_a.extend([example["context"]] * len(op))
+                    input_b.extend(op)
+                else:
+                    input_a.extend(op)
+                    input_b.extend([example["context"]] * len(op))
+
             texts.append(b.pop("text"))
-            # assert isinstance(texts[-1], str), texts[-1]
-        del batch
-        batch_size = len(op_examples) + len(ctx_examples)
-        assert batch_size == len(texts)
+        batch_size = len(texts)
+        option_num = self.max_option_num
 
-        # TODO: Check if other possible input formats are ok, e.g., <rest context> <sep> <pseudo/ground truth edge> <sep> <sep> <option>
-
-        input_a = []
-        input_b = []
-        option_num = -1
-
-        for e in op_examples:
-            op = ([e["positive"]] + e["negative"])[:self.max_option_num]
-            if self.swap:
-                input_a.extend([e["context"]] * len(op))
-                input_b.extend(op)
-            else:
-                input_a.extend(op)
-                input_b.extend([e["context"]] * len(op))
-            if option_num == -1:
-                option_num = len(op)
-            else:
-                assert option_num == len(op)
-
-        for e in ctx_examples:
-            positive_context = e.pop("context")
-            negative_context = e.pop("negative_context")
-            op = e.pop("condition")
-            input_a.extend([positive_context] + negative_context)
-            input_b.extend([op] * (len(negative_context) + 1))
-            if option_num == -1:
-                option_num = len(negative_context) + 1
-            else:
-                assert option_num == len(negative_context) + 1, (option_num, len(negative_context))
-
-        option_num = min(option_num, self.max_option_num)
-
-        tokenizer_outputs = self.tokenizer(input_a, input_b, padding=PaddingStrategy.MAX_LENGTH,
+        tokenizer_outputs = self.tokenizer(input_a, input_b, padding=PaddingStrategy.LONGEST,
                                            truncation=TruncationStrategy.LONGEST_FIRST, max_length=self.max_seq_length,
                                            return_tensors="pt")
         input_ids = tokenizer_outputs["input_ids"]
         attention_mask = tokenizer_outputs["attention_mask"]
 
-        mlm_tokenize_outputs = self.tokenizer(texts, padding=PaddingStrategy.MAX_LENGTH,
+        mlm_tokenize_outputs = self.tokenizer(texts, padding=PaddingStrategy.LONGEST,
                                               truncation=TruncationStrategy.LONGEST_FIRST, max_length=self.max_seq_length,
                                               return_tensors="pt")
         mlm_input_ids = mlm_tokenize_outputs["input_ids"]
         mlm_attention_mask = mlm_tokenize_outputs["attention_mask"]
 
         mlm_input_ids, mlm_labels = self.mask_tokens(mlm_input_ids)
+        seq_len = input_ids.size(1)
 
         res = {
-            "input_ids": input_ids.reshape(batch_size, option_num, self.max_seq_length),
-            "attention_mask": attention_mask.reshape(batch_size, option_num, self.max_seq_length),
+            "input_ids": input_ids.reshape(batch_size, option_num, seq_len),
+            "attention_mask": attention_mask.reshape(batch_size, option_num, seq_len),
             "labels": torch.zeros(batch_size, dtype=torch.long),
             "mlm_input_ids": mlm_input_ids,
             "mlm_attention_mask": mlm_attention_mask,
@@ -1335,5 +1365,64 @@ class WikiPathDatasetCollatorRelSeqGenV1(WikiPathDatasetCollatorWithContext):
         res = super().__call__(batch)
         res["rel_labels"] = decoder_input_ids
         res["invalid_path"] = invalid
+
+        return res
+
+
+class WikiPathDatasetCollatorRelSeqGenV2(WikiPathDatasetCollatorWithContext):
+    def __init__(self, max_seq_length: int, tokenizer: str, mlm_probability: float = 0.15, max_option_num: int = 4, swap: bool = False):
+        super().__init__(max_seq_length, tokenizer, mlm_probability, max_option_num, swap)
+
+    def __call__(self, batch):
+        rel_decode = []
+        for b in batch:
+            rel_decode.append(b["rel_labels"])
+
+        max_input_len = max(map(len, rel_decode))
+        invalid = 0
+        decoder_input_ids = torch.zeros(len(batch), max_input_len, dtype=torch.long).fill_(-1)
+        for b, b_decoder_inputs in enumerate(rel_decode):
+            if "original_orders" in batch[b]["example"] and b_decoder_inputs[0] != -1:
+                # print("Entering Here...")
+                assert len(batch[b]["example"]["original_orders"]) == len(b_decoder_inputs) - 2, (batch[b]["example"]["original_orders"],
+                                                                                                  b_decoder_inputs)
+                rerank_b_decoder_inputs = [b_decoder_inputs[rank] for rank in batch[b]["example"]["original_orders"]] + \
+                    b_decoder_inputs[len(batch[b]["example"]["original_orders"]):]
+                b_decoder_inputs = rerank_b_decoder_inputs
+
+            decoder_input_ids[b, :len(b_decoder_inputs)] = torch.tensor(b_decoder_inputs, dtype=torch.long)
+            if b_decoder_inputs[0] == -1:
+                invalid += 1
+
+        examples = [b["example"] for b in batch]
+        res = super().__call__(batch)
+        res["rel_labels"] = decoder_input_ids
+        res["invalid_path"] = invalid
+
+        input_ids = res["input_ids"][:, 0]
+        # print(self.tokenizer.convert_ids_to_tokens(input_ids[0]))
+        sep_token_mask = input_ids == self.tokenizer.sep_token_id  # [batch, max_seq_length]
+        sent_num = sep_token_mask.sum(dim=1)  # [batch]
+        sep_index = torch.zeros(input_ids.size(0), sent_num.max().item() - 1, dtype=torch.long)  # For roberta only.
+        for b, b_sep_token_mask in enumerate(sep_token_mask):
+            cnt = 0
+            for tk_id, tk_mask in enumerate(b_sep_token_mask):
+                if tk_mask == 1:
+                    # overlook the continuous sep tokens and only keep the first.
+                    if cnt > 0 and all(b_sep_token_mask[tmp] == 1 for tmp in range(sep_index[b, cnt - 1].item(), tk_id + 1, 1)):
+                        continue
+                    sep_index[b, cnt] = tk_id
+                    cnt += 1
+            if rel_decode[b][0] != -1:
+                assert len(rel_decode[b]) == cnt + 1, (rel_decode[b], cnt, self.tokenizer.convert_ids_to_tokens(input_ids[b]),
+                                                       examples[b]["original_orders"])
+            else:
+                if cnt >= max_input_len:
+                    decoder_input_ids = torch.cat([decoder_input_ids,
+                                                   torch.zeros(len(batch), cnt + 1 - max_input_len, dtype=torch.long).fill_(-1)], dim=1)
+                    res["rel_labels"] = decoder_input_ids
+
+        res["sep_index"] = sep_index
+        assert sep_index.size(1) == decoder_input_ids.size(1) - 1, (sep_index, decoder_input_ids)
 
         return res
