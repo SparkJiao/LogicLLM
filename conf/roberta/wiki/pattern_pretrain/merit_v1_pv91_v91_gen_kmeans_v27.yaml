@@ -9,7 +9,7 @@ test_file:
 # Model
 model:
   _target_: models.roberta.RobertaForMultipleChoicePreTrainWPathGenV1.from_pretrained
-  num_decoder_layers: 3
+  num_decoder_layers: 1
   rel_vocab: wiki_erica_path/v9.1/pattern_rel_id_kmeans_v21/rel_vocab_c1000.pt
   mlp_hidden_size: 2048
   mlm_alpha: 1.0
@@ -56,6 +56,7 @@ collator:
   mlm_probability: 0.15
   max_option_num: 4
   swap: True
+  gen_only: False
 
 # Dataloader
 num_workers: 4
@@ -64,8 +65,9 @@ prefetch_factor: 2
 do_preprocess: False
 
 # Wiki path pretrain v8.2
-model_name_or_path: pretrained-models/roberta-large
+#model_name_or_path: pretrained-models/roberta-large
 #model_name_or_path: experiments/roberta.large.wiki_erica_path_v9.1_v9.1.gen.kmeans.c2000.v2.2.1aug.seq512.w4.adamw.500steps.RTXA6K/checkpoint-900
+model_name_or_path: experiments/roberta.large.wiki_erica_path_v9.1_v9.1.gen.kmeans.c1000.v2.7.1aug.seq512.w4.adamw.2ksteps.RTXA6K/checkpoint-2000
 pretrain:
 
 #output_dir: experiments/roberta.large.wiki_erica_path_v9_v9.0.1aug.seq320.w4.2080Ti
@@ -80,7 +82,7 @@ pretrain:
 #output_dir: experiments/roberta.large.wiki_erica_path_v9.1_v9.1.gen.kmeans.c2000.v2.4.1aug.seq512.w2.lamb.500steps.RTXA6K
 #output_dir: experiments/roberta.large.wiki_erica_path_v9.1_v9.1.gen.kmeans.c2000.v2.4.1aug.seq512.w4.lamb.500steps.RTXA6K
 #output_dir: experiments/roberta.large.wiki_erica_path_v9.1_v9.1.gen.kmeans.c2000.v2.4.1aug.seq512.w4.lamb.500steps.RTXA6K
-output_dir: experiments/roberta.large.wiki_erica_path_v9.1_v9.1.gen.kmeans.c1000.v2.4.1aug.seq512.w2.lamb.500steps.PA40.fixed
+output_dir: experiments/roberta.large.wiki_erica_path_v9.1_v9.1.gen.kmeans.c1000.v2.7.1aug.seq512.w6.lamb.500steps.RTXA6K
 #output_dir: experiments/roberta.large.wiki_erica_path_v9.1_v9.1.gen.kmeans.v1.0.1aug.seq512.w2.lamb.500steps.NA100
 
 do_train: True
@@ -91,13 +93,13 @@ eval_sub_path:
 
 # Training hyper-parameters
 per_gpu_train_batch_size: 4
-per_gpu_eval_batch_size: 4
+per_gpu_eval_batch_size: 16
 learning_rate: 1e-4
-gradient_accumulation_steps: 512
+gradient_accumulation_steps: 170
 weight_decay: 0.01
 adam_epsilon: 1e-6
 adam_betas: "(0.9, 0.98)"
-max_grad_norm: 1.0
+max_grad_norm: 5.0
 num_train_epochs: 10
 max_steps: 500
 warmup_proportion: 0.1

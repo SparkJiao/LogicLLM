@@ -12,8 +12,9 @@ model:
   num_decoder_layers: 3
   rel_vocab: wiki_erica_path/v9.1/pattern_rel_id_kmeans_v21/rel_vocab_c1000.pt
   mlp_hidden_size: 2048
-  mlm_alpha: 1.0
+  mlm_alpha: 5.0
   decoder_config_path: pretrained-models/t5-large-lm-adapt
+  rel_gen_coff: 3.0
 
 # Data loading
 read_tensor_train:
@@ -80,7 +81,7 @@ pretrain:
 #output_dir: experiments/roberta.large.wiki_erica_path_v9.1_v9.1.gen.kmeans.c2000.v2.4.1aug.seq512.w2.lamb.500steps.RTXA6K
 #output_dir: experiments/roberta.large.wiki_erica_path_v9.1_v9.1.gen.kmeans.c2000.v2.4.1aug.seq512.w4.lamb.500steps.RTXA6K
 #output_dir: experiments/roberta.large.wiki_erica_path_v9.1_v9.1.gen.kmeans.c2000.v2.4.1aug.seq512.w4.lamb.500steps.RTXA6K
-output_dir: experiments/roberta.large.wiki_erica_path_v9.1_v9.1.gen.kmeans.c1000.v2.4.1aug.seq512.w2.lamb.500steps.PA40.fixed
+output_dir: experiments/roberta.large.wiki_erica_path_v9.1_v9.1.gen.kmeans.c1000.v2.4.4.1aug.seq512.w8.adamw.2ksteps.RTXA6K
 #output_dir: experiments/roberta.large.wiki_erica_path_v9.1_v9.1.gen.kmeans.v1.0.1aug.seq512.w2.lamb.500steps.NA100
 
 do_train: True
@@ -91,29 +92,28 @@ eval_sub_path:
 
 # Training hyper-parameters
 per_gpu_train_batch_size: 4
-per_gpu_eval_batch_size: 4
-learning_rate: 1e-4
-gradient_accumulation_steps: 512
+per_gpu_eval_batch_size: 16
+learning_rate: 2e-4
+gradient_accumulation_steps: 128
 weight_decay: 0.01
 adam_epsilon: 1e-6
-adam_betas: "(0.9, 0.98)"
-max_grad_norm: 1.0
+adam_betas: "(0.9, 0.999)"
+max_grad_norm: 5.0
 num_train_epochs: 10
-max_steps: 500
+max_steps: 2000
 warmup_proportion: 0.1
 warmup_steps: 0
 
 # Optimizer
-optimizer: lamb
-use_nvlamb: True
+optimizer:
+use_nvlamb:
 bit_training:
 
 
 logging_steps: 1
-#save_best: True
 save_best: False
-save_steps: 100
-eval_steps: 100
+save_steps: 500
+eval_steps: 500
 ddp_eval: True
 no_cuda: False
 seed: 42
@@ -198,6 +198,7 @@ summary_helper:
     "train/cls_loss": cls_loss
 #    "train/pair_loss": pair_loss
     "train/path_gen_loss": path_gen_loss
+#    "train/ent_gen_loss": ent_gen_loss
 
 # Temporary variables
 n_gpu:

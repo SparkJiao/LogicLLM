@@ -1346,8 +1346,11 @@ class WikiPathDatasetCollatorSeq2SeqV2:
 
 
 class WikiPathDatasetCollatorRelSeqGenV1(WikiPathDatasetCollatorWithContext):
-    def __init__(self, max_seq_length: int, tokenizer: str, mlm_probability: float = 0.15, max_option_num: int = 4, swap: bool = False):
+    def __init__(self, max_seq_length: int, tokenizer: str, mlm_probability: float = 0.15, max_option_num: int = 4, swap: bool = False,
+                 gen_only: bool = False, option_dropout: float = 0.0):
         super().__init__(max_seq_length, tokenizer, mlm_probability, max_option_num, swap)
+        self.gen_only = gen_only
+        self.option_dropout = option_dropout
 
     def __call__(self, batch):
         rel_decode = []
@@ -1362,9 +1365,73 @@ class WikiPathDatasetCollatorRelSeqGenV1(WikiPathDatasetCollatorWithContext):
             if b_decoder_inputs[0] == -1:
                 invalid += 1
 
+        dropped_op_cnt = 0
+        if self.option_dropout > 0:
+            examples = [b["example"] for b in batch]
+            inputs_a = []
+            inputs_b = []
+            for exp in examples:
+                inputs_a.append(exp["context"])
+
+                _r = random.random()
+                if _r < self.option_dropout:
+                    inputs_b.append("")
+                    dropped_op_cnt += 1
+                    continue
+
+                if "negative_context" in exp:
+                    op = exp["condition"]
+                else:
+                    op = exp["positive"]
+                inputs_b.append(op)
+            assert len(inputs_a) == len(inputs_b)
+            dropout_res = self.tokenizer(inputs_a, inputs_b, padding=PaddingStrategy.LONGEST,
+                                         truncation=TruncationStrategy.LONGEST_FIRST, max_length=self.max_seq_length,
+                                         return_tensors="pt")
+        else:
+            dropout_res = None
+
         res = super().__call__(batch)
         res["rel_labels"] = decoder_input_ids
         res["invalid_path"] = invalid
+        res["dropped_op_cnt"] = dropped_op_cnt
+        if dropout_res is not None:
+            for k, v in dropout_res.items():
+                res[f"{k}_dropout"] = v
+                assert v.size(0) == decoder_input_ids.size(0)
+
+        if self.gen_only:
+            res["input_ids"] = res["input_ids"][:, 0]
+            res["attention_mask"] = res["attention_mask"][:, 0]
+
+        return res
+
+
+class WikiPathDatasetCollatorRelSeqGenV3(WikiPathDatasetCollatorRelSeqGenV1):
+    def __init__(self, max_seq_length: int, tokenizer: str, mlm_probability: float = 0.15, max_option_num: int = 4, swap: bool = False,
+                 gen_only: bool = False, option_dropout: float = 0.0, max_output_length: int = 128):
+        super().__init__(max_seq_length, tokenizer, mlm_probability, max_option_num, swap, gen_only, option_dropout)
+        self.max_output_length = max_output_length
+
+    def __call__(self, batch):
+        ent_mentions = []
+        for b in batch:
+            item_ent_mentions = b["example"]["ent_mentions"]
+            item_ent_mentions = item_ent_mentions[:-1]  # Remove the direct entity pair.
+
+            tmp = []
+            for pair_id, ent_pair in enumerate(item_ent_mentions):
+                if pair_id == 0:
+                    tmp.append(ent_pair[0])
+                tmp.append(ent_pair[1])
+            ent_mentions.append(self.tokenizer.sep_token.join(tmp))
+
+        labels = self.tokenizer(ent_mentions, return_tensors="pt",
+                                padding=PaddingStrategy.LONGEST,
+                                truncation=True, max_length=self.max_output_length)["input_ids"]
+
+        res = super().__call__(batch)
+        res["entity_mentions"] = labels
 
         return res
 
@@ -1387,7 +1454,7 @@ class WikiPathDatasetCollatorRelSeqGenV2(WikiPathDatasetCollatorWithContext):
                 assert len(batch[b]["example"]["original_orders"]) == len(b_decoder_inputs) - 2, (batch[b]["example"]["original_orders"],
                                                                                                   b_decoder_inputs)
                 rerank_b_decoder_inputs = [b_decoder_inputs[rank] for rank in batch[b]["example"]["original_orders"]] + \
-                    b_decoder_inputs[len(batch[b]["example"]["original_orders"]):]
+                                          b_decoder_inputs[len(batch[b]["example"]["original_orders"]):]
                 b_decoder_inputs = rerank_b_decoder_inputs
 
             decoder_input_ids[b, :len(b_decoder_inputs)] = torch.tensor(b_decoder_inputs, dtype=torch.long)
@@ -1421,6 +1488,7 @@ class WikiPathDatasetCollatorRelSeqGenV2(WikiPathDatasetCollatorWithContext):
                     decoder_input_ids = torch.cat([decoder_input_ids,
                                                    torch.zeros(len(batch), cnt + 1 - max_input_len, dtype=torch.long).fill_(-1)], dim=1)
                     res["rel_labels"] = decoder_input_ids
+                    max_input_len = cnt + 1
 
         res["sep_index"] = sep_index
         assert sep_index.size(1) == decoder_input_ids.size(1) - 1, (sep_index, decoder_input_ids)

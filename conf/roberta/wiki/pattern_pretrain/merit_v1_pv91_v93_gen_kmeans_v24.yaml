@@ -8,7 +8,7 @@ test_file:
 
 # Model
 model:
-  _target_: models.roberta.RobertaForMultipleChoicePreTrainWPathGenV1.from_pretrained
+  _target_: models.roberta.RobertaForMultipleChoicePreTrainWPathGenV4.from_pretrained
   num_decoder_layers: 3
   rel_vocab: wiki_erica_path/v9.1/pattern_rel_id_kmeans_v21/rel_vocab_c1000.pt
   mlp_hidden_size: 2048
@@ -17,7 +17,7 @@ model:
 
 # Data loading
 read_tensor_train:
-  _target_: data.wiki_entity_path_v9_1.convert_examples_into_features_v3
+  _target_: data.wiki_entity_path_v9_3.convert_examples_into_features_v3
   id2rel_path_decode_id_file: wiki_erica_path/v9.1/pattern_rel_id_kmeans_v21/pattern_decode_id.train.0.c1000.limit0.pkl
   rel_vocab: ${model.rel_vocab}
   max_neg_num: 3
@@ -32,7 +32,7 @@ read_tensor_train:
   num_workers: 48
 
 read_tensor_dev:
-  _target_: data.wiki_entity_path_v9_1.convert_examples_into_features_v3
+  _target_: data.wiki_entity_path_v9_3.convert_examples_into_features_v3
   id2rel_path_decode_id_file: wiki_erica_path/v9.1/pattern_rel_id_kmeans_v21/pattern_decode_id.dev.shuffle.c1000.limit0.pkl
   rel_vocab: ${model.rel_vocab}
   max_neg_num: 3
@@ -50,12 +50,14 @@ extended_vocab:
 
 # Data collator
 collator:
-  _target_: data.collators.wiki.WikiPathDatasetCollatorRelSeqGenV1
+  _target_: data.collators.wiki.WikiPathDatasetCollatorRelSeqGenV3
   max_seq_length: 512
   tokenizer: pretrained-models/roberta-large
   mlm_probability: 0.15
   max_option_num: 4
   swap: True
+  option_dropout: 0.0
+  max_output_length: 128
 
 # Dataloader
 num_workers: 4
@@ -80,7 +82,7 @@ pretrain:
 #output_dir: experiments/roberta.large.wiki_erica_path_v9.1_v9.1.gen.kmeans.c2000.v2.4.1aug.seq512.w2.lamb.500steps.RTXA6K
 #output_dir: experiments/roberta.large.wiki_erica_path_v9.1_v9.1.gen.kmeans.c2000.v2.4.1aug.seq512.w4.lamb.500steps.RTXA6K
 #output_dir: experiments/roberta.large.wiki_erica_path_v9.1_v9.1.gen.kmeans.c2000.v2.4.1aug.seq512.w4.lamb.500steps.RTXA6K
-output_dir: experiments/roberta.large.wiki_erica_path_v9.1_v9.1.gen.kmeans.c1000.v2.4.1aug.seq512.w2.lamb.500steps.PA40.fixed
+output_dir: experiments/roberta.large.wiki_erica_path_v9.1_v9.3.gen.kmeans.c1000.v2.4.1aug.seq512.w5.lamb.500steps.RTXA6K
 #output_dir: experiments/roberta.large.wiki_erica_path_v9.1_v9.1.gen.kmeans.v1.0.1aug.seq512.w2.lamb.500steps.NA100
 
 do_train: True
@@ -91,9 +93,9 @@ eval_sub_path:
 
 # Training hyper-parameters
 per_gpu_train_batch_size: 4
-per_gpu_eval_batch_size: 4
+per_gpu_eval_batch_size: 16
 learning_rate: 1e-4
-gradient_accumulation_steps: 512
+gradient_accumulation_steps: 205
 weight_decay: 0.01
 adam_epsilon: 1e-6
 adam_betas: "(0.9, 0.98)"
@@ -110,7 +112,6 @@ bit_training:
 
 
 logging_steps: 1
-#save_best: True
 save_best: False
 save_steps: 100
 eval_steps: 100
@@ -191,13 +192,14 @@ summary_helper:
   batch_index_or_keys:
 #    "train/pair_value_num": pair_value_num
 #    "train/pair_label_num": pair_label_num
-#    "train/dropped_op_cnt": dropped_op_cnt
+    "train/dropped_op_cnt": dropped_op_cnt
     "train/invalid_path": invalid_path
   outputs_index_or_keys:
     "train/mlm_loss": mlm_loss
     "train/cls_loss": cls_loss
 #    "train/pair_loss": pair_loss
     "train/path_gen_loss": path_gen_loss
+    "train/ent_gen_loss": ent_gen_loss
 
 # Temporary variables
 n_gpu:

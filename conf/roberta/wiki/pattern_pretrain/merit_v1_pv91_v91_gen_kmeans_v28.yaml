@@ -9,7 +9,7 @@ test_file:
 # Model
 model:
   _target_: models.roberta.RobertaForMultipleChoicePreTrainWPathGenV1.from_pretrained
-  num_decoder_layers: 3
+  num_decoder_layers: 1
   rel_vocab: wiki_erica_path/v9.1/pattern_rel_id_kmeans_v21/rel_vocab_c1000.pt
   mlp_hidden_size: 2048
   mlm_alpha: 1.0
@@ -80,7 +80,7 @@ pretrain:
 #output_dir: experiments/roberta.large.wiki_erica_path_v9.1_v9.1.gen.kmeans.c2000.v2.4.1aug.seq512.w2.lamb.500steps.RTXA6K
 #output_dir: experiments/roberta.large.wiki_erica_path_v9.1_v9.1.gen.kmeans.c2000.v2.4.1aug.seq512.w4.lamb.500steps.RTXA6K
 #output_dir: experiments/roberta.large.wiki_erica_path_v9.1_v9.1.gen.kmeans.c2000.v2.4.1aug.seq512.w4.lamb.500steps.RTXA6K
-output_dir: experiments/roberta.large.wiki_erica_path_v9.1_v9.1.gen.kmeans.c1000.v2.4.1aug.seq512.w2.lamb.500steps.PA40.fixed
+output_dir: experiments/roberta.large.wiki_erica_path_v9.1_v9.1.gen.kmeans.c1000.v2.8.1aug.seq512.w5.lamb.2Ksteps.RTXA6K
 #output_dir: experiments/roberta.large.wiki_erica_path_v9.1_v9.1.gen.kmeans.v1.0.1aug.seq512.w2.lamb.500steps.NA100
 
 do_train: True
@@ -91,15 +91,15 @@ eval_sub_path:
 
 # Training hyper-parameters
 per_gpu_train_batch_size: 4
-per_gpu_eval_batch_size: 4
+per_gpu_eval_batch_size: 16
 learning_rate: 1e-4
-gradient_accumulation_steps: 512
+gradient_accumulation_steps: 205
 weight_decay: 0.01
 adam_epsilon: 1e-6
 adam_betas: "(0.9, 0.98)"
 max_grad_norm: 1.0
 num_train_epochs: 10
-max_steps: 500
+max_steps: 2000
 warmup_proportion: 0.1
 warmup_steps: 0
 
@@ -110,10 +110,9 @@ bit_training:
 
 
 logging_steps: 1
-#save_best: True
 save_best: False
-save_steps: 100
-eval_steps: 100
+save_steps: 500
+eval_steps: 500
 ddp_eval: True
 no_cuda: False
 seed: 42
