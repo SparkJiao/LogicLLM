@@ -43,6 +43,8 @@ Version 9.3:
                 然后看看能不能在构造contrastive learning的时候去掉一些不合适的边
                 这个其实是不是先预处理出来，得到一个 句子->[(ent_h, ent_t, rel), (ent_h, ent_t, rel), ...]的结构，
                 然后对应在构造数据的时候需要修改，即我们已经固定了需要修改的实体的位置，不再需要临时去选择一对实体进行替换。
+                
+                目前这一点在这个脚本里并没有被实现，在Version9.4里利用外部的edge label实现了一种新的构造边的方式。同时引入了增强的方式避免模型走捷径。
 """
 
 logger = get_child_logger("Wiki.Entity.Path.V9.3")

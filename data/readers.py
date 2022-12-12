@@ -358,6 +358,25 @@ class LogiQAReader:
         return all_context, all_question, all_option_list, all_label
 
 
+class LogiQAReaderV2:
+    def __call__(self, file):
+        all_context = []
+        all_question = []
+        all_option_list = []
+        all_label = []
+
+        with open(file, 'r') as f:
+            lines = f.readlines()
+            for line in lines:
+                item = json.loads(line)
+                all_label.append(item["answer"])
+                all_context.append(item["text"])
+                all_question.append(item["question"])
+                all_option_list.append(item["options"])
+
+        return all_context, all_question, all_option_list, all_label
+
+
 class DreamReader:
     def __call__(self, file):
         data = json.load(open(file, 'r'))

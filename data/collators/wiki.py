@@ -2,7 +2,7 @@ import collections
 import pickle
 import random
 from collections import Counter
-from typing import Tuple, Optional, Dict, Any
+from typing import Tuple, Optional, Dict, Any, List
 
 import torch
 import transformers
@@ -1543,5 +1543,25 @@ class WikiPathDatasetCollatorRelSeqGenV2(WikiPathDatasetCollatorWithContext):
 
         res["sep_index"] = sep_index
         assert sep_index.size(1) == decoder_input_ids.size(1) - 1, (sep_index, decoder_input_ids)
+
+        return res
+
+
+class WikiPathDatasetCollatorReconstruction(WikiPathDatasetCollatorWithContext):
+    def __init__(self, max_seq_length: int, tokenizer: str, mlm_probability: float = 0.15, max_option_num: int = 4, swap: bool = False):
+        super().__init__(max_seq_length, tokenizer, mlm_probability, max_option_num, swap)
+
+    def make_triplet_tensor(self, ent_mentions: List[Tuple[str, str]]):
+        input_ids = []
+        rel_markers = []
+        for ent_tuple in ent_mentions:
+            ent_token_ids = self.tokenizer.convert_tokens_to_ids(self.tokenizer.tokenize(ent_tuple[0]))
+            input_ids.extend(ent_token_ids)
+
+
+
+    def __call__(self, batch):
+        ent_mentions = [b["example"]["ent_mentions"] for b in batch]
+
 
         return res
