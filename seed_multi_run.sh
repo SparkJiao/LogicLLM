@@ -10,7 +10,7 @@ for arg in "$@"; do
     if [ "$num_rank" -gt "1" ]; then
       echo "CUDA_VISIBLE_DEVICES=$gpu python -m torch.distributed.run --nproc_per_node $num_rank --master_port 10082 trainer_base_fsdp_v3.py -cp $conf -cn $conf_name seed=${arg}"
 
-      CUDA_VISIBLE_DEVICES=$gpu python -m torch.distributed.run --nproc_per_node $num_rank --master_port 10082 trainer_base_fsdp_v3.py -cp $conf -cn $conf_name seed=${arg}
+      CUDA_VISIBLE_DEVICES=$gpu python -m torch.distributed.run --nproc_per_node $num_rank --master_port 10081 trainer_base_fsdp_v3.py -cp $conf -cn $conf_name seed=${arg}
     else
       echo "CUDA_VISIBLE_DEVICES=$gpu python trainer_base_fsdp_v3.py -cp $conf -cn $conf_name seed=${arg}"
 
