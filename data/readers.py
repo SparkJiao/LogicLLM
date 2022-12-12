@@ -356,3 +356,30 @@ class LogiQAReader:
                 line = f.readline()
 
         return all_context, all_question, all_option_list, all_label
+
+
+class DreamReader:
+    def __call__(self, file):
+        data = json.load(open(file, 'r'))
+
+        all_context = []
+        all_question = []
+        all_option_list = []
+        all_label = []
+        for dialogue in data:
+            turns = dialogue[0]
+            qas = dialogue[1]
+            dial_id = dialogue[2]
+            context = " ".join(turns)
+            for qa in qas:
+                all_context.append(context)
+                all_question.append(qa["question"])
+                all_option_list.append(qa["choice"])
+                label = -1
+                for c, choice in enumerate(qa["choice"]):
+                    if choice == qa["answer"]:
+                        label = c
+                all_label.append(label)
+
+        assert len(all_context) == len(all_question) == len(all_option_list) == len(all_label)
+        return all_context, all_question, all_option_list, all_label

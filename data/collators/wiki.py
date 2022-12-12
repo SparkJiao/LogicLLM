@@ -229,6 +229,36 @@ class WikiPathDatasetRelGenerateV1(WikiPathDatasetV5):
         return item
 
 
+class WikiPathDatasetRelGenerateV2(WikiPathDatasetV5):
+    def __init__(self, examples, raw_texts, rel_vocab: str):
+        super().__init__(examples, raw_texts)
+
+        rel_vocab = pickle.load(open(rel_vocab, "rb"))
+        self.rel_vocab_size = len(set(list(rel_vocab.values())))
+        self.eos_token_id = self.rel_vocab_size
+        self.pad_token_id = self.rel_vocab_size + 1
+
+    def __getitem__(self, index):
+        item = super().__getitem__(index)
+
+        example = item["example"]
+        rel_labels = [example["path_edge_labels"] + [example["pos_edge_label"], self.eos_token_id]]
+        if "neg_edge_label" in example:
+            for neg_edge_label in example["neg_edge_label"]:
+                rel_labels.append(example["path_edge_labels"] + [neg_edge_label, self.eos_token_id])
+        else:
+            for ctx_neg_edge_label in example["neg_path_edge_labels"]:
+                rel_labels.append(ctx_neg_edge_label + [example["pos_edge_label"], self.eos_token_id])
+
+        for op_id, op_rel_labels in enumerate(rel_labels):
+            if -1 in op_rel_labels:
+                rel_labels[op_id] = [-1]
+
+        item["rel_labels"] = rel_labels
+
+        return item
+
+
 class WikiPathDatasetGenerate(Dataset):
     """
     It seems that the dataset class is not relevant to ``generation``.
@@ -1345,6 +1375,26 @@ class WikiPathDatasetCollatorSeq2SeqV2:
         return model_inputs
 
 
+def transform_rel_label_to_tensor(rel_labels):
+    if isinstance(rel_labels[0][0], list):
+        new_rel_labels = []
+        for item_rel_labels in rel_labels:
+            new_rel_labels.extend(item_rel_labels)
+        rel_labels = new_rel_labels
+
+    assert isinstance(rel_labels[0][0], int)
+
+    max_input_len = max(map(len, rel_labels))
+    invalid = 0
+    decoder_input_ids = torch.zeros(len(rel_labels), max_input_len, dtype=torch.long).fill_(-1)
+    for b, b_decoder_inputs in enumerate(rel_labels):
+        decoder_input_ids[b, :len(b_decoder_inputs)] = torch.tensor(b_decoder_inputs, dtype=torch.long)
+        if b_decoder_inputs[0] == -1:
+            invalid += 1
+
+    return decoder_input_ids, invalid
+
+
 class WikiPathDatasetCollatorRelSeqGenV1(WikiPathDatasetCollatorWithContext):
     def __init__(self, max_seq_length: int, tokenizer: str, mlm_probability: float = 0.15, max_option_num: int = 4, swap: bool = False,
                  gen_only: bool = False, option_dropout: float = 0.0):
@@ -1357,13 +1407,14 @@ class WikiPathDatasetCollatorRelSeqGenV1(WikiPathDatasetCollatorWithContext):
         for b in batch:
             rel_decode.append(b["rel_labels"])
 
-        max_input_len = max(map(len, rel_decode))
-        invalid = 0
-        decoder_input_ids = torch.zeros(len(batch), max_input_len, dtype=torch.long).fill_(-1)
-        for b, b_decoder_inputs in enumerate(rel_decode):
-            decoder_input_ids[b, :len(b_decoder_inputs)] = torch.tensor(b_decoder_inputs, dtype=torch.long)
-            if b_decoder_inputs[0] == -1:
-                invalid += 1
+        # max_input_len = max(map(len, rel_decode))
+        # invalid = 0
+        # decoder_input_ids = torch.zeros(len(batch), max_input_len, dtype=torch.long).fill_(-1)
+        # for b, b_decoder_inputs in enumerate(rel_decode):
+        #     decoder_input_ids[b, :len(b_decoder_inputs)] = torch.tensor(b_decoder_inputs, dtype=torch.long)
+        #     if b_decoder_inputs[0] == -1:
+        #         invalid += 1
+        decoder_input_ids, invalid = transform_rel_label_to_tensor(rel_decode)
 
         dropped_op_cnt = 0
         if self.option_dropout > 0:
