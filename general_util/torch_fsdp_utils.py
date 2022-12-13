@@ -75,6 +75,35 @@ def torch_fsdp_init_decoder_freeze(model,
     return fsdp_model
 
 
+def torch_fsdp_init_quantizer_ignore(model,
+                                     device,
+                                     fp16: bool = True,
+                                     fp16_bfloat16: bool = False,
+                                     cpu_offload=False):
+    my_auto_wrap_policy = partial(transformer_auto_wrap_policy,
+                                  transformer_layer_cls={BartEncoderLayer})
+
+    ignored_modules = [model.quantizer]
+
+    if fp16:
+        fp16_type = torch.float16 if not fp16_bfloat16 else torch.bfloat16
+        mixed_precision_cfg = MixedPrecision(param_dtype=fp16_type, reduce_dtype=fp16_type, buffer_dtype=fp16_type)
+    else:
+        mixed_precision_cfg = None
+
+    fsdp_model = FullyShardedDataParallel(
+        model,
+        mixed_precision=mixed_precision_cfg,
+        auto_wrap_policy=my_auto_wrap_policy,
+        sharding_strategy=ShardingStrategy.FULL_SHARD,
+        cpu_offload=CPUOffload(offload_params=cpu_offload),
+        ignored_modules=ignored_modules,
+        device_id=device,
+    )
+
+    return fsdp_model
+
+
 def torch_fsdp_size_auto_wrap(model,
                               device,
                               fp16: bool = True,

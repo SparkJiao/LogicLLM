@@ -165,6 +165,26 @@ def initialize_optimizer(cfg: DictConfig, grouped_parameters: List[Dict] = None,
     return optimizer
 
 
+def initialize_lr_scheduler(cfg: DictConfig, optimizer, num_warmup_steps: int, num_training_steps: int):
+    if hasattr(cfg, "lr_scheduler"):
+        if cfg.lr_scheduler == "linear":
+            from transformers import get_linear_schedule_with_warmup
+
+            lr_scheduler = get_linear_schedule_with_warmup(optimizer, num_warmup_steps, num_training_steps)
+        elif cfg.lr_scheduler == "cosine":
+            from transformers import get_cosine_schedule_with_warmup
+
+            lr_scheduler = get_cosine_schedule_with_warmup(optimizer, num_warmup_steps, num_training_steps)
+        else:
+            raise NotImplementedError()
+    else:
+        from transformers import get_linear_schedule_with_warmup
+
+        lr_scheduler = get_linear_schedule_with_warmup(optimizer, num_warmup_steps, num_training_steps)
+
+    return lr_scheduler
+
+
 def note_best_checkpoint(cfg: DictConfig, results: Dict[str, float], sub_path: str):
     metric = results[cfg.prediction_cfg.metric]
     if (not cfg.prediction_cfg.best_result) or (

@@ -46,6 +46,7 @@ class DVAESeq2SeqLMOutput(Seq2SeqLMOutput):
     mlm_loss: torch.FloatTensor = None
     z_encoder_mean: torch.FloatTensor = None
     z_decoder_mean: torch.FloatTensor = None
+    code_indices: torch.LongTensor = None
 
 
 @dataclass

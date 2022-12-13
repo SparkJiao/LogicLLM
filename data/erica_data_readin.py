@@ -2,7 +2,9 @@ import glob
 import json
 import os
 import pickle
+import random
 from collections import defaultdict
+from typing import Dict, Any, List
 
 import torch
 from torch.utils.data import Dataset
@@ -344,6 +346,87 @@ class WikiPathSentenceDataset(Dataset, SeperatorInterface):
         return self.sentences[index], self.indices[index]
 
 
+class WikiPathSentenceConditionDataset(Dataset):
+    def __init__(self, file_path: str, tokenizer: PreTrainedTokenizer, max_seq_length: int, cache_path: str = None):
+        if cache_path is not None and os.path.exists(cache_path):
+            self.sentences, self.indices = torch.load(cache_path)
+        else:
+            data = pickle.load(open(file_path, "rb"))["examples"]
+
+            sentences: List[Dict[str, Any]] = []
+            indices = []
+            for item in tqdm(data, total=len(data)):
+                for s_id, s in item["selected_sentences"].items():
+                    sent = " ".join(s["sent"])
+                    if len(tokenizer.tokenize(sent)) + 2 <= max_seq_length:
+                        sentences.append(s)
+                        indices.append(f"{item['id']}-path-{s_id}")
+
+                for pos_id, pos in enumerate(item["pos"]):
+                    sent = " ".join(pos["sent"])
+                    if len(tokenizer.tokenize(sent)) + 2 <= max_seq_length:
+                        sentences.append(pos)
+                        indices.append(f"{item['id']}-pos-{pos_id}")
+
+            if cache_path is not None:
+                torch.save((sentences, indices), cache_path)
+
+            self.sentences = sentences
+            self.indices = indices
+
+        self.tokenizer = tokenizer
+
+    def __len__(self):
+        return len(self.sentences)
+
+    def __getitem__(self, index):
+        sent = self.sentences[index]
+        h = random.choice(sent["ent"][sent["h"]])
+        t = random.choice(sent["ent"][sent["t"]])
+        flag = True
+        if h["pos"][0] > t["pos"][0]:
+            h, t = t, h
+            flag = False
+        assert h["pos"][1] <= t["pos"][0]
+
+        tokens = [self.tokenizer.cls_token]
+        h_span = []
+        t_span = []
+
+        tokens.extend(self.tokenizer.tokenize(" ".join(sent["sent"][:h["pos"][0]])))
+        h_span.append(len(tokens))
+
+        h_mention = " ".join(sent["sent"][h["pos"][0]: h["pos"][1]])
+        tokens.extend(self.tokenizer.tokenize(" " + h_mention))
+        h_span.append(len(tokens) - 1)
+
+        tokens.extend(self.tokenizer.tokenize(" " + " ".join(sent["sent"][h["pos"][1]: t["pos"][0]])))
+        t_span.append(len(tokens))
+
+        t_mention = " ".join(sent["sent"][t["pos"][0]: t["pos"][1]])
+        tokens.extend(self.tokenizer.tokenize(" " + t_mention))
+        t_span.append(len(tokens) - 1)
+
+        tokens.extend(self.tokenizer.tokenize(" " + " ".join(sent["sent"][t["pos"][1]:])))
+        tokens.append(self.tokenizer.sep_token)
+
+        if not flag:
+            h_span, t_span = t_span, h_span
+            h_mention, t_mention = t_mention, h_mention
+
+        text = " ".join(sent["sent"])
+
+        return {
+            "tokens": tokens,
+            "text": text,
+            "h_span": h_span,
+            "t_span": t_span,
+            "h": h_mention,
+            "t": t_mention,
+            "index": self.indices[index]
+        }
+
+
 class ERICATextCollator:
     def __init__(self, tokenizer, max_seq_length: int):
         self.tokenizer: PreTrainedTokenizer = AutoTokenizer.from_pretrained(tokenizer, use_fast=False)
@@ -475,3 +558,50 @@ class WikiPathInferenceCollator(SeperatorInterface):
         model_inputs["meta_data"] = {"indices": indices}
 
         return model_inputs
+
+
+class WikiPathSentenceConditionCollator:
+    def __init__(self, enc_tokenizer: str, dec_tokenizer: str, max_seq_length: int):
+        self.enc_tokenizer: PreTrainedTokenizer = AutoTokenizer.from_pretrained(enc_tokenizer)
+        self.dec_tokenizer: PreTrainedTokenizer = AutoTokenizer.from_pretrained(dec_tokenizer)
+        self.max_seq_length = max_seq_length
+
+    def __call__(self, batch):
+        seq_len = max(map(lambda x: len(x["tokens"]), batch))
+
+        input_ids = torch.zeros(len(batch), seq_len, dtype=torch.int)
+        attention_mask = torch.zeros(len(batch), seq_len, dtype=torch.int)
+        h_span = []
+        t_span = []
+        indices = []
+        decoder_inputs = []
+        decoder_outputs = []
+        for b_id, b in enumerate(batch):
+            input_ids[b_id, :len(b["tokens"])] = torch.tensor(self.enc_tokenizer.convert_tokens_to_ids(b["tokens"]), dtype=torch.int)
+            attention_mask[b_id, :len(b["tokens"])] = 1
+
+            h_span.append(b["h_span"])
+            t_span.append(b["t_span"])
+            indices.append(b["index"])
+
+            decoder_inputs.append(b["h"] + self.dec_tokenizer.sep_token + b["t"])
+            decoder_outputs.append(b["text"])
+
+        h_span = torch.tensor(h_span, dtype=torch.long)
+        t_span = torch.tensor(t_span, dtype=torch.long)
+
+        decoder_inputs = self.dec_tokenizer(decoder_inputs, text_target=decoder_outputs,
+                                            padding="longest", truncation=True, max_length=self.max_seq_length, return_tensors="pt")
+
+        return {
+            "input_ids": input_ids,
+            "attention_mask": attention_mask,
+            "decoder_input_ids": decoder_inputs["input_ids"],
+            "decoder_input_attention_mask": decoder_inputs["attention_mask"],
+            "decoder_output_ids": decoder_inputs["labels"],
+            "h_span": h_span,
+            "t_span": t_span,
+            "meta_data": {
+                "code_indices": indices,
+            }
+        }
