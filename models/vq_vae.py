@@ -3,7 +3,7 @@ from typing import Optional, Union, Tuple
 
 import torch
 from torch import nn
-from transformers.models.bart.modeling_bart import BartForConditionalGeneration
+from transformers.models.bart.modeling_bart import BartForConditionalGeneration, BartConfig
 from transformers.models.roberta.modeling_roberta import RobertaModel, RobertaPreTrainedModel, RobertaConfig, \
     RobertaLMHead
 
@@ -39,16 +39,18 @@ class RobertaVQVAE(RobertaPreTrainedModel, ABC, LogMixin):
         self.roberta = RobertaModel(config, add_pooling_layer=False)
         self.lm_head = RobertaLMHead(config)
 
-        self.seq2seq: BartForConditionalGeneration = BartForConditionalGeneration.from_pretrained(seq2seq_path)
+        self.seq2seq_config: BartConfig = BartConfig.from_pretrained(seq2seq_path)
 
         self.dense1 = nn.Linear(config.hidden_size * 2, embedding_dim)
-        self.dense2 = nn.Linear(embedding_dim, self.seq2seq.config.d_model)
+        self.dense2 = nn.Linear(embedding_dim, self.seq2seq_config.d_model)
 
         # The LM head weights require special treatment only when they are tied with the word embeddings
         self.update_keys_to_ignore(config, ["lm_head.decoder.weight"])
 
         # Initialize weights and apply final processing
         self.post_init()
+
+        self.seq2seq: BartForConditionalGeneration = BartForConditionalGeneration.from_pretrained(seq2seq_path)
 
         # Initialize after `post_init()`
         self.quantizer = quantizer

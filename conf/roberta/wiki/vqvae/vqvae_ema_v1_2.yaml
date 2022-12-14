@@ -13,8 +13,10 @@ model:
   seq2seq_path: pretrained-models/bart-base
   quantizer:
     _target_: models.quantizer.CogViewEMAQuantizer
-    dim: 768
+    dim: 64
     n_embed: 512
+    continuous_relax: True
+    hard: True
   embedding_dim: ${model.quantizer.dim}
 
 # Data loading
@@ -52,10 +54,10 @@ do_preprocess: False
 model_name_or_path: pretrained-models/roberta-large
 pretrain:
 
-output_dir: experiments/roberta.large.bart.base.vqvae.ema.wiki_path.c${model.quantizer.n_embed}.v1.1.w8.lamb.RTXA6K
+output_dir: experiments/roberta.large.bart.base.vqvae.ema.wiki_path.c${model.quantizer.n_embed}.v1.2.w4.lamb.RTXA6K
 
 do_train: True
-evaluate_during_training: False
+evaluate_during_training: True
 
 do_eval: False
 eval_sub_path:
@@ -64,14 +66,14 @@ eval_sub_path:
 per_gpu_train_batch_size: 64
 per_gpu_eval_batch_size: 64
 learning_rate: 3e-4
-gradient_accumulation_steps: 8
+gradient_accumulation_steps: 16
 weight_decay: 1e-4
 adam_epsilon: 1e-6
 adam_betas: "(0.9, 0.98)"
 max_grad_norm: 5.0
 num_train_epochs: 80
 max_steps: 0
-warmup_proportion: 0.06
+warmup_proportion: 0.1
 warmup_steps: 0
 
 lr_scheduler: cosine

@@ -602,6 +602,6 @@ class WikiPathSentenceConditionCollator:
             "h_span": h_span,
             "t_span": t_span,
             "meta_data": {
-                "code_indices": indices,
+                "indices": indices,
             }
         }

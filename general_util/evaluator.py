@@ -4,6 +4,7 @@ import inspect
 
 import hydra
 import torch
+from torch import distributed as dist
 from omegaconf import DictConfig
 from torch.utils.data import DistributedSampler, SequentialSampler, DataLoader
 from tqdm import tqdm
@@ -160,7 +161,7 @@ def evaluate(cfg: DictConfig, model: torch.nn.Module, tokenizer: PreTrainedToken
 
 
 def evaluate_fn(cfg: DictConfig, model: torch.nn.Module, tokenizer: PreTrainedTokenizer, prefix="", _split="dev"):
-    logger = get_child_logger(__name__)
+    # logger = get_child_logger(__name__)
 
     dataset = load_and_cache_examples(cfg, tokenizer, _split=_split)
 
@@ -205,7 +206,6 @@ def evaluate_fn(cfg: DictConfig, model: torch.nn.Module, tokenizer: PreTrainedTo
     # logger.info(f"If encoder is an instance of FSDP: {isinstance(model.module.encoder, FSDP)}")
 
     torch.cuda.empty_cache()
-
     for batch in tqdm(eval_dataloader, desc="Evaluating", disable=cfg.local_rank not in [-1, 0], dynamic_ncols=True):
         if "meta_data" in batch:
             meta_data = batch.pop("meta_data")

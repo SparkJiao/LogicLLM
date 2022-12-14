@@ -3,9 +3,10 @@ from typing import Optional
 
 import torch
 from torch import nn
-from torch.nn.functional import gumbel_softmax
+# from torch.nn.functional import gumbel_softmax
 import warnings
 import torch.nn.functional as F
+import torch.distributed as dist
 
 try:
     from torch.overrides import has_torch_function, handle_torch_function
@@ -31,7 +32,7 @@ class StraightEstimator(Quantizer, ABC):
 
 # Copied from https://github.com/THUDM/CogView/blob/main/vqvae/vqvae_zc.py
 class CogViewEMAQuantizer(nn.Module):
-    def __init__(self, dim, n_embed, decay=0.99, eps=1e-5):
+    def __init__(self, dim, n_embed, decay=0.99, eps=1e-5, continuous_relax=False, hard=False):
         super().__init__()
 
         self.dim = dim
@@ -39,14 +40,23 @@ class CogViewEMAQuantizer(nn.Module):
         self.decay = decay
         self.eps = eps
 
+        self.continuous_relax = continuous_relax
+        self.hard = hard
+
         embed = torch.randn(dim, n_embed)
         torch.nn.init.xavier_uniform_(embed, gain=torch.nn.init.calculate_gain('tanh'))
         self.register_buffer("embed", embed)
         self.register_buffer("cluster_size", torch.zeros(n_embed))
         self.register_buffer("embed_avg", embed.clone())
 
-    def forward(self, x, continuous_relax=False, temperature=1., hard=False):
-        return self.forward_(x, continuous_relax, temperature, hard)
+        if dist.is_available() and dist.is_initialized():
+            print("ddp is enable, so use ddp_reduce to sync the statistic_code_usage for each gpu!")
+            self.all_reduce_fn = dist.all_reduce
+        else:
+            self.all_reduce_fn = nn.Identity()
+
+    def forward(self, x, temperature=1.):
+        return self.forward_(x, self.continuous_relax, temperature, self.hard)
 
     def forward_(self, input, continuous_relax=False, temperature=1., hard=False):
         flatten = input.reshape(-1, self.dim)
@@ -78,8 +88,8 @@ class CogViewEMAQuantizer(nn.Module):
             embed_onehot_sum = embed_onehot.sum(0)
             embed_sum = flatten.transpose(0, 1) @ embed_onehot
 
-            # dist_fn.all_reduce(embed_onehot_sum)
-            # dist_fn.all_reduce(embed_sum)
+            self.all_reduce_fn(embed_onehot_sum)
+            self.all_reduce_fn(embed_sum)
 
             self.cluster_size.data.mul_(self.decay).add_(
                 embed_onehot_sum, alpha=1 - self.decay
@@ -153,6 +163,7 @@ def gumbel_softmax(logits, tau=1, hard=False, eps=1e-10, dim=-1):
         warnings.warn("`eps` parameter is deprecated and has no effect.")
 
     gumbels = -torch.empty_like(logits, memory_format=torch.legacy_contiguous_format).exponential_().log()  # ~Gumbel(0,1)
+    # gumbels = -torch.empty_like(logits).exponential_().log()  # ~Gumbel(0,1)
     gumbels = (logits + gumbels) / tau  # ~Gumbel(logits,tau)
     y_soft = gumbels.softmax(dim)
 
@@ -160,6 +171,7 @@ def gumbel_softmax(logits, tau=1, hard=False, eps=1e-10, dim=-1):
         # Straight through.
         index = y_soft.max(dim, keepdim=True)[1]
         y_hard = torch.zeros_like(logits, memory_format=torch.legacy_contiguous_format).scatter_(dim, index, 1.0)
+        # y_hard = torch.zeros_like(logits).scatter_(dim, index, 1.0)
         ret = y_hard - y_soft.detach() + y_soft
         return ret, index
     else:
