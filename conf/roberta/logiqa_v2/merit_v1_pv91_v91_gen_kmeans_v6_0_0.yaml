@@ -2,9 +2,9 @@ hydra:
   run:
     dir: ./
 
-train_file: LogiQA-dataset/Train.txt
-dev_file: LogiQA-dataset/Eval.txt
-test_file: LogiQA-dataset/Test.txt
+train_file: logiqa-v2/train.txt
+dev_file: logiqa-v2/dev.txt
+test_file: logiqa-v2/test.txt
 
 # Model
 model:
@@ -15,7 +15,7 @@ model:
 read_tensor:
   _target_: data.mcqa.multiple_choice_get_tensor
   read_func:
-    _target_: data.readers.LogiQAReader
+    _target_: data.readers.LogiQAReaderV2
   max_seq_length: 256
 
 extended_vocab:
@@ -29,11 +29,10 @@ num_workers: 4
 prefetch_factor: 2
 
 # Wiki path pretrain v8.2
-model_name_or_path: experiments/roberta.large.wiki_erica_path_v9.1_v9.1.gen.kmeans.c1000.v2.4.1aug.seq512.w2.lamb.500steps.PA40.fixed/checkpoint-500
+model_name_or_path: experiments/roberta.large.wiki_erica_path_v9.1_v9.1.gen.kmeans.c500.v6.0.1aug.seq512.w8.lamb.500steps.RTXA6K/checkpoint-500
 pretrain:
 
-#output_dir: experiments/logiqa.roberta.merit-v1.pv91.v91.gen-kmeans-v2.4.cp500.w2.RTXA6K.v1.0.s${seed}
-output_dir: experiments/logiqa.roberta.merit-v1.pv91.v91.gen-kmeans-v2.4.cp500.w2.PA100.v1.0.s${seed}
+output_dir: experiments/logiqa-v2.roberta.merit-v1.pv91.v91.gen-kmeans-v6.0.cp500.w2.PA100.v1.0.s${seed}
 
 do_train: True
 evaluate_during_training: True
@@ -66,7 +65,7 @@ bit_training:
 logging_steps: 5
 save_steps: -1
 save_best: True
-eval_steps: 100
+eval_steps: 400
 ddp_eval: False
 no_cuda: False
 seed: 42

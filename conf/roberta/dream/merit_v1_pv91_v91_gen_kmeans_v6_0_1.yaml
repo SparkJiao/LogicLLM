@@ -2,9 +2,9 @@ hydra:
   run:
     dir: ./
 
-train_file: LogiQA-dataset/Train.txt
-dev_file: LogiQA-dataset/Eval.txt
-test_file: LogiQA-dataset/Test.txt
+train_file: dream/train.json
+dev_file: dream/dev.json
+test_file: dream/test.json
 
 # Model
 model:
@@ -15,8 +15,8 @@ model:
 read_tensor:
   _target_: data.mcqa.multiple_choice_get_tensor
   read_func:
-    _target_: data.readers.LogiQAReader
-  max_seq_length: 256
+    _target_: data.readers.DreamReader
+  max_seq_length: 512
 
 extended_vocab:
 
@@ -29,11 +29,10 @@ num_workers: 4
 prefetch_factor: 2
 
 # Wiki path pretrain v8.2
-model_name_or_path: experiments/roberta.large.wiki_erica_path_v9.1_v9.1.gen.kmeans.c1000.v2.4.1aug.seq512.w2.lamb.500steps.PA40.fixed/checkpoint-500
+model_name_or_path: experiments/roberta.large.wiki_erica_path_v9.1_v9.1.gen.kmeans.c500.v6.0.1aug.seq512.w8.lamb.500steps.RTXA6K/checkpoint-500
 pretrain:
 
-#output_dir: experiments/logiqa.roberta.merit-v1.pv91.v91.gen-kmeans-v2.4.cp500.w2.RTXA6K.v1.0.s${seed}
-output_dir: experiments/logiqa.roberta.merit-v1.pv91.v91.gen-kmeans-v2.4.cp500.w2.PA100.v1.0.s${seed}
+output_dir: experiments/dream.roberta.merit-v1.pv91.v91.kmeans-gen-v6.0.cp500.w2.RTXA6K.v1.1.s${seed}
 
 do_train: True
 evaluate_during_training: True
@@ -42,11 +41,11 @@ do_eval: True
 eval_sub_path:
 
 # Training hyper-parameters
-per_gpu_train_batch_size: 8
-per_gpu_eval_batch_size: 16
-learning_rate: 1e-5
+per_gpu_train_batch_size: 4
+per_gpu_eval_batch_size: 24
+learning_rate: 2e-5
 #learning_rate: 5e-6
-gradient_accumulation_steps: 1
+gradient_accumulation_steps: 3
 weight_decay: 0.01
 adam_epsilon: 1e-6
 adam_betas: "(0.9, 0.98)"
@@ -66,7 +65,7 @@ bit_training:
 logging_steps: 5
 save_steps: -1
 save_best: True
-eval_steps: 100
+eval_steps: 200
 ddp_eval: False
 no_cuda: False
 seed: 42
