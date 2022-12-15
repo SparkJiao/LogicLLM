@@ -2228,6 +2228,9 @@ class RobertaForMultipleChoicePreTrainWPathGenV2(RobertaForMultipleChoiceForPreT
                 break
             assert token_id < self.rel_vocab_size
 
+        self.attn_pooler = nn.Linear(config.hidden_size, 1)
+        self._init_weights(self.attn_pooler)
+
         rel_decoding_config = copy.deepcopy(config)
         rel_decoding_config.vocab_size = self.rel_vocab_size
         print(self.rel_vocab_size)
@@ -2236,12 +2239,15 @@ class RobertaForMultipleChoicePreTrainWPathGenV2(RobertaForMultipleChoiceForPreT
             rel_emb_weights = rel_emb_weights.to(dtype=self.lm_head.decoder.weight.data.dtype)
             print(rel_emb_weights.size())
             self.rel_decoder = RelDecoderHead(config.hidden_size, rel_emb_weights.size(1), self.rel_vocab_size)
+
+            self._init_weights(self.rel_decoder)
+
             self.rel_decoder.decoder.weight.data.copy_(rel_emb_weights)
             assert self.rel_decoder.decoder.weight.requires_grad
         else:
             self.rel_decoder = RobertaLMHead(rel_decoding_config)
+            self._init_weights(self.rel_decoder)
 
-        self.post_init()
         self.init_metric("loss", "acc", "mlm_loss", "mlm_acc", "cls_loss", "path_gen_acc", "path_gen_loss")
 
     def forward(
@@ -2253,8 +2259,10 @@ class RobertaForMultipleChoicePreTrainWPathGenV2(RobertaForMultipleChoiceForPreT
             mlm_input_ids: Tensor = None,
             mlm_attention_mask: Tensor = None,
             rel_labels: Tensor = None,
-            sep_index: Tensor = None,
             mlm_labels: Tensor = None,
+            sent_token_index: Tensor = None,
+            sent_token_mask: Tensor = None,
+            sent_mask: Tensor = None,
             output_attentions=None,
             output_hidden_states=None,
             return_dict=None,
@@ -2286,8 +2294,15 @@ class RobertaForMultipleChoicePreTrainWPathGenV2(RobertaForMultipleChoiceForPreT
         logits = self.cls(self.dropout(self.pooler(pooled_output)))
         reshaped_logits = logits.view(-1, num_choices)
 
-        sent_hidden = self.dropout(torch.gather(outputs[0].reshape(batch_size, num_choices, seq_len, -1)[:, 0],
-                                                index=sep_index.unsqueeze(-1).expand(-1, -1, pooled_output.size(-1)), dim=1))
+        pos_seq_hidden = outputs[0].reshape(batch_size, num_choices, seq_len, -1)[:, 0]
+        sent_num, sent_len = sent_token_index.size(1), sent_token_index.size(2)
+        h = pos_seq_hidden.size(-1)
+        sent_token_hidden = torch.gather(pos_seq_hidden, dim=1,
+                                         index=sent_token_index.unsqueeze(-1).expand(-1, -1, -1, h).reshape(
+                                             batch_size, sent_num * sent_len, h)).reshape(batch_size, sent_num, sent_len, h)
+        sent_token_scores = self.attn_pooler(sent_token_hidden).squeeze(-1)
+        sent_token_scores = (1 - sent_token_mask) * torch.finfo(self.dtype).min + sent_token_scores
+        sent_hidden = self.dropout(torch.einsum("bst,bsth->bsh", torch.softmax(sent_token_scores, dim=2), sent_token_hidden))
         sent_rel_logits = self.rel_decoder(sent_hidden)
 
         loss = 0.

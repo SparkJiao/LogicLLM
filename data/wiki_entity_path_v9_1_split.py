@@ -13,7 +13,7 @@ from tqdm import tqdm
 from transformers import PreTrainedTokenizer
 
 from data.collators.wiki import WikiPathDatasetV6wPatternPair, WikiPathDatasetV6wPatternPairFull, WikiPathDatasetRelGenerateV1
-from data.data_utils import get_all_permutation
+from data.data_utils import get_all_permutation, get_sep_tokens
 from general_util.logger import get_child_logger
 
 """
@@ -355,6 +355,18 @@ def _initializer(entity_pool: Dict, negative_pool: Dict, all_neg_candidates: Dic
     MAX_NEG_SAMPLE_NUM = max_neg_samples_num
 
 
+def get_s_id2edge_rank(path):
+    s_id2edge_rank = {}
+    rel_cnt = 0
+    for i, item in enumerate(path):
+        if i == 0:
+            assert item[1] == -1
+            continue
+        s_id2edge_rank[item[1]] = rel_cnt
+        rel_cnt += 1
+    return s_id2edge_rank
+
+
 def _process_single_item(item, max_neg_num: int, aug_num: int, min_rep_num: int, shuffle_context: bool,
                          deduct_ratio: float = 1.0, context_ratio: float = 1.0, noise_sent_ratio: float = 0.5,
                          remove_deduct: bool = False, remove_context: bool = False):
@@ -372,6 +384,9 @@ def _process_single_item(item, max_neg_num: int, aug_num: int, min_rep_num: int,
     path_sent2rep = [(s_id, s) for s_id, s in selected_sentences.items() if s["h"] != -1 and s["t"] != -1]
 
     neg_candidates = [x for x in item["rest_sentences"].values() if len(x["ent"]) > 1]
+
+    s_id2edge_rank = get_s_id2edge_rank(item["path"])
+    sent_order2s_id = [s_id for s_id in selected_sentences.keys()]
 
     for pos_idx, pos_candi in enumerate(item["pos"]):
         # Statistics
@@ -419,14 +434,14 @@ def _process_single_item(item, max_neg_num: int, aug_num: int, min_rep_num: int,
         _r = random.random()
         if not remove_deduct and _r < deduct_ratio:
             examples.append({
-                # "context": context,
                 "context": add_noise_sentence(num=noise_sent_num, item=item, orig_sentences=orig_sentences, rep_pairs=None, shuffle=True),
                 "negative": random.sample(neg_res, max_neg_num),
                 "positive": " ".join(pos_candi["sent"]),
                 "orig_id": item["id"],
                 "pos_aug_num": _pos_aug,
                 "res_aug_num": _res_aug,
-                "sim_aug_num": _sim_aug
+                "sim_aug_num": _sim_aug,
+                "sent_order2edge_rank": [s_id2edge_rank[s_id] for s_id in sent_order2s_id]
             })
 
         # ============= context replaced-based examples ==================== #
@@ -484,15 +499,14 @@ def _process_single_item(item, max_neg_num: int, aug_num: int, min_rep_num: int,
             ]
 
             context_examples.append({
-                # "context": context,
                 "context": add_noise_sentence(num=noise_sent_num, item=item, orig_sentences=orig_sentences, rep_pairs=None, shuffle=True),
                 "condition": " ".join(pos_candi["sent"]),
-                # "negative_context": [rep_context_sent(selected_sentences, _neg_sent[0], _neg_sent[1]) for _neg_sent in neg_ctx_sent],
                 "negative_context": negative_noise_context,
                 "orig_id": item["id"],
                 "pos_aug_num": _ctx_pos_aug,
                 "res_aug_num": _ctx_res_aug,
-                "sim_aug_num": _ctx_sim_aug
+                "sim_aug_num": _ctx_sim_aug,
+                "sent_order2edge_rank": [s_id2edge_rank[s_id] for s_id in sent_order2s_id]
             })
 
     # Augment the context
@@ -568,9 +582,9 @@ def _process_single_item(item, max_neg_num: int, aug_num: int, min_rep_num: int,
 
             # TODO: Should other entities in ``sampled_rep_paris`` be replaced with the entity strings from the same negative sample item?
 
-            new_sentences = []
-            for _, sent in selected_sentences.items():
-                new_sentences.append(_replace_entities_w_str(sent, _cur_aug_rep_pairs))
+            new_sentences = {}
+            for s_id, sent in selected_sentences.items():
+                new_sentences[s_id] = _replace_entities_w_str(sent, _cur_aug_rep_pairs)
 
             new_pos_candi_sent = _replace_entities_w_str(pos_candi, _cur_aug_rep_pairs)
 
@@ -644,12 +658,11 @@ def _process_single_item(item, max_neg_num: int, aug_num: int, min_rep_num: int,
             neg_res = random.sample(neg_res, max_neg_num)
 
             if shuffle_context:
-                new_sentences = list(enumerate(new_sentences))
+                new_sentences = list(new_sentences.items())
                 random.shuffle(new_sentences)
-                original_orders, new_sentences = list(zip(*new_sentences))
+                shuffled_s_ids, new_sentences = list(zip(*new_sentences))
             else:
-                original_orders = list(range(len(new_sentences)))
-            # new_context = " ".join(new_sentences)
+                shuffled_s_ids, new_sentences = list(zip(*list(new_sentences.items())))
 
             new_context = add_noise_sentence(noise_sent_num, item, new_sentences, rep_pairs=_cur_aug_rep_pairs, shuffle=True)
 
@@ -665,7 +678,7 @@ def _process_single_item(item, max_neg_num: int, aug_num: int, min_rep_num: int,
                     "res_aug_num": _res_aug,
                     "sim_aug_num": _sim_aug,
                     "rep_ent_num": _sampled_ent_num,
-                    "original_orders": original_orders
+                    "sent_order2edge_rank": [s_id2edge_rank[s_id] for s_id in shuffled_s_ids]
                 })
 
             # ============= context replaced-based examples ==================== #
@@ -750,13 +763,12 @@ def _process_single_item(item, max_neg_num: int, aug_num: int, min_rep_num: int,
                 negative_context.append(add_noise_sentence(noise_sent_num, item, _new_context_sentences, rep_pairs=_cur_aug_rep_pairs,
                                                            shuffle=True))
 
-            new_sentences = list(new_sentences.values())
+            new_sentences = list(new_sentences.items())
             if shuffle_context:
-                new_sentences = list(enumerate(new_sentences))
                 random.shuffle(new_sentences)
-                original_orders, new_sentences = list(zip(*new_sentences))
+                shuffled_s_ids, new_sentences = list(zip(*new_sentences))
             else:
-                original_orders = list(range(len(new_sentences)))
+                shuffled_s_ids, new_sentences = list(zip(*new_sentences))
             # new_context = " ".join(new_sentences)
             new_context = add_noise_sentence(noise_sent_num, item, new_sentences, rep_pairs=_cur_aug_rep_pairs, shuffle=True)
 
@@ -772,7 +784,7 @@ def _process_single_item(item, max_neg_num: int, aug_num: int, min_rep_num: int,
                     "h": _cur_aug_rep_pairs[h_t_ent_ids[0]] if h_t_ent_ids[0] in _cur_aug_rep_pairs else _h_str,
                     "t": _cur_aug_rep_pairs[h_t_ent_ids[1]] if h_t_ent_ids[1] in _cur_aug_rep_pairs else _t_str,
                     "rep_ent_num": _sampled_ent_num,
-                    "original_orders": original_orders
+                    "sent_order2edge_rank": [s_id2edge_rank[s_id] for s_id in shuffled_s_ids],
                 })
 
     return examples, context_examples
@@ -955,6 +967,58 @@ def length_filter(sample, max_seq_length: int):
     return True, sample
 
 
+def obtain_sentence_spans(sentences_a: List[str], sentences_b: List[str]):
+    tokens = [_tokenizer.cls_token]
+    sentence_spans = []
+
+    for s_id, sent in enumerate(sentences_a):
+        if s_id > 0:
+            sent = " " + sent
+        s = len(tokens)
+        tokens.extend(_tokenizer.tokenize(sent))
+        e = len(tokens)
+        sentence_spans.append((s, e))
+
+    tokens.extend(get_sep_tokens(_tokenizer))
+
+    for s_id, sent in enumerate(sentences_b):
+        if s_id > 0:
+            sent = " " + sent
+        s = len(tokens)
+        tokens.extend(_tokenizer.tokenize(sent))
+        e = len(tokens)
+        sentence_spans.append((s, e))
+
+    return sentence_spans
+
+
+def length_filter_w_sentence_spans_only_pos(sample, max_seq_length: int):
+    if "negative_context" in sample:
+        sentence_spans = obtain_sentence_spans(sample["context"], [sample["condition"]])
+    else:
+        sentence_spans = obtain_sentence_spans(sample["context"], [sample["positive"]])
+    sample["sentence_spans"] = sentence_spans
+
+    sample["context"] = " ".join(sample["context"])
+
+    if "negative_context" in sample:
+        sample["negative_context"] = [" ".join(neg_ctx) for neg_ctx in sample["negative_context"]]
+        tokens_b = _tokenizer.tokenize(sample["condition"])
+        for ctx in sample["negative_context"] + [sample["context"]]:
+            tokens_a = _tokenizer.tokenize(ctx)
+            tokens = _tokenizer.build_inputs_with_special_tokens(tokens_a, tokens_b)
+            if len(tokens) > max_seq_length:
+                return False, sample
+    else:
+        tokens_a = _tokenizer.tokenize(sample["context"])
+        for option in sample["negative"] + [sample["positive"]]:
+            tokens_b = _tokenizer.tokenize(option)
+            tokens = _tokenizer.build_inputs_with_special_tokens(tokens_a, tokens_b)
+            if len(tokens) > max_seq_length:
+                return False, sample
+    return True, sample
+
+
 def convert_examples_into_features(file_path: str, tokenizer: PreTrainedTokenizer, pattern_pair_file: str,
                                    shuffle_context: bool = False, max_neg_num: int = 3, aug_num: int = 10,
                                    max_seq_length: int = 512, geo_p: float = 0.5, min_rep_num: int = 1,
@@ -1083,7 +1147,7 @@ def convert_examples_into_features_v3(file_path: str, tokenizer: PreTrainedToken
                                                           max_neg_samples_num=max_neg_samples_num,
                                                           num_workers=num_workers)
     with Pool(num_workers, initializer=length_filter_init, initargs=(tokenizer,)) as p:
-        _annotate = partial(length_filter, max_seq_length=max_seq_length)
+        _annotate = partial(length_filter_w_sentence_spans_only_pos, max_seq_length=max_seq_length)
         results = list(tqdm(
             p.imap(_annotate, examples + context_examples, chunksize=32),
             total=(len(examples) + len(context_examples)),

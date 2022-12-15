@@ -1492,6 +1492,8 @@ class WikiPathDatasetCollatorRelSeqGenV2(WikiPathDatasetCollatorWithContext):
         super().__init__(max_seq_length, tokenizer, mlm_probability, max_option_num, swap)
 
     def __call__(self, batch):
+        examples = [b["example"] for b in batch]
+
         rel_decode = []
         for b in batch:
             rel_decode.append(b["rel_labels"])
@@ -1500,49 +1502,82 @@ class WikiPathDatasetCollatorRelSeqGenV2(WikiPathDatasetCollatorWithContext):
         invalid = 0
         decoder_input_ids = torch.zeros(len(batch), max_input_len, dtype=torch.long).fill_(-1)
         for b, b_decoder_inputs in enumerate(rel_decode):
-            if "original_orders" in batch[b]["example"] and b_decoder_inputs[0] != -1:
-                # print("Entering Here...")
-                assert len(batch[b]["example"]["original_orders"]) == len(b_decoder_inputs) - 2, (batch[b]["example"]["original_orders"],
-                                                                                                  b_decoder_inputs)
-                rerank_b_decoder_inputs = [b_decoder_inputs[rank] for rank in batch[b]["example"]["original_orders"]] + \
-                                          b_decoder_inputs[len(batch[b]["example"]["original_orders"]):]
+            # if "original_orders" in batch[b]["example"] and b_decoder_inputs[0] != -1:
+            #     # print("Entering Here...")
+            #     assert len(batch[b]["example"]["original_orders"]) == len(b_decoder_inputs) - 2, (batch[b]["example"]["original_orders"],
+            #                                                                                       b_decoder_inputs)
+            #     rerank_b_decoder_inputs = [b_decoder_inputs[rank] for rank in batch[b]["example"]["original_orders"]] + \
+            #                               b_decoder_inputs[len(batch[b]["example"]["original_orders"]):]
+            #     b_decoder_inputs = rerank_b_decoder_inputs
+            if b_decoder_inputs[0] != -1:
+                assert len(examples[b]["sent_order2edge_rank"]) == len(b_decoder_inputs) - 2, (
+                    examples[b]["sent_order2edge_rank"], b_decoder_inputs)
+                rerank_b_decoder_inputs = [b_decoder_inputs[edge_rank] for edge_rank in examples[b]["sent_order2edge_rank"]] + \
+                    b_decoder_inputs[len(examples[b]["sent_order2edge_rank"]):]
                 b_decoder_inputs = rerank_b_decoder_inputs
 
-            decoder_input_ids[b, :len(b_decoder_inputs)] = torch.tensor(b_decoder_inputs, dtype=torch.long)
-            if b_decoder_inputs[0] == -1:
+                decoder_input_ids[b, :len(b_decoder_inputs)] = torch.tensor(b_decoder_inputs, dtype=torch.long)
+            else:
                 invalid += 1
+            # if b_decoder_inputs[0] == -1:
+            #     invalid += 1
 
-        examples = [b["example"] for b in batch]
         res = super().__call__(batch)
         res["rel_labels"] = decoder_input_ids
         res["invalid_path"] = invalid
 
-        input_ids = res["input_ids"][:, 0]
-        # print(self.tokenizer.convert_ids_to_tokens(input_ids[0]))
-        sep_token_mask = input_ids == self.tokenizer.sep_token_id  # [batch, max_seq_length]
-        sent_num = sep_token_mask.sum(dim=1)  # [batch]
-        sep_index = torch.zeros(input_ids.size(0), sent_num.max().item() - 1, dtype=torch.long)  # For roberta only.
-        for b, b_sep_token_mask in enumerate(sep_token_mask):
-            cnt = 0
-            for tk_id, tk_mask in enumerate(b_sep_token_mask):
-                if tk_mask == 1:
-                    # overlook the continuous sep tokens and only keep the first.
-                    if cnt > 0 and all(b_sep_token_mask[tmp] == 1 for tmp in range(sep_index[b, cnt - 1].item(), tk_id + 1, 1)):
-                        continue
-                    sep_index[b, cnt] = tk_id
-                    cnt += 1
-            if rel_decode[b][0] != -1:
-                assert len(rel_decode[b]) == cnt + 1, (rel_decode[b], cnt, self.tokenizer.convert_ids_to_tokens(input_ids[b]),
-                                                       examples[b]["original_orders"])
-            else:
-                if cnt >= max_input_len:
-                    decoder_input_ids = torch.cat([decoder_input_ids,
-                                                   torch.zeros(len(batch), cnt + 1 - max_input_len, dtype=torch.long).fill_(-1)], dim=1)
-                    res["rel_labels"] = decoder_input_ids
-                    max_input_len = cnt + 1
+        if "sentence_spans" in examples[0]:
+            max_sent_num = max(map(lambda x: len(x["sentence_spans"]), examples))
+            max_sent_len = 0
+            for example in examples:
+                max_sent_len = max(max_sent_len, max(map(lambda x: x[1] - x[0], example["sentence_spans"])))
 
-        res["sep_index"] = sep_index
-        assert sep_index.size(1) == decoder_input_ids.size(1) - 1, (sep_index, decoder_input_ids)
+            # padding relation labels to avoid the example with more sentences than none relations.
+            decoder_input_ids = torch.cat([decoder_input_ids,
+                                           torch.zeros(len(batch), max_sent_num - (max_input_len - 1), dtype=torch.long).fill_(-1)], dim=1)
+            res["rel_labels"] = decoder_input_ids
+
+            sent_token_index = torch.zeros(len(batch), max_sent_num, max_sent_len, dtype=torch.long)
+            sent_token_mask = torch.zeros(len(batch), max_sent_num, max_sent_len)
+            # sent_mask = torch.zeros(len(batch), max_sent_num)
+            for exp_id, exp in enumerate(examples):
+                for s_id, (s, e) in enumerate(exp["sentence_spans"]):
+                    sent_token_index[exp_id, s_id, :(e - s)] = torch.arange(s, e, dtype=torch.long)
+                    sent_token_mask[exp_id, s_id, :(e - s)] = 1
+                # sent_mask[exp_id, :len(exp["sentence_spans"])] = 1
+                # if rel_decode[exp_id][0] != -1:
+                #     assert len(exp["sent_order2edge_rank"]) + 1 == len(rel_decode[exp_id])
+
+            res["sent_token_index"] = sent_token_index
+            res["sent_token_mask"] = sent_token_mask
+            # res["sent_mask"] = sent_mask
+        else:
+            input_ids = res["input_ids"][:, 0]
+            # print(self.tokenizer.convert_ids_to_tokens(input_ids[0]))
+            sep_token_mask = input_ids == self.tokenizer.sep_token_id  # [batch, max_seq_length]
+            sent_num = sep_token_mask.sum(dim=1)  # [batch]
+            sep_index = torch.zeros(input_ids.size(0), sent_num.max().item() - 1, dtype=torch.long)  # For roberta only.
+            for b, b_sep_token_mask in enumerate(sep_token_mask):
+                cnt = 0
+                for tk_id, tk_mask in enumerate(b_sep_token_mask):
+                    if tk_mask == 1:
+                        # overlook the continuous sep tokens and only keep the first.
+                        if cnt > 0 and all(b_sep_token_mask[tmp] == 1 for tmp in range(sep_index[b, cnt - 1].item(), tk_id + 1, 1)):
+                            continue
+                        sep_index[b, cnt] = tk_id
+                        cnt += 1
+                if rel_decode[b][0] != -1:
+                    assert len(rel_decode[b]) == cnt + 1, (rel_decode[b], cnt, self.tokenizer.convert_ids_to_tokens(input_ids[b]),
+                                                           examples[b]["original_orders"])
+                else:
+                    if cnt >= max_input_len:
+                        decoder_input_ids = torch.cat([decoder_input_ids,
+                                                       torch.zeros(len(batch), cnt + 1 - max_input_len, dtype=torch.long).fill_(-1)], dim=1)
+                        res["rel_labels"] = decoder_input_ids
+                        max_input_len = cnt + 1
+
+            res["sep_index"] = sep_index
+            assert sep_index.size(1) == decoder_input_ids.size(1) - 1, (sep_index, decoder_input_ids)
 
         return res
 
