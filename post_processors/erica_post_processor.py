@@ -82,7 +82,10 @@ class WikiPathInferencePostProcessor(DistGatherMixin):
         self.codes.extend(codes)
 
     def get_results(self, output_dir: str):
-        output_file = os.path.join(output_dir, f"predictions-rank{dist.get_rank()}.pt")
+        if dist.is_initialized():
+            output_file = os.path.join(output_dir, f"predictions-rank{dist.get_rank()}.pt")
+        else:
+            output_file = os.path.join(output_dir, f"predictions.pt")
         torch.save({
             "indices": self.indices,
             "codes": self.codes,

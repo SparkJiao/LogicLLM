@@ -561,10 +561,11 @@ class WikiPathInferenceCollator(SeperatorInterface):
 
 
 class WikiPathSentenceConditionCollator:
-    def __init__(self, enc_tokenizer: str, dec_tokenizer: str, max_seq_length: int):
+    def __init__(self, enc_tokenizer: str, dec_tokenizer: str, max_seq_length: int, reverse: bool = False):
         self.enc_tokenizer: PreTrainedTokenizer = AutoTokenizer.from_pretrained(enc_tokenizer)
         self.dec_tokenizer: PreTrainedTokenizer = AutoTokenizer.from_pretrained(dec_tokenizer)
         self.max_seq_length = max_seq_length
+        self.reverse = reverse
 
     def __call__(self, batch):
         seq_len = max(map(lambda x: len(x["tokens"]), batch))
@@ -584,8 +585,15 @@ class WikiPathSentenceConditionCollator:
             t_span.append(b["t_span"])
             indices.append(b["index"])
 
-            decoder_inputs.append(b["h"] + self.dec_tokenizer.sep_token + b["t"])
-            decoder_outputs.append(b["text"])
+            if not self.reverse:
+                decoder_inputs.append(b["h"] + self.dec_tokenizer.sep_token + b["t"])
+                decoder_outputs.append(b["text"])
+            else:
+                decoder_inputs.append(b["text"])
+                decoder_outputs.append(b["h"] + self.dec_tokenizer.sep_token + b["t"])
+                # print(decoder_inputs[-1])
+                # print(decoder_outputs[-1])
+                # print("------------------------------------")
 
         h_span = torch.tensor(h_span, dtype=torch.long)
         t_span = torch.tensor(t_span, dtype=torch.long)

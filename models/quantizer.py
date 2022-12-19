@@ -1,19 +1,20 @@
-from abc import ABC
-from typing import Optional
-
-import torch
-from torch import nn
 # from torch.nn.functional import gumbel_softmax
 import warnings
-import torch.nn.functional as F
+from abc import ABC
+
+import torch
 import torch.distributed as dist
+import torch.nn.functional as F
+from torch import nn
 
 try:
     from torch.overrides import has_torch_function, handle_torch_function
 except ImportError as e:
     from torch._overrides import has_torch_function, handle_torch_function
 
-from transformers.models.roberta.modeling_roberta import RobertaModel, RobertaPreTrainedModel, RobertaForMaskedLM, RobertaConfig
+
+def l2norm(t):
+    return F.normalize(t, p=2, dim=-1)
 
 
 class Quantizer(nn.Module):
@@ -30,9 +31,45 @@ class StraightEstimator(Quantizer, ABC):
         pass
 
 
+class CodeBook(nn.Module):
+    def __init__(self, num_embeddings, embedding_dim, commitment_cost):
+        super(CodeBook, self).__init__()
+        self._embedding_dim = embedding_dim
+        self._num_embeddings = num_embeddings
+        self._embedding = nn.Embedding(self._num_embeddings, self._embedding_dim)
+        self._commitment_cost = commitment_cost
+
+    def forward(self, inputs):
+        # Calculate distances
+        distances = (torch.sum(inputs ** 2, dim=1, keepdim=True)
+                     + torch.sum(self._embedding.weight ** 2, dim=1)
+                     - 2 * torch.matmul(inputs, self._embedding.weight.t()))
+
+        # Encoding
+        encoding_indices = torch.argmin(distances, dim=1).unsqueeze(1)
+        encodings = torch.zeros(encoding_indices.shape[0], self._num_embeddings).cuda()
+        encodings.scatter_(1, encoding_indices, 1)
+
+        # Quantize and unflatten
+        quantized = torch.matmul(encodings, self._embedding.weight)
+
+        # Loss
+        e_latent_loss = torch.mean((quantized.detach() - inputs) ** 2)
+        q_latent_loss = torch.mean((quantized - inputs.detach()) ** 2)
+        loss = q_latent_loss + self._commitment_cost * e_latent_loss
+
+        quantized = inputs + (quantized - inputs).detach()
+        avg_probs = torch.mean(encodings, dim=0)
+        perplexity = torch.exp(-torch.sum(avg_probs * torch.log(avg_probs + 1e-10)))
+
+        # convert quantized from BHWC -> BCHW
+        # return loss, quantized, perplexity, encodings
+        return quantized, q_latent_loss, self._commitment_cost * e_latent_loss, encoding_indices
+
+
 # Copied from https://github.com/THUDM/CogView/blob/main/vqvae/vqvae_zc.py
 class CogViewEMAQuantizer(nn.Module):
-    def __init__(self, dim, n_embed, decay=0.99, eps=1e-5, continuous_relax=False, hard=False):
+    def __init__(self, dim, n_embed, decay=0.99, eps=1e-5, continuous_relax=False, hard=False, add_l2_norm: bool = False):
         super().__init__()
 
         self.dim = dim
@@ -42,6 +79,7 @@ class CogViewEMAQuantizer(nn.Module):
 
         self.continuous_relax = continuous_relax
         self.hard = hard
+        self.add_l2_norm = add_l2_norm
 
         embed = torch.randn(dim, n_embed)
         torch.nn.init.xavier_uniform_(embed, gain=torch.nn.init.calculate_gain('tanh'))
@@ -59,6 +97,9 @@ class CogViewEMAQuantizer(nn.Module):
         return self.forward_(x, self.continuous_relax, temperature, self.hard)
 
     def forward_(self, input, continuous_relax=False, temperature=1., hard=False):
+        if self.add_l2_norm:
+            input = l2norm(input)
+
         flatten = input.reshape(-1, self.dim)
         dist = (
                 flatten.pow(2).sum(1, keepdim=True)
@@ -100,6 +141,8 @@ class CogViewEMAQuantizer(nn.Module):
                     (self.cluster_size + self.eps) / (n + self.n_embed * self.eps) * n
             )
             embed_normalized = self.embed_avg / cluster_size.unsqueeze(0)
+            if self.add_l2_norm:
+                embed_normalized = l2norm(embed_normalized)
             self.embed.data.copy_(embed_normalized)
 
         if not continuous_relax:

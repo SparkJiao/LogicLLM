@@ -3,7 +3,6 @@ hydra:
     dir: ./
 
 train_file: wiki_erica_path/v9.1/train_distant.path_v9.1.train.re_id.pkl
-#train_file: wiki_erica_path/v9.1/train_distant.path_v9.1.dev.shuffle.re_id.pkl
 dev_file: wiki_erica_path/v9.1/train_distant.path_v9.1.dev.shuffle.re_id.pkl
 test_file:
 
@@ -12,10 +11,12 @@ model:
   _target_: models.vq_vae.RobertaVQVAE.from_pretrained
   seq2seq_path: pretrained-models/bart-base
   quantizer:
-    _target_: models.quantizer.CogViewEMAQuantizer
-    dim: 768
-    n_embed: 512
-  embedding_dim: ${model.quantizer.dim}
+    _target_: models.quantizer.CodeBook
+    embedding_dim: 768
+    num_embeddings: 512
+    commitment_cost: 0.25
+  embedding_dim: ${model.quantizer.embedding_dim}
+  input_type: "concat$1"
 
 # Data loading
 read_tensor:
@@ -40,6 +41,7 @@ collator:
   enc_tokenizer: pretrained-models/roberta-large
   dec_tokenizer: pretrained-models/bart-base
   max_seq_length: ${read_tensor.max_seq_length}
+  reverse: True
 
 
 # Dataloader
@@ -52,24 +54,24 @@ do_preprocess: False
 model_name_or_path: pretrained-models/roberta-large
 pretrain:
 
-output_dir: experiments/roberta.large.bart.base.vqvae.ema.wiki_path.c${model.quantizer.n_embed}.v1.1.w8.lamb.RTXA6K
+output_dir: experiments/roberta.large.bart.base.vqvae.ema.wiki_path.c${model.quantizer.num_embeddings}.v4.0.w8.lamb.RTXA6K
 
-do_train: False
-evaluate_during_training: False
+do_train: True
+evaluate_during_training: True
 
-do_eval: True
-eval_sub_path: checkpoint-29000
+do_eval: False
+eval_sub_path: checkpoint-55000
 
 # Training hyper-parameters
 per_gpu_train_batch_size: 64
-per_gpu_eval_batch_size: 64
-learning_rate: 3e-4
-gradient_accumulation_steps: 8
+per_gpu_eval_batch_size: 256
+learning_rate: 5e-5
+gradient_accumulation_steps: 1
 weight_decay: 1e-4
 adam_epsilon: 1e-6
 adam_betas: "(0.9, 0.98)"
 max_grad_norm: 5.0
-num_train_epochs: 80
+num_train_epochs: 50
 max_steps: 0
 warmup_proportion: 0.06
 warmup_steps: 0
@@ -84,8 +86,8 @@ bit_training:
 
 logging_steps: 1
 save_best: False
-save_steps: 1000
-eval_steps: 1000
+save_steps: 10000
+eval_steps: 10000
 ddp_eval: True
 no_cuda: False
 seed: 42
@@ -131,7 +133,7 @@ summary_helper:
   _target_: general_util.tensorboard_helper.SummaryWriterHelper
   batch_index_or_keys:
   outputs_index_or_keys:
-#    "train/vq_loss": vq_loss
+    "train/vq_loss": vq_loss
     "train/commitment_loss": commitment_loss
     "train/mlm_loss": mlm_loss
     "train/z_encoder_mean": z_encoder_mean

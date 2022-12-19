@@ -83,7 +83,7 @@ def torch_fsdp_init_quantizer_ignore(model,
     my_auto_wrap_policy = partial(transformer_auto_wrap_policy,
                                   transformer_layer_cls={BartEncoderLayer})
 
-    ignored_modules = [model.quantizer]
+    ignored_modules = [model.quantizer, model.dense1, model.dense2]
 
     if fp16:
         fp16_type = torch.float16 if not fp16_bfloat16 else torch.bfloat16
