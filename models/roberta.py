@@ -641,11 +641,11 @@ class RobertaForMultipleChoiceForPreTrainWithPairFullLocal(RobertaForMultipleCho
         self.stop_key_gradient = stop_key_gradient
         self.dist_neg_sampling = dist_neg_sampling
 
-        self.local_pair_pooler = nn.Sequential(
-            nn.Linear(config.hidden_size, mlp_hidden_size),
-            nn.Tanh()
-        )
-        self.local_pair_proj = nn.Linear(mlp_hidden_size, config.hidden_size)
+        # self.local_pair_pooler = nn.Sequential(
+        #     nn.Linear(config.hidden_size, mlp_hidden_size),
+        #     nn.Tanh()
+        # )
+        self.local_pair_proj = nn.Linear(config.hidden_size, config.hidden_size)
 
         self.attn_pooler = nn.Linear(config.hidden_size, 1)
 
@@ -761,10 +761,13 @@ class RobertaForMultipleChoiceForPreTrainWithPairFullLocal(RobertaForMultipleCho
         else:
             pair_k_sent_h = attentive_pooling(self.attn_pooler, pair_k_outputs[0], k_sent_token_index, k_sent_token_mask, k_sent_index)
 
-        pair_q_sent_h = self.local_pair_proj(self.dropout(self.local_pair_pooler(pair_q_sent_h)))
-        pair_k_sent_h = self.local_pair_proj(self.dropout(self.local_pair_pooler(pair_k_sent_h)))
+        pair_q_sent_h = self.local_pair_proj(self.dropout(pair_q_sent_h))
+        pair_k_sent_h = self.local_pair_proj(self.dropout(pair_k_sent_h))
 
-        local_ctr_logits = torch.einsum("ah,bh->ab", pair_q_sent_h, pair_k_sent_h)
+        if len(pair_k_sent_h.size()) == 3:
+            local_ctr_logits = torch.einsum("bxh,byh->bxy", pair_q_sent_h, pair_k_sent_h)
+        else:
+            local_ctr_logits = torch.einsum("ah,bh->ab", pair_q_sent_h, pair_k_sent_h)
         local_ctr_logits = local_ctr_logits + (1 - local_ctr_mask) * -10000.0
 
         loss = 0.
@@ -802,11 +805,11 @@ class RobertaForMultipleChoiceForPreTrainWithPairFullLocal(RobertaForMultipleCho
                     pair_loss = loss_fct(align_logits, pair_labels)
                     loss = loss + pair_loss
 
-            # if local_ctr_labels is not None:
-            #     true_label_num = (local_ctr_labels > -1).sum().item()
-            #     if true_label_num:
-            #         local_ctr_loss = loss_fct(local_ctr_logits, local_ctr_labels)
-            #         loss = loss + local_ctr_loss
+            if local_ctr_labels is not None:
+                true_label_num = (local_ctr_labels > -1).sum().item()
+                if true_label_num:
+                    local_ctr_loss = loss_fct(local_ctr_logits.reshape(-1, local_ctr_logits.size(-1)), local_ctr_labels.reshape(-1))
+                    loss = loss + local_ctr_loss
 
             if not self.training:
                 acc, true_label_num = layers.get_accuracy(reshaped_logits, labels)
@@ -828,11 +831,11 @@ class RobertaForMultipleChoiceForPreTrainWithPairFullLocal(RobertaForMultipleCho
                                              val=(1 - pair_mask).sum(dim=-1)[pair_labels > -1].sum().item() / true_label_num,
                                              n=true_label_num)
 
-                # if local_ctr_labels is not None and local_ctr_loss > 0:
-                #     acc, true_label_num = layers.get_accuracy(local_ctr_logits, local_ctr_labels)
-                #     self.eval_metrics.update("local_ctr_acc", val=acc, n=true_label_num)
-                #     self.eval_metrics.update("local_ctr_loss", val=local_ctr_loss, n=true_label_num)
-                #     self.eval_metrics.update("local_ctr_true_label_num", val=true_label_num / batch_size, n=batch_size)
+                if local_ctr_labels is not None and local_ctr_loss > 0:
+                    acc, true_label_num = layers.get_accuracy(local_ctr_logits, local_ctr_labels)
+                    self.eval_metrics.update("local_ctr_acc", val=acc, n=true_label_num)
+                    self.eval_metrics.update("local_ctr_loss", val=local_ctr_loss, n=true_label_num)
+                    self.eval_metrics.update("local_ctr_true_label_num", val=true_label_num / batch_size, n=batch_size)
 
         if not return_dict:
             output = (reshaped_logits,) + outputs[2:] + (mlm_loss, cls_loss,)

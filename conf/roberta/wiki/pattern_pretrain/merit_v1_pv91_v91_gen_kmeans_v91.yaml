@@ -6,17 +6,28 @@ train_file: wiki_erica_path/v9.1/train_distant.path_v9.1.train.re_id.pkl
 dev_file: wiki_erica_path/v9.1/train_distant.path_v9.1.dev.shuffle.re_id.pkl
 test_file:
 
+vqvae_prediction_dir: experiments/roberta.large.bart.base.vqvae.ema.wiki_path.c1024.v5.4.w8.lamb.RTXA6K/checkpoint-85000
+
 # Model
 model:
-  _target_: models.roberta.RobertaForMultipleChoiceForPreTrainWithPairFullLocal.from_pretrained
+  _target_: models.roberta.RobertaForMultipleChoicePreTrainWPathGenV4.from_pretrained
+  num_decoder_layers: 3
+  rel_vocab_size: 1024
   mlp_hidden_size: 2048
   mlm_alpha: 1.0
+  decoder_config_path: pretrained-models/t5-large-lm-adapt
+  concat_ent: True
+#  rel_emb_weights:
+#    _target_: models.roberta.retrieve_rel_weights_from_model_buffer
+#    model_path: ${vqvae_prediction_dir}/pytorch_model.bin
+#    key: quantizer.embed
 
 # Data loading
 read_tensor_train:
-  _target_: data.wiki_entity_path_v9_1_split_vqvae.convert_examples_into_features_v3_ent_local_pair
-  rel_path_set_file: wiki_erica_path/v9.1/pattern_rel_id_kmeans_v21/rel_path_set.train.0.pt
-  id2rel_path_decode_id_file: wiki_erica_path/v9.1/pattern_rel_id_kmeans_v21/pattern_decode_id.train.0.c1000.limit0.pkl
+  _target_: data.wiki_entity_path_v9_1_split_vqvae.convert_examples_into_features_v3_ent
+  id2rel_path_decode_id_file: experiments/roberta.large.bart.base.vqvae.ema.wiki_path.c1024.v5.4.w8.lamb.RTXA6K/train-predictions-full-len/checkpoint-85000/predictions-rank0.pt
+  rel_vocab_size: ${model.rel_vocab_size}
+  generative_order: True
   max_neg_num: 3
   aug_num: 1
   max_seq_length: 512
@@ -26,12 +37,13 @@ read_tensor_train:
   deduct_ratio: 1.0
   context_ratio: 1.0
   noise_sent_ratio: 0.0
-  num_workers: 48
+  num_workers: 64
 
 read_tensor_dev:
-  _target_: data.wiki_entity_path_v9_1_split_vqvae.convert_examples_into_features_v3_ent_local_pair
-  rel_path_set_file: wiki_erica_path/v9.1/pattern_rel_id_kmeans_v21/rel_path_set.dev.shuffle.pt
-  id2rel_path_decode_id_file: wiki_erica_path/v9.1/pattern_rel_id_kmeans_v21/pattern_decode_id.dev.shuffle.c1000.limit0.pkl
+  _target_: data.wiki_entity_path_v9_1_split_vqvae.convert_examples_into_features_v3_ent
+  id2rel_path_decode_id_file: ${vqvae_prediction_dir}/predictions.pt
+  rel_vocab_size: ${model.rel_vocab_size}
+  generative_order: True
   max_neg_num: 3
   aug_num: 1
   max_seq_length: 512
@@ -47,13 +59,12 @@ extended_vocab:
 
 # Data collator
 collator:
-  _target_: data.collators.wiki.WikiPathDatasetCollatorWithContextAndPairCompleteKMeansLocal
+  _target_: data.collators.wiki.WikiPathDatasetCollatorRelSeqGenV3
   max_seq_length: 512
   tokenizer: pretrained-models/roberta-large
   mlm_probability: 0.15
   max_option_num: 4
   swap: True
-  option_dropout: 0.5
 
 # Dataloader
 num_workers: 8
@@ -65,8 +76,9 @@ do_preprocess: False
 model_name_or_path: pretrained-models/roberta-large
 pretrain:
 
-output_dir: experiments/roberta.large.wiki_erica_path_v9.1_v9.1.pair.kmeans.local.v2.1.1aug.seq512.w8.lamb.500steps.RTXA6K
-#output_dir: experiments/roberta.large.wiki_erica_path_v9.1_v9.1.pair.kmeans.local.v2.1.1aug.seq512.w2.lamb.500steps.NA100
+
+#output_dir: experiments/roberta.large.wiki_erica_path_v9.1_v9.1.gen.kmeans.c1000.v9.0.1aug.seq512.w2.lamb.500steps.NA100
+output_dir: experiments/roberta.large.wiki_erica_path_v9.1_v9.1.gen.kmeans.c1000.v9.1.1aug.seq512.w8.lamb.500steps.RTXA6K
 
 do_train: True
 evaluate_during_training: True
@@ -77,12 +89,12 @@ eval_sub_path:
 # Training hyper-parameters
 per_gpu_train_batch_size: 4
 per_gpu_eval_batch_size: 16
-learning_rate: 5e-5
+learning_rate: 1e-4
 gradient_accumulation_steps: 128
 weight_decay: 0.01
 adam_epsilon: 1e-6
 adam_betas: "(0.9, 0.98)"
-max_grad_norm: 5.0
+max_grad_norm: 1.0
 num_train_epochs: 10
 max_steps: 500
 warmup_proportion: 0.1
@@ -95,6 +107,7 @@ bit_training:
 
 
 logging_steps: 1
+#save_best: True
 save_best: False
 save_steps: 100
 eval_steps: 100
@@ -173,16 +186,15 @@ ds_cfg:
 summary_helper:
   _target_: general_util.tensorboard_helper.SummaryWriterHelper
   batch_index_or_keys:
-    "train/pair_value_num": pair_value_num
-    "train/pair_label_num": pair_label_num
-    "train/dropped_op_cnt": dropped_op_cnt
-    "train/local_ctr_true_label_num": local_ctr_true_label_num
-    "train/local_ctr_value_num": local_ctr_value_num
+#    "train/pair_value_num": pair_value_num
+#    "train/pair_label_num": pair_label_num
+#    "train/dropped_op_cnt": dropped_op_cnt
+    "train/invalid_path": invalid_path
   outputs_index_or_keys:
     "train/mlm_loss": mlm_loss
     "train/cls_loss": cls_loss
-    "train/pair_loss": pair_loss
-    "train/local_ctr_loss": local_ctr_loss
+#    "train/pair_loss": pair_loss
+    "train/path_gen_loss": path_gen_loss
 
 # Temporary variables
 n_gpu:

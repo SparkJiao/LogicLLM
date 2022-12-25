@@ -1347,11 +1347,15 @@ class WikiPathDatasetCollatorWithContextAndPairCompleteKMeansLocal(WikiPathDatas
         for q_id, q_exp in enumerate(pair_q_examples):
             q_flat_rel_ids.extend(q_exp["rel_ids_input_order"])
         assert len(q_flat_rel_ids) == q_sent_index.size(0)
+        # tmp = [q_exp["rel_ids_input_order"] for q_exp in pair_q_examples]
+        # logger.info(f"Q unflatten rel ids: {tmp}")
 
         k_flat_rel_ids = []
         for k_id, k_exp in enumerate(pair_k_examples):
             k_flat_rel_ids.extend(k_exp["rel_ids_input_order"])
         assert len(k_flat_rel_ids) == k_sent_index.size(0)
+        # tmp = [k_exp["rel_ids_input_order"] for k_exp in pair_k_examples]
+        # logger.info(f"K unflatten rel ids: {tmp}")
 
         k_label2index = defaultdict(list)
         k_flat_rel_ids_mask = torch.ones(len(k_flat_rel_ids))
@@ -1360,6 +1364,9 @@ class WikiPathDatasetCollatorWithContextAndPairCompleteKMeansLocal(WikiPathDatas
                 k_flat_rel_ids_mask[k_idx] = 0
                 continue
             k_label2index[k_rel_id].append(k_idx)
+
+        # logger.info(f"Q flat rel ids: {q_flat_rel_ids}")
+        # logger.info(f"K flat rel ids: {k_flat_rel_ids}")
 
         local_ctr_labels = []
         local_ctr_score_mask = torch.ones(len(q_flat_rel_ids), len(k_flat_rel_ids))
@@ -1379,6 +1386,8 @@ class WikiPathDatasetCollatorWithContextAndPairCompleteKMeansLocal(WikiPathDatas
                 if label_k_index != q_label:
                     local_ctr_score_mask[q_idx, label_k_index] = 0
             local_ctr_labels.append(q_label)
+        # logger.info(f"Local ctr labels: {local_ctr_labels}")
+        # logger.info(f"Local ctr score mask: {local_ctr_score_mask.tolist()}")
         local_ctr_labels = torch.tensor(local_ctr_labels, dtype=torch.long)
 
         results = self.previous_forward(batch)
@@ -1391,6 +1400,51 @@ class WikiPathDatasetCollatorWithContextAndPairCompleteKMeansLocal(WikiPathDatas
             "k_sent_index": k_sent_index,
             "local_ctr_labels": local_ctr_labels,
             "local_ctr_mask": local_ctr_score_mask,
+            "local_ctr_true_label_num": (local_ctr_labels != -1).sum(),
+            "local_ctr_value_num": local_ctr_score_mask.sum() / len(batch)
+        })
+        return results
+
+
+class WikiPathDatasetCollatorWithContextAndPairCompleteKMeansLocalBatch(WikiPathDatasetCollatorWithContextAndPairCompleteKMeansLocal):
+    def __init__(self, max_seq_length: int, tokenizer: str, mlm_probability: float = 0.15, max_option_num: int = 4, swap: bool = False,
+                 option_dropout: float = 0.0, k_option_dropout: float = 0.0):
+        super().__init__(max_seq_length, tokenizer, mlm_probability, max_option_num, swap, option_dropout, k_option_dropout)
+
+    def __call__(self, batch):
+        pair_q_examples = [b["pair_q"] for b in batch]
+        pair_k_examples = [b["pair_k"] for b in batch]
+
+        # batch, max_sent_num, max_sent_len
+        q_sent_token_index, q_sent_token_mask, _ = sentence_spans_list_to_tensor(pair_q_examples)
+        k_sent_token_index, k_sent_token_mask, _ = sentence_spans_list_to_tensor(pair_k_examples)
+
+        batch_size, q_sent_num = q_sent_token_index.size()[:2]
+        k_sent_num = k_sent_token_index.size(1)
+
+        local_ctr_labels = torch.ones(batch_size, q_sent_num, dtype=torch.long).fill_(-1)
+        local_ctr_score_mask = torch.zeros(batch_size, q_sent_num, k_sent_num)
+
+        for pair_id, (q_exp, k_exp) in enumerate(zip(pair_q_examples, pair_k_examples)):
+            for q_sent_id, q_sent_rel_id in enumerate(q_exp["rel_ids_input_order"]):
+                local_ctr_score_mask[pair_id, q_sent_id, :len(k_exp["rel_ids_input_order"])] = 1
+                for k_sent_id, k_sent_rel_id in enumerate(k_exp["rel_ids_input_order"]):
+                    if q_sent_rel_id == k_sent_rel_id:
+                        if local_ctr_labels[pair_id, q_sent_id] != -1:
+                            local_ctr_score_mask[pair_id, q_sent_id, k_sent_id] = 0
+                            continue
+                        local_ctr_labels[pair_id, q_sent_id] = k_sent_id
+
+        results = self.previous_forward(batch)
+        results.update({
+            "q_sent_token_index": q_sent_token_index,
+            "q_sent_token_mask": q_sent_token_mask,
+            "k_sent_token_index": k_sent_token_index,
+            "k_sent_token_mask": k_sent_token_mask,
+            "local_ctr_labels": local_ctr_labels,
+            "local_ctr_mask": local_ctr_score_mask,
+            "local_ctr_true_label_num": (local_ctr_labels != -1).sum(),
+            "local_ctr_value_num": local_ctr_score_mask.sum() / len(batch)
         })
         return results
 
@@ -1473,8 +1527,7 @@ class WikiPathDatasetCollatorWithContextAndPairCompleteDropout(WikiPathDatasetCo
             k_sent_drop_cnt += b_k_sent_drop_cnt
 
             b_input_a, b_input_b, b_pair_q_orig_id, b_pair_q_a, b_pair_q_b, \
-            b_pair_k_orig_id, b_pair_k_a, b_pair_k_b, \
-            b_pair_k_orig_ids = self.prepare_single_example(b)
+                b_pair_k_orig_id, b_pair_k_a, b_pair_k_b, b_pair_k_orig_ids = self.prepare_single_example(b)
 
             input_a.extend(b_input_a)
             input_b.extend(b_input_b)

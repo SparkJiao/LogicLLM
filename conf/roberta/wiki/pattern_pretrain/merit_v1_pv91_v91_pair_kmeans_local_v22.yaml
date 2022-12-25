@@ -47,7 +47,7 @@ extended_vocab:
 
 # Data collator
 collator:
-  _target_: data.collators.wiki.WikiPathDatasetCollatorWithContextAndPairCompleteKMeansLocal
+  _target_: data.collators.wiki.WikiPathDatasetCollatorWithContextAndPairCompleteKMeansLocalBatch
   max_seq_length: 512
   tokenizer: pretrained-models/roberta-large
   mlm_probability: 0.15
@@ -65,7 +65,7 @@ do_preprocess: False
 model_name_or_path: pretrained-models/roberta-large
 pretrain:
 
-output_dir: experiments/roberta.large.wiki_erica_path_v9.1_v9.1.pair.kmeans.local.v2.1.1aug.seq512.w8.lamb.500steps.RTXA6K
+output_dir: experiments/roberta.large.wiki_erica_path_v9.1_v9.1.pair.kmeans.local.v2.2.1aug.seq512.w8.lamb.500steps.RTXA6K
 #output_dir: experiments/roberta.large.wiki_erica_path_v9.1_v9.1.pair.kmeans.local.v2.1.1aug.seq512.w2.lamb.500steps.NA100
 
 do_train: True
