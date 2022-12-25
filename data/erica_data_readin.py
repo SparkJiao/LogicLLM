@@ -346,6 +346,16 @@ class WikiPathSentenceDataset(Dataset, SeperatorInterface):
         return self.sentences[index], self.indices[index]
 
 
+def extract_path_sent_follow_order(example):
+    path = example["path"]
+    rel_s_ids = []
+    for i, item in enumerate(path):
+        if i == 0:
+            continue
+        rel_s_ids.append(item[1])
+    return rel_s_ids
+
+
 class WikiPathSentenceConditionDataset(Dataset):
     def __init__(self, file_path: str, tokenizer: PreTrainedTokenizer, max_seq_length: int, cache_path: str = None):
         if cache_path is not None and os.path.exists(cache_path):

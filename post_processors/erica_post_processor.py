@@ -64,7 +64,7 @@ class WikiPathInferencePostProcessor(DistGatherMixin):
 
     def __call__(self, meta_data: Dict[str, Any], batch_model_outputs: Dict[str, Any], ddp: bool = False):
         indices = meta_data["indices"]
-        codes = batch_model_outputs["code_indices"]
+        codes = batch_model_outputs["code_indices"].tolist()
 
         if ddp:
             obj = [codes, indices]

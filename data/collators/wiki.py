@@ -1,8 +1,8 @@
 import collections
 import pickle
 import random
-from collections import Counter
-from typing import Tuple, Optional, Dict, Any, List
+from collections import Counter, defaultdict
+from typing import Tuple, Optional, List
 
 import torch
 import transformers
@@ -199,18 +199,104 @@ class WikiPathDatasetV6wPatternPairsKMeans(WikiPathDatasetV5):
         return item
 
 
+def get_sentence_level_label(example, rel_ids):
+    path_s_ids_order = example["path_s_ids_order"]
+    path_s_ids = example["path_s_ids"]
+
+    assert len(path_s_ids_order) == len(path_s_ids) == len(rel_ids["input_a"])
+    s_id2rel_id = {s_id: rel_id for s_id, rel_id in zip(path_s_ids_order, rel_ids["input_a"])}
+    rel_ids_input_order = [s_id2rel_id[s_id] for s_id in path_s_ids] + [rel_ids["input_b"]]
+    return rel_ids_input_order
+
+
+class WikiPathDatasetPatternPairKMeansLocal(WikiPathDatasetV6wPatternPairsKMeans):
+    """
+    Add sentence-level ids for local sentence-level contrastive learning.
+
+    Examples come from `wiki_entity_path_v9_1_split_vqvae`.
+    """
+
+    def __init__(self, examples, raw_texts, rel_path_set_file: str, id2rel_path_decode_id_file: str, code_drop_threshold: int = 0):
+        super().__init__(examples, raw_texts, rel_path_set_file)
+
+        self.id2rel_path_decode_ids = filter_long_tail_clusters(pickle.load(open(id2rel_path_decode_id_file, "rb")), code_drop_threshold)
+
+    def __getitem__(self, index):
+        result = super().__getitem__(index)
+
+        if result["pair_q"]["orig_id"] in self.id2rel_path_decode_ids:
+            result["pair_q"]["rel_ids_input_order"] = get_sentence_level_label(result["pair_q"],
+                                                                               self.id2rel_path_decode_ids[result["pair_q"]["orig_id"]])
+        else:
+            logger.warning(f"Not found in `id2rel_path_decode_ids` with example_id: {result['pair_q']['orig_id']}")
+            result["pair_q"]["rel_ids_input_order"] = [-1] * len(result["pair_q"]["sentence_spans"])
+
+        if result["pair_k"]["orig_id"] in self.id2rel_path_decode_ids:
+            result["pair_k"]["rel_ids_input_order"] = get_sentence_level_label(result["pair_k"],
+                                                                               self.id2rel_path_decode_ids[result["pair_k"]["orig_id"]])
+        else:
+            logger.warning(f"Not found in `id2rel_path_decode_ids` with example_id: {result['pair_k']['orig_id']}")
+            result["pair_k"]["rel_ids_input_order"] = [-1] * len(result["pair_k"]["sentence_spans"])
+
+        # assert sorted(result["pair_q"]["rel_ids_input_order"]) == sorted(result["pair_k"]["rel_ids_input_order"]), (
+        #     self.id2rel_path_decode_ids[result["pair_q"]["orig_id"]],
+        #     self.id2rel_path_decode_ids[result["pair_k"]["orig_id"]])
+        # Here we have found an assertion error here:  ([270, 511, 550, 511], [511, 270, 550, 520]).
+        # The problem is caused by that the one single relation path may have multiple outcome/direct-path.
+        # So `self.id2rel_path_decode_ids[result["pair_q"]["orig_id"]]["input_b"]` can be different with
+        # `self.id2rel_path_decode_ids[result["pair_k"]["orig_id"]]["input_b"]`
+
+        return result
+
+
+def filter_long_tail_clusters(id2rep_path_decode_ids, code_drop_threshold: int = 0):
+    all_labels = []
+    for res in id2rep_path_decode_ids.values():
+        all_labels.extend(res["input_a"])
+        all_labels.append(res["input_b"])
+
+    cnt = Counter(all_labels)
+    code_drop_set = set([label for label, label_num in cnt.items() if label_num <= code_drop_threshold])
+
+    tmp = 0
+    for k, v in id2rep_path_decode_ids.items():
+        tmp_a = 0
+        for x in id2rep_path_decode_ids[k]["input_a"] + [id2rep_path_decode_ids[k]["input_b"]]:
+            if x == -1:
+                tmp_a += 1
+
+        id2rep_path_decode_ids[k]["input_a"] = [x if x not in code_drop_set else -1 for x in v["input_a"]]
+        id2rep_path_decode_ids[k]["input_b"] = v["input_b"] if v["input_b"] not in code_drop_set else -1
+
+        tmp_b = 0
+        for x in id2rep_path_decode_ids[k]["input_a"] + [id2rep_path_decode_ids[k]["input_b"]]:
+            if x == -1:
+                tmp_b += 1
+
+        tmp += tmp_b - tmp_a
+
+    logger.info(f"Remove {tmp} long-tail codes.")
+    return id2rep_path_decode_ids
+
+
 class WikiPathDatasetRelGenerateV1(WikiPathDatasetV5):
-    def __init__(self, examples, raw_texts, id2rel_path_decode_id_file: str, rel_vocab: str):
+    def __init__(self, examples, raw_texts, id2rel_path_decode_id_file: str, rel_vocab: str, code_drop_threshold: int = 0,
+                 remove_cf_data_decoding: bool = False):
         super().__init__(examples, raw_texts)
 
-        self.id2rel_path_decode_ids = pickle.load(open(id2rel_path_decode_id_file, "rb"))
+        self.id2rel_path_decode_ids = filter_long_tail_clusters(pickle.load(open(id2rel_path_decode_id_file, "rb")), code_drop_threshold)
         rel_vocab = pickle.load(open(rel_vocab, "rb"))
         self.rel_vocab_size = len(set(list(rel_vocab.values())))
         self.eos_token_id = self.rel_vocab_size
         self.pad_token_id = self.rel_vocab_size + 1
+        self.remove_cf_data_decoding = remove_cf_data_decoding
 
     def __getitem__(self, index):
         item = super().__getitem__(index)
+
+        if self.remove_cf_data_decoding and "rep_ent_num" in item["example"]:
+            item["rel_labels"] = [-1]
+            return item
 
         example_id = item["example"]["orig_id"]
 
@@ -218,11 +304,14 @@ class WikiPathDatasetRelGenerateV1(WikiPathDatasetV5):
             path_decode_input_a = self.id2rel_path_decode_ids[example_id]["input_a"]
             path_decode_input_b = self.id2rel_path_decode_ids[example_id]["input_b"]
 
-            if path_decode_input_b == -1:
-                logger.info("Inconsistency checked.")
-                item["rel_labels"] = path_decode_input_a + [self.eos_token_id]  # as </s> token
-            else:
-                item["rel_labels"] = path_decode_input_a + [path_decode_input_b, self.eos_token_id]
+            # if path_decode_input_b == -1:
+            #     logger.info("Inconsistency checked.")
+            #     item["rel_labels"] = path_decode_input_a + [self.eos_token_id]  # as </s> token
+            # else:
+            item["rel_labels"] = path_decode_input_a + [path_decode_input_b, self.eos_token_id]
+
+            if -1 in item["rel_labels"]:
+                item["rel_labels"] = [-1]
         else:
             item["rel_labels"] = [-1]
 
@@ -255,6 +344,168 @@ class WikiPathDatasetRelGenerateV2(WikiPathDatasetV5):
                 rel_labels[op_id] = [-1]
 
         item["rel_labels"] = rel_labels
+
+        return item
+
+
+def parse_wiki_path_predictions(predictions, code_drop_threshold: int = 0):
+    indices = predictions["indices"]
+    codes = predictions["codes"]
+    codes = list(map(lambda x: x.item() if isinstance(x, torch.Tensor) else x, codes))
+
+    code_cnt = Counter(codes)
+    code_drop_set = set([code for code, code_num in code_cnt.items() if code_num <= code_drop_threshold])
+
+    results = {}
+    tmp = 0
+    for index, code in zip(indices, codes):
+        if code in code_drop_set:
+            code = -1
+            tmp += 1
+
+        example_id, sent_type, sent_id = index.split("-")
+
+        if example_id not in results:
+            results[example_id] = {
+                "path": {},
+                "pos": {}
+            }
+
+        results[example_id][sent_type][sent_id] = code
+    logger.info(f"Remove {tmp} long-tail codes.")
+    return results
+
+
+class WikiPathDatasetRelGenerateV3(WikiPathDatasetV5):
+    def __init__(self, examples, raw_texts, id2rel_path_decode_id_file: str, rel_vocab_size: int = None, rel_vocab: str = None,
+                 generative_order: bool = False, code_drop_threshold: int = 0, remove_cf_data_decoding: bool = False):
+        super().__init__(examples, raw_texts)
+
+        logger.info(f"{rel_vocab_size}\t{rel_vocab}\t{generative_order}\t{code_drop_threshold}\t{remove_cf_data_decoding}")
+
+        self.id2rel_path_decode_ids = parse_wiki_path_predictions(torch.load(id2rel_path_decode_id_file, map_location="cpu"),
+                                                                  code_drop_threshold=code_drop_threshold)
+        if rel_vocab is not None:
+            rel_vocab = torch.load(rel_vocab, map_location="cpu")
+            self.rel_vocab_size = len(rel_vocab)
+        else:
+            assert rel_vocab_size is not None and rel_vocab_size > 0
+            self.rel_vocab_size = rel_vocab_size
+        self.eos_token_id = self.rel_vocab_size
+        self.pad_token_id = self.rel_vocab_size + 1
+        self.generative_order = generative_order
+        self.remove_cf_data_decoding = remove_cf_data_decoding
+
+    def __getitem__(self, index):
+        item = super().__getitem__(index)
+
+        example_id = item["example"]["orig_id"]
+
+        if self.remove_cf_data_decoding and "rep_ent_num" in item["example"]:
+            item["rel_labels"] = [-1]
+            return item
+
+        if example_id in self.id2rel_path_decode_ids:
+            rel_labels = []
+            path_s_ids = item["example"]["path_s_ids"] if not self.generative_order else item["example"]["path_s_ids_order"]
+
+            for s_id in path_s_ids:
+                if str(s_id) not in self.id2rel_path_decode_ids[example_id]["path"]:
+                    rel_labels.append(-1)
+                else:
+                    rel_labels.append(self.id2rel_path_decode_ids[example_id]["path"][str(s_id)])
+
+            if str(item["example"]["pos_id"]) not in self.id2rel_path_decode_ids[example_id]["pos"]:
+                rel_labels.append(-1)
+            else:
+                rel_labels.append(self.id2rel_path_decode_ids[example_id]["pos"][str(item["example"]["pos_id"])])
+
+            rel_labels.append(self.eos_token_id)
+
+            if -1 in rel_labels:
+                item["rel_labels"] = [-1]
+            else:
+                item["rel_labels"] = rel_labels
+        else:
+            item["rel_labels"] = [-1]
+
+        return item
+
+
+def obtain_path_id_sequence(example, id2labels):
+    order = example["path_s_ids_order"]
+    example_id = example["orig_id"]
+    rel_labels = []
+
+    if example_id not in id2labels:
+        return [-1]
+
+    for s_id in order:
+        if str(s_id) not in id2labels[example_id]["path"]:
+            rel_labels.append(-1)
+        else:
+            rel_labels.append(id2labels[example_id]["path"][str(s_id)])
+
+    if str(example["pos_id"]) not in id2labels[example_id]["pos"]:
+        rel_labels.append(-1)
+    else:
+        rel_labels.append(id2labels[example_id]["pos"][str(example["pos_id"])])
+
+    if -1 in rel_labels:
+        rel_labels = [-1]
+    return rel_labels
+
+
+class WikiPathDatasetPatternPairVQVAE(WikiPathDatasetV5):
+    def __init__(self, examples, raw_texts, id2rel_path_decode_id_file: str):
+        super().__init__(examples, raw_texts)
+
+        self.id2exp = collections.defaultdict(list)
+        for exp_id, exp in enumerate(self.examples):
+            self.id2exp[exp["orig_id"]].append(exp_id)
+        self.exp_orig_id_set = set(list(self.id2exp.keys()))
+
+        self.id2rel_path_decode_ids = parse_wiki_path_predictions(torch.load(id2rel_path_decode_id_file, map_location="cpu"))
+
+        rel_path_groups = defaultdict(set)
+        for exp in self.examples:
+            exp_id = exp["orig_id"]
+            pattern = obtain_path_id_sequence(exp, self.id2rel_path_decode_ids)
+            if pattern[0] == -1:
+                continue
+            pattern = "\t".join(list(map(str, pattern)))
+            rel_path_groups[pattern].add(exp_id)
+
+        self.rel_path_groups = {}
+        cnt = 0
+        for pattern, pattern_group in rel_path_groups.items():
+            if len(pattern_group) > 1:
+                self.rel_path_groups[pattern] = list(pattern_group)
+                cnt += len(pattern_group)
+
+        self.rel_path_keys = list(self.rel_path_groups.keys())
+
+        logger.info(f"Number of Pattern groups: {len(self.rel_path_groups)}")
+        logger.info(f"Average number of examples per group: {cnt / len(self.rel_path_groups)}")
+
+    def __getitem__(self, index):
+        item = super().__getitem__(index)
+
+        if index < len(self.rel_path_keys):
+            key = self.rel_path_keys[index]
+        else:
+            # _idx = random.choice(list(range(len(self.rel_path_groups))))
+            key = random.choice(self.rel_path_keys)
+
+        pair_example_orig_ids = random.sample(self.rel_path_groups[key], k=2)
+        pair_example_q = self.examples[random.choice(self.id2exp[pair_example_orig_ids[0]])]
+        pair_example_k = self.examples[random.choice(self.id2exp[pair_example_orig_ids[1]])]
+        assert pair_example_q["orig_id"] in self.rel_path_groups[key]
+        assert pair_example_k["orig_id"] in self.rel_path_groups[key]
+
+        item["pair_q"] = pair_example_q
+        item["pair_group_id"] = key
+        item["pair_k"] = pair_example_k
 
         return item
 
@@ -934,6 +1185,216 @@ class WikiPathDatasetCollatorWithContextAndPairCompleteKMeans(WikiPathDatasetCol
         return res
 
 
+def sentence_spans_list_to_tensor(examples):
+    max_sent_num = max(map(lambda x: len(x["sentence_spans"]), examples))
+    max_sent_len = 0
+    for exp in examples:
+        max_sent_len = max(max_sent_len, max(map(lambda x: x[1] - x[0], exp["sentence_spans"])))
+
+    sent_token_index = torch.zeros(len(examples), max_sent_num, max_sent_len, dtype=torch.long)
+    sent_token_mask = torch.zeros(len(examples), max_sent_num, max_sent_len)
+    sent_index = []
+    for exp_id, exp in enumerate(examples):
+        assert len(exp["sentence_spans"]) == len(exp["rel_ids_input_order"]) or (exp["rel_ids_input_order"] == [-1])
+        for s_id, (s, e) in enumerate(exp["sentence_spans"]):
+            sent_token_index[exp_id, s_id, :(e - s)] = torch.arange(s, e, dtype=torch.long)
+            sent_token_mask[exp_id, s_id, :(e - s)] = 1
+            sent_index.append(exp_id * max_sent_num + s_id)
+
+    sent_index = torch.tensor(sent_index, dtype=torch.long)  # [batch_sent_num], used for torch.gather
+
+    return sent_token_index, sent_token_mask, sent_index
+
+
+class WikiPathDatasetCollatorWithContextAndPairCompleteKMeansLocal(WikiPathDatasetCollatorWithContextAndPairCompleteKMeans):
+    def __init__(self, max_seq_length: int, tokenizer: str, mlm_probability: float = 0.15, max_option_num: int = 4, swap: bool = False,
+                 option_dropout: float = 0.0, k_option_dropout: float = 0.0):
+        super().__init__(max_seq_length, tokenizer, mlm_probability, max_option_num, swap, option_dropout, k_option_dropout)
+
+    def previous_forward(self, batch):
+        input_a, input_b, texts = [], [], []
+        pair_q_a, pair_q_b, pair_k_a, pair_k_b, pair_group_ids = [], [], [], [], []
+        pair_q_orig_b, pair_k_orig_b = [], []
+        dropped_op_cnt = 0
+        for b in batch:
+            b_input_a, b_input_b, b_pair_q_a, b_pair_q_b, b_pair_k_a, b_pair_k_b, b_pair_group_id = self.prepare_single_example(b)
+
+            input_a.extend(b_input_a)
+            input_b.extend(b_input_b)
+
+            pair_q_a.append(b_pair_q_a)
+
+            _r = random.random()
+            if _r < self.option_dropout:
+                pair_q_b.append("")
+                dropped_op_cnt += 1
+            else:
+                pair_q_b.append(b_pair_q_b)
+            pair_q_orig_b.append(b_pair_q_b)
+
+            pair_k_a.append(b_pair_k_a)
+
+            _r = random.random()
+            if _r < self.k_option_dropout:
+                pair_k_b.append("")
+            else:
+                pair_k_b.append(b_pair_k_b)
+            pair_k_orig_b.append(b_pair_k_b)
+
+            pair_group_ids.append(b_pair_group_id)
+            texts.append(b["text"])
+
+        del batch
+        _tokenize_kwargs = {
+            "padding": PaddingStrategy.LONGEST,
+            "truncation": TruncationStrategy.LONGEST_FIRST,
+            "max_length": self.max_seq_length,
+            "return_tensors": "pt"
+        }
+
+        tokenizer_outputs = self.tokenizer(input_a, input_b, **_tokenize_kwargs)
+        input_ids = tokenizer_outputs["input_ids"]
+        attention_mask = tokenizer_outputs["attention_mask"]
+
+        pair_q_tokenizer_outputs = self.tokenizer(pair_q_a, pair_q_b, **_tokenize_kwargs)
+        pair_q_input_ids = pair_q_tokenizer_outputs["input_ids"]
+        pair_q_attention_mask = pair_q_tokenizer_outputs["attention_mask"]
+
+        pair_k_tokenizer_outputs = self.tokenizer(pair_k_a, pair_k_b, **_tokenize_kwargs)
+        pair_k_input_ids = pair_k_tokenizer_outputs["input_ids"]
+        pair_k_attention_mask = pair_k_tokenizer_outputs["attention_mask"]
+
+        # prepare pair labels and mask
+        pair_align_mask = []  # `1` for mask and `0` for true value.
+        pair_align_labels = []  # `-1` for non-pair examples.
+        for q_id, q_group_id in enumerate(pair_group_ids):
+            # pair dot product
+            pair_mask = []
+            for k_id, k_group_id in enumerate(pair_group_ids):
+                if q_id == k_id:
+                    assert q_group_id == k_group_id
+                    pair_mask.append(0)
+                else:
+                    if q_group_id == k_group_id:
+                        pair_mask.append(1)
+                    else:
+                        pair_mask.append(0)
+            if sum(pair_mask) + 1 == len(pair_group_ids):
+                pair_align_labels.append(-1)
+            else:
+                pair_align_labels.append(q_id)
+
+            pair_align_mask.append(pair_mask)
+
+        pair_align_mask = torch.tensor(pair_align_mask, dtype=torch.int)
+        pair_align_labels = torch.tensor(pair_align_labels, dtype=torch.long)
+        num_labels = (pair_align_labels > -1).sum()
+
+        mlm_tokenize_outputs = self.tokenizer(texts, **_tokenize_kwargs)
+        mlm_input_ids = mlm_tokenize_outputs["input_ids"]
+        mlm_attention_mask = mlm_tokenize_outputs["attention_mask"]
+
+        mlm_input_ids, mlm_labels = self.mask_tokens(mlm_input_ids)
+
+        batch_size = len(pair_q_input_ids)
+        option_num = self.max_option_num
+
+        res = {
+            "input_ids": input_ids.reshape(batch_size, option_num, -1),
+            "attention_mask": attention_mask.reshape(batch_size, option_num, -1),
+            "labels": torch.zeros(batch_size, dtype=torch.long),
+            "mlm_input_ids": mlm_input_ids,
+            "mlm_attention_mask": mlm_attention_mask,
+            "mlm_labels": mlm_labels,
+            "pair_q_input_ids": pair_q_input_ids,
+            "pair_q_attention_mask": pair_q_attention_mask,
+            "pair_k_input_ids": pair_k_input_ids,
+            "pair_k_attention_mask": pair_k_attention_mask,
+            "pair_mask": pair_align_mask,
+            "pair_labels": pair_align_labels,
+            "pair_label_num": num_labels,
+            "pair_value_num": (1 - pair_align_mask).sum(dim=-1)[pair_align_labels > -1].sum() / num_labels,
+            "dropped_op_cnt": torch.tensor([dropped_op_cnt]),
+        }
+        # if "token_type_ids" in tokenizer_outputs:
+        #     res["token_type_ids"] = tokenizer_outputs["token_type_ids"]
+
+        if self.option_dropout:
+            pair_q_orig_outputs = self.tokenizer(pair_q_a, pair_q_orig_b, **_tokenize_kwargs)
+            pair_q_orig_input_ids = pair_q_orig_outputs["input_ids"]
+            pair_q_orig_attention_mask = pair_q_orig_outputs["attention_mask"]
+            res["pair_q_orig_input_ids"] = pair_q_orig_input_ids
+            res["pair_q_orig_attention_mask"] = pair_q_orig_attention_mask
+
+        if self.k_option_dropout:
+            pair_k_orig_outputs = self.tokenizer(pair_k_a, pair_k_orig_b, **_tokenize_kwargs)
+            pair_k_orig_input_ids = pair_k_orig_outputs["input_ids"]
+            pair_k_orig_attention_mask = pair_k_orig_outputs["attention_mask"]
+            res["pair_k_orig_input_ids"] = pair_k_orig_input_ids
+            res["pair_k_orig_attention_mask"] = pair_k_orig_attention_mask
+
+        return res
+
+    def __call__(self, batch):
+        pair_q_examples = [b["pair_q"] for b in batch]
+        pair_k_examples = [b["pair_k"] for b in batch]
+
+        # batch, max_sent_num, max_sent_len
+        q_sent_token_index, q_sent_token_mask, q_sent_index = sentence_spans_list_to_tensor(pair_q_examples)
+        k_sent_token_index, k_sent_token_mask, k_sent_index = sentence_spans_list_to_tensor(pair_k_examples)
+
+        q_flat_rel_ids = []
+        for q_id, q_exp in enumerate(pair_q_examples):
+            q_flat_rel_ids.extend(q_exp["rel_ids_input_order"])
+        assert len(q_flat_rel_ids) == q_sent_index.size(0)
+
+        k_flat_rel_ids = []
+        for k_id, k_exp in enumerate(pair_k_examples):
+            k_flat_rel_ids.extend(k_exp["rel_ids_input_order"])
+        assert len(k_flat_rel_ids) == k_sent_index.size(0)
+
+        k_label2index = defaultdict(list)
+        k_flat_rel_ids_mask = torch.ones(len(k_flat_rel_ids))
+        for k_idx, k_rel_id in enumerate(k_flat_rel_ids):
+            if k_rel_id == -1:
+                k_flat_rel_ids_mask[k_idx] = 0
+                continue
+            k_label2index[k_rel_id].append(k_idx)
+
+        local_ctr_labels = []
+        local_ctr_score_mask = torch.ones(len(q_flat_rel_ids), len(k_flat_rel_ids))
+        for q_idx, q_rel_id in enumerate(q_flat_rel_ids):
+            local_ctr_score_mask[q_idx].copy_(k_flat_rel_ids_mask)
+
+            if q_rel_id == -1:
+                local_ctr_labels.append(-1)
+                continue
+
+            if q_rel_id not in k_label2index:
+                local_ctr_labels.append(-1)
+                continue
+
+            q_label = random.choice(k_label2index[q_rel_id])
+            for label_k_index in k_label2index[q_rel_id]:
+                if label_k_index != q_label:
+                    local_ctr_score_mask[q_idx, label_k_index] = 0
+            local_ctr_labels.append(q_label)
+        local_ctr_labels = torch.tensor(local_ctr_labels, dtype=torch.long)
+
+        results = self.previous_forward(batch)
+        results.update({
+            "q_sent_token_index": q_sent_token_index,
+            "q_sent_token_mask": q_sent_token_mask,
+            "q_sent_index": q_sent_index,
+            "k_sent_token_index": k_sent_token_index,
+            "k_sent_token_mask": k_sent_token_mask,
+            "k_sent_index": k_sent_index,
+            "local_ctr_labels": local_ctr_labels,
+            "local_ctr_mask": local_ctr_score_mask,
+        })
+        return results
+
+
 class WikiPathDatasetCollatorWithContextAndPairCompleteDropout(WikiPathDatasetCollator):
     def __init__(self, max_seq_length: int, tokenizer: str, mlm_probability: float = 0.15, max_option_num: int = 4, swap: bool = False,
                  q_option_dropout: float = 0.0, k_option_dropout: float = 0.0, k_context_dropout: float = 0.0, add_tagging: bool = False):
@@ -1510,11 +1971,12 @@ class WikiPathDatasetCollatorRelSeqGenV2(WikiPathDatasetCollatorWithContext):
             #                               b_decoder_inputs[len(batch[b]["example"]["original_orders"]):]
             #     b_decoder_inputs = rerank_b_decoder_inputs
             if b_decoder_inputs[0] != -1:
-                assert len(examples[b]["sent_order2edge_rank"]) == len(b_decoder_inputs) - 2, (
-                    examples[b]["sent_order2edge_rank"], b_decoder_inputs)
-                rerank_b_decoder_inputs = [b_decoder_inputs[edge_rank] for edge_rank in examples[b]["sent_order2edge_rank"]] + \
-                    b_decoder_inputs[len(examples[b]["sent_order2edge_rank"]):]
-                b_decoder_inputs = rerank_b_decoder_inputs
+                if "sent_order2edge_rank" in examples[b]:
+                    assert len(examples[b]["sent_order2edge_rank"]) == len(b_decoder_inputs) - 2, (
+                        examples[b]["sent_order2edge_rank"], b_decoder_inputs)
+                    rerank_b_decoder_inputs = [b_decoder_inputs[edge_rank] for edge_rank in examples[b]["sent_order2edge_rank"]] + \
+                                              b_decoder_inputs[len(examples[b]["sent_order2edge_rank"]):]
+                    b_decoder_inputs = rerank_b_decoder_inputs
 
                 decoder_input_ids[b, :len(b_decoder_inputs)] = torch.tensor(b_decoder_inputs, dtype=torch.long)
             else:
@@ -1593,10 +2055,7 @@ class WikiPathDatasetCollatorReconstruction(WikiPathDatasetCollatorWithContext):
             ent_token_ids = self.tokenizer.convert_tokens_to_ids(self.tokenizer.tokenize(ent_tuple[0]))
             input_ids.extend(ent_token_ids)
 
-
-
     def __call__(self, batch):
         ent_mentions = [b["example"]["ent_mentions"] for b in batch]
-
 
         return res

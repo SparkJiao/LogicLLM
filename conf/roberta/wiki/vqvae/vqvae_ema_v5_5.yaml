@@ -12,10 +12,9 @@ model:
   seq2seq_path: pretrained-models/bart-base
   quantizer:
     _target_: models.quantizer.CogViewEMAQuantizer
-    dim: 768
-    n_embed: 512
-    decay: 0.9
-    add_l2_norm: True
+    dim: 64
+    n_embed: 1024
+    decay: 0.99
   embedding_dim: ${model.quantizer.dim}
   input_type: "concat$1"
   z_to_decoder: True
@@ -57,24 +56,24 @@ do_preprocess: False
 model_name_or_path: pretrained-models/roberta-large
 pretrain:
 
-output_dir: experiments/roberta.large.bart.base.vqvae.ema.wiki_path.c${model.quantizer.n_embed}.v5.3.w4.lamb.NA100
+output_dir: experiments/roberta.large.bart.base.vqvae.ema.wiki_path.c${model.quantizer.n_embed}.v5.5.w4.lamb.NA100
 
 do_train: False
 evaluate_during_training: False
 
 do_eval: True
-eval_sub_path: checkpoint-50000
+eval_sub_path: checkpoint-60000
 
 # Training hyper-parameters
 per_gpu_train_batch_size: 128
 per_gpu_eval_batch_size: 256
 learning_rate: 5e-5
 gradient_accumulation_steps: 1
-weight_decay: 1e-4
+weight_decay: 1e-2
 adam_epsilon: 1e-6
 adam_betas: "(0.9, 0.98)"
 max_grad_norm: 5.0
-num_train_epochs: 20
+num_train_epochs: 30
 max_steps: 0
 warmup_proportion: 0.06
 warmup_steps: 0

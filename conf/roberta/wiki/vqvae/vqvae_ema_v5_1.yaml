@@ -58,11 +58,11 @@ pretrain:
 
 output_dir: experiments/roberta.large.bart.base.vqvae.ema.wiki_path.c${model.quantizer.n_embed}.v5.1.w8.lamb.RTXA6K
 
-do_train: True
+do_train: False
 evaluate_during_training: False
 
-do_eval: False
-eval_sub_path: checkpoint-25000
+do_eval: True
+eval_sub_path: checkpoint-55000
 
 # Training hyper-parameters
 per_gpu_train_batch_size: 64

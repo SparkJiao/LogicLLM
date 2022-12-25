@@ -12,9 +12,9 @@ from torch.distributions.geometric import Geometric
 from tqdm import tqdm
 from transformers import PreTrainedTokenizer
 
-from data.collators.wiki import WikiPathDatasetV6wPatternPair, WikiPathDatasetV6wPatternPairFull, WikiPathDatasetRelGenerateV1, \
-    WikiPathDatasetV6wPatternPairsKMeans, WikiPathDatasetV5
-from data.data_utils import get_all_permutation
+from data.collators.wiki import WikiPathDatasetV6wPatternPair, WikiPathDatasetPatternPairVQVAE, WikiPathDatasetRelGenerateV3, \
+    WikiPathDatasetPatternPairKMeansLocal
+from data.data_utils import get_all_permutation, get_sep_tokens
 from general_util.logger import get_child_logger
 
 """
@@ -33,9 +33,13 @@ Version 8.2:
     1.  Add hyper-parameters to control how much negative samples of each category to be involved in.
 Version 9.0:
     1.  Add random sentences into context as noise.
+Version split:
+    1.  Don't combine the sentences together.
+Version VQVAE:
+    1. Add the index of positive candidate and path sentences.
 """
 
-logger = get_child_logger("Wiki.Entity.Path.V9.1")
+logger = get_child_logger("Wiki.Entity.Path.V9.1.split.vqvae")
 
 _entity_pool: Dict
 _negative_pool: Dict
@@ -240,25 +244,6 @@ def pos2str(ent_s, ent_e, tokens):
     return " ".join(tokens[ent_s: ent_e])
 
 
-# def sample_entity(pool, src_id, k):
-#     all_data_id_ls = list(pool.keys())
-#
-#     res = []
-#     pool_vis = set()
-#     for _ in range(k):
-#         pool_id = random.choice(all_data_id_ls)
-#         while pool_id == src_id:
-#             pool_id = random.choice(all_data_id_ls)
-#
-#         pool_vis.add(pool_id)
-#
-#         entity_ls = list(pool[pool_id].values())  # all entities, each one contains a list of all positions.
-#         entity = random.choice(entity_ls)  # sample an entity.
-#         entity_str = random.choice(entity)  # sample an position (mention).
-#         res.append(entity_str)
-#     return res
-
-
 def sample_entity(pool, path_ent_ids, k):
     all_ent_id_ls = list(pool.keys())
 
@@ -334,9 +319,12 @@ def insert_sentences(orig_sentences: List[str], new_sentences: List[str], shuffl
     return res
 
 
-def add_noise_sentence(num: int, item: Dict, orig_sentences: List[str], rep_pairs: Dict[int, str] = None, shuffle: bool = False) -> str:
+def add_noise_sentence(num: int, item: Dict, orig_sentences: List[str], rep_pairs: Dict[int, str] = None,
+                       shuffle: bool = False) -> List[str]:
+    assert num == 0, num
     if num == 0:
-        return " ".join(orig_sentences)
+        # return " ".join(orig_sentences)
+        return orig_sentences
 
     noise_src_sent = sample_context_sentence(num, item)
     noise_tgt_sent = random.sample(list(item["selected_sentences"].values()), num)
@@ -348,7 +336,27 @@ def add_noise_sentence(num: int, item: Dict, orig_sentences: List[str], rep_pair
             noise_sent.append(_res[0])
 
     noise_ctx = insert_sentences(orig_sentences, noise_sent, shuffle=shuffle)
-    return " ".join(noise_ctx)
+    # return " ".join(noise_ctx)
+    return noise_ctx
+
+
+def extract_replaced_path_entity(sent, rep_pairs: Dict[int, str] = None):
+    ent_str_ls = []
+    h_id = sent["h"]
+    t_id = sent["t"]
+    if rep_pairs is not None and h_id in rep_pairs:
+        ent_str_ls.append(rep_pairs[h_id])
+    else:
+        ent_str_ls.append(get_ent_str(sent, h_id))
+
+    if rep_pairs is not None and t_id in rep_pairs:
+        ent_str_ls.append(rep_pairs[t_id])
+    else:
+        ent_str_ls.append(get_ent_str(sent, t_id))
+
+    assert len(ent_str_ls) == 2, (sent, rep_pairs)
+
+    return ent_str_ls
 
 
 def _initializer(entity_pool: Dict, negative_pool: Dict, all_neg_candidates: Dict, all_path_sentences: Dict,
@@ -369,6 +377,28 @@ def _initializer(entity_pool: Dict, negative_pool: Dict, all_neg_candidates: Dic
     MAX_NEG_SAMPLE_NUM = max_neg_samples_num
 
 
+def get_s_id2edge_rank(path):
+    s_id2edge_rank = {}
+    rel_cnt = 0
+    for i, item in enumerate(path):
+        if i == 0:
+            assert item[1] == -1
+            continue
+        s_id2edge_rank[item[1]] = rel_cnt
+        rel_cnt += 1
+    return s_id2edge_rank
+
+
+def extract_path_sent_follow_order(example):
+    path = example["path"]
+    rel_s_ids = []
+    for i, item in enumerate(path):
+        if i == 0:
+            continue
+        rel_s_ids.append(item[1])
+    return rel_s_ids
+
+
 def _process_single_item(item, max_neg_num: int, aug_num: int, min_rep_num: int, shuffle_context: bool,
                          deduct_ratio: float = 1.0, context_ratio: float = 1.0, noise_sent_ratio: float = 0.5,
                          remove_deduct: bool = False, remove_context: bool = False):
@@ -386,6 +416,10 @@ def _process_single_item(item, max_neg_num: int, aug_num: int, min_rep_num: int,
     path_sent2rep = [(s_id, s) for s_id, s in selected_sentences.items() if s["h"] != -1 and s["t"] != -1]
 
     neg_candidates = [x for x in item["rest_sentences"].values() if len(x["ent"]) > 1]
+
+    sent_order2s_id = [s_id for s_id in selected_sentences.keys()]
+
+    rel_s_ids_order = extract_path_sent_follow_order(item)
 
     for pos_idx, pos_candi in enumerate(item["pos"]):
         # Statistics
@@ -430,17 +464,25 @@ def _process_single_item(item, max_neg_num: int, aug_num: int, min_rep_num: int,
 
         assert len(neg_res) >= max_neg_num
 
+        path_ent_str_ls = []
+        for s_id in rel_s_ids_order:
+            path_ent_str_ls.append(extract_replaced_path_entity(selected_sentences[s_id]))
+        path_ent_str_ls.append(extract_replaced_path_entity(pos_candi))
+
         _r = random.random()
         if not remove_deduct and _r < deduct_ratio:
             examples.append({
-                # "context": context,
                 "context": add_noise_sentence(num=noise_sent_num, item=item, orig_sentences=orig_sentences, rep_pairs=None, shuffle=True),
                 "negative": random.sample(neg_res, max_neg_num),
                 "positive": " ".join(pos_candi["sent"]),
                 "orig_id": item["id"],
                 "pos_aug_num": _pos_aug,
                 "res_aug_num": _res_aug,
-                "sim_aug_num": _sim_aug
+                "sim_aug_num": _sim_aug,
+                "path_s_ids": sent_order2s_id,
+                "path_s_ids_order": rel_s_ids_order,
+                "pos_id": pos_idx,
+                "ent_mentions": path_ent_str_ls,
             })
 
         # ============= context replaced-based examples ==================== #
@@ -464,11 +506,6 @@ def _process_single_item(item, max_neg_num: int, aug_num: int, min_rep_num: int,
                     _ctx_pos_aug += _left_num
                 else:
                     _ctx_res_aug += _left_num
-
-            # Comment the following code to generate more examples based on the original context.
-            # if len(neg_ctx_sent) >= MAX_NEG_SAMPLE_NUM:
-            #     neg_ctx_sent = neg_ctx_sent[:MAX_NEG_SAMPLE_NUM]
-            #     break
 
         while len(neg_ctx_sent) < MAX_NEG_SAMPLE_NUM:
             neg_data_item_id = random.choice(list(_all_neg_candidates.keys()))
@@ -498,15 +535,17 @@ def _process_single_item(item, max_neg_num: int, aug_num: int, min_rep_num: int,
             ]
 
             context_examples.append({
-                # "context": context,
                 "context": add_noise_sentence(num=noise_sent_num, item=item, orig_sentences=orig_sentences, rep_pairs=None, shuffle=True),
                 "condition": " ".join(pos_candi["sent"]),
-                # "negative_context": [rep_context_sent(selected_sentences, _neg_sent[0], _neg_sent[1]) for _neg_sent in neg_ctx_sent],
                 "negative_context": negative_noise_context,
                 "orig_id": item["id"],
                 "pos_aug_num": _ctx_pos_aug,
                 "res_aug_num": _ctx_res_aug,
-                "sim_aug_num": _ctx_sim_aug
+                "sim_aug_num": _ctx_sim_aug,
+                "path_s_ids": sent_order2s_id,
+                "path_s_ids_order": rel_s_ids_order,
+                "pos_id": pos_idx,
+                "ent_mentions": path_ent_str_ls,
             })
 
     # Augment the context
@@ -582,9 +621,14 @@ def _process_single_item(item, max_neg_num: int, aug_num: int, min_rep_num: int,
 
             # TODO: Should other entities in ``sampled_rep_paris`` be replaced with the entity strings from the same negative sample item?
 
-            new_sentences = []
-            for _, sent in selected_sentences.items():
-                new_sentences.append(_replace_entities_w_str(sent, _cur_aug_rep_pairs))
+            new_sentences = {}
+            for s_id, sent in selected_sentences.items():
+                new_sentences[s_id] = _replace_entities_w_str(sent, _cur_aug_rep_pairs)
+
+            path_ent_str_ls = []
+            for s_id in rel_s_ids_order:
+                path_ent_str_ls.append(extract_replaced_path_entity(selected_sentences[s_id], _cur_aug_rep_pairs))
+            path_ent_str_ls.append(extract_replaced_path_entity(pos_candi, _cur_aug_rep_pairs))
 
             new_pos_candi_sent = _replace_entities_w_str(pos_candi, _cur_aug_rep_pairs)
 
@@ -658,8 +702,11 @@ def _process_single_item(item, max_neg_num: int, aug_num: int, min_rep_num: int,
             neg_res = random.sample(neg_res, max_neg_num)
 
             if shuffle_context:
+                new_sentences = list(new_sentences.items())
                 random.shuffle(new_sentences)
-            # new_context = " ".join(new_sentences)
+                shuffled_s_ids, new_sentences = list(zip(*new_sentences))
+            else:
+                shuffled_s_ids, new_sentences = list(zip(*list(new_sentences.items())))
 
             new_context = add_noise_sentence(noise_sent_num, item, new_sentences, rep_pairs=_cur_aug_rep_pairs, shuffle=True)
 
@@ -674,7 +721,11 @@ def _process_single_item(item, max_neg_num: int, aug_num: int, min_rep_num: int,
                     "pos_aug_num": _pos_aug,
                     "res_aug_num": _res_aug,
                     "sim_aug_num": _sim_aug,
-                    "rep_ent_num": _sampled_ent_num
+                    "rep_ent_num": _sampled_ent_num,
+                    "path_s_ids": shuffled_s_ids,
+                    "path_s_ids_order": rel_s_ids_order,
+                    "pos_id": pos_idx,
+                    "ent_mentions": path_ent_str_ls,
                 })
 
             # ============= context replaced-based examples ==================== #
@@ -759,9 +810,12 @@ def _process_single_item(item, max_neg_num: int, aug_num: int, min_rep_num: int,
                 negative_context.append(add_noise_sentence(noise_sent_num, item, _new_context_sentences, rep_pairs=_cur_aug_rep_pairs,
                                                            shuffle=True))
 
-            new_sentences = list(new_sentences.values())
+            new_sentences = list(new_sentences.items())
             if shuffle_context:
                 random.shuffle(new_sentences)
+                shuffled_s_ids, new_sentences = list(zip(*new_sentences))
+            else:
+                shuffled_s_ids, new_sentences = list(zip(*new_sentences))
             # new_context = " ".join(new_sentences)
             new_context = add_noise_sentence(noise_sent_num, item, new_sentences, rep_pairs=_cur_aug_rep_pairs, shuffle=True)
 
@@ -776,7 +830,11 @@ def _process_single_item(item, max_neg_num: int, aug_num: int, min_rep_num: int,
                     "sim_aug_num": _ctx_sim_aug,
                     "h": _cur_aug_rep_pairs[h_t_ent_ids[0]] if h_t_ent_ids[0] in _cur_aug_rep_pairs else _h_str,
                     "t": _cur_aug_rep_pairs[h_t_ent_ids[1]] if h_t_ent_ids[1] in _cur_aug_rep_pairs else _t_str,
-                    "rep_ent_num": _sampled_ent_num
+                    "rep_ent_num": _sampled_ent_num,
+                    "path_s_ids": shuffled_s_ids,
+                    "path_s_ids_order": rel_s_ids_order,
+                    "pos_id": pos_idx,
+                    "ent_mentions": path_ent_str_ls,
                 })
 
     return examples, context_examples
@@ -933,30 +991,140 @@ def length_filter_init(tokenizer: PreTrainedTokenizer):
     _tokenizer = tokenizer
 
 
+def add_special_tokens_to_sentence(sentences: List[str]):
+    context = _tokenizer.sep_token.join(sentences)  # <s> s1 </s> s2 </s> s3 </s></s> s4 </s>
+    return context
+
+
 def length_filter(sample, max_seq_length: int):
+    sample["context"] = add_special_tokens_to_sentence(sample["context"])
+
     if "negative_context" in sample:
+        sample["negative_context"] = [add_special_tokens_to_sentence(neg_ctx) for neg_ctx in sample["negative_context"]]
         tokens_b = _tokenizer.tokenize(sample["condition"])
         for ctx in sample["negative_context"] + [sample["context"]]:
             tokens_a = _tokenizer.tokenize(ctx)
             tokens = _tokenizer.build_inputs_with_special_tokens(tokens_a, tokens_b)
             if len(tokens) > max_seq_length:
-                return False
+                return False, sample
     else:
         tokens_a = _tokenizer.tokenize(sample["context"])
         for option in sample["negative"] + [sample["positive"]]:
             tokens_b = _tokenizer.tokenize(option)
             tokens = _tokenizer.build_inputs_with_special_tokens(tokens_a, tokens_b)
             if len(tokens) > max_seq_length:
-                return False
-    return True
+                return False, sample
+    return True, sample
 
 
-def convert_examples_into_features_ctr(file_path: str, tokenizer: PreTrainedTokenizer,
-                                       shuffle_context: bool = False, max_neg_num: int = 3, aug_num: int = 10,
-                                       max_seq_length: int = 512, geo_p: float = 0.5, min_rep_num: int = 1,
-                                       deduct_ratio: float = 1.0, context_ratio: float = 1.0, noise_sent_ratio: float = 0.5,
-                                       remove_deduct: bool = False, remove_context: bool = False,
-                                       max_neg_samples_num: int = 8, num_workers=48):
+def obtain_sentence_spans(sentences_a: List[str], sentences_b: List[str]):
+    tokens = [_tokenizer.cls_token]
+    sentence_spans = []
+
+    for s_id, sent in enumerate(sentences_a):
+        if s_id > 0:
+            sent = " " + sent
+        s = len(tokens)
+        tokens.extend(_tokenizer.tokenize(sent))
+        e = len(tokens)
+        sentence_spans.append((s, e))
+
+    tokens.extend(get_sep_tokens(_tokenizer))
+
+    for s_id, sent in enumerate(sentences_b):
+        if s_id > 0:
+            sent = " " + sent
+        s = len(tokens)
+        tokens.extend(_tokenizer.tokenize(sent))
+        e = len(tokens)
+        sentence_spans.append((s, e))
+
+    return sentence_spans
+
+
+def length_filter_w_sentence_spans_only_pos(sample, max_seq_length: int):
+    if "negative_context" in sample:
+        sentence_spans = obtain_sentence_spans(sample["context"], [sample["condition"]])
+    else:
+        sentence_spans = obtain_sentence_spans(sample["context"], [sample["positive"]])
+    sample["sentence_spans"] = sentence_spans
+
+    sample["context"] = " ".join(sample["context"])
+
+    if "negative_context" in sample:
+        sample["negative_context"] = [" ".join(neg_ctx) for neg_ctx in sample["negative_context"]]
+        tokens_b = _tokenizer.tokenize(sample["condition"])
+        for ctx in sample["negative_context"] + [sample["context"]]:
+            tokens_a = _tokenizer.tokenize(ctx)
+            tokens = _tokenizer.build_inputs_with_special_tokens(tokens_a, tokens_b)
+            if len(tokens) > max_seq_length:
+                return False, sample
+    else:
+        tokens_a = _tokenizer.tokenize(sample["context"])
+        for option in sample["negative"] + [sample["positive"]]:
+            tokens_b = _tokenizer.tokenize(option)
+            tokens = _tokenizer.build_inputs_with_special_tokens(tokens_a, tokens_b)
+            if len(tokens) > max_seq_length:
+                return False, sample
+    return True, sample
+
+
+# def convert_examples_into_features(file_path: str, tokenizer: PreTrainedTokenizer, pattern_pair_file: str,
+#                                    shuffle_context: bool = False, max_neg_num: int = 3, aug_num: int = 10,
+#                                    max_seq_length: int = 512, geo_p: float = 0.5, min_rep_num: int = 1,
+#                                    deduct_ratio: float = 1.0, context_ratio: float = 1.0, noise_sent_ratio: float = 0.5,
+#                                    remove_deduct: bool = False, remove_context: bool = False,
+#                                    max_neg_samples_num: int = 8, num_workers=48,
+#                                    add_cf_pair_data: bool = True):
+#     tokenizer_name = tokenizer.__class__.__name__
+#     tokenizer_name = tokenizer_name.replace('TokenizerFast', '')
+#     tokenizer_name = tokenizer_name.replace('Tokenizer', '').lower()
+#
+#     file_suffix = f"{tokenizer_name}_{shuffle_context}_{max_neg_num}_{aug_num}_" \
+#                   f"{max_seq_length}_{geo_p}_{min_rep_num}_" \
+#                   f"{deduct_ratio}_{context_ratio}_{noise_sent_ratio}_{max_neg_samples_num}_" \
+#                   f"{'' if not remove_context else 'no-ctx-ex_'}{'' if not remove_deduct else 'no-duc-ex_'}path_v9.1_split"
+#
+#     cached_file_path = f"{file_path}_{file_suffix}"
+#     if os.path.exists(cached_file_path):
+#         logger.info(f"Loading cached file from {cached_file_path}")
+#         all_examples, raw_texts = torch.load(cached_file_path)
+#         dataset = WikiPathDatasetV6wPatternPair(all_examples, raw_texts, pattern_pair_file, add_cf_pair_data=add_cf_pair_data)
+#         return dataset
+#
+#     examples, context_examples, raw_texts = read_examples(file_path, shuffle_context=shuffle_context, max_neg_num=max_neg_num,
+#                                                           aug_num=aug_num, geo_p=geo_p, min_rep_num=min_rep_num,
+#                                                           deduct_ratio=deduct_ratio, context_ratio=context_ratio,
+#                                                           noise_sent_ratio=noise_sent_ratio,
+#                                                           remove_deduct=remove_deduct, remove_context=remove_context,
+#                                                           max_neg_samples_num=max_neg_samples_num,
+#                                                           num_workers=num_workers)
+#     with Pool(num_workers, initializer=length_filter_init, initargs=(tokenizer,)) as p:
+#         _annotate = partial(length_filter, max_seq_length=max_seq_length)
+#         results = list(tqdm(
+#             p.imap(_annotate, examples + context_examples, chunksize=32),
+#             total=(len(examples) + len(context_examples)),
+#             desc="filtering examples by length",
+#         ))
+#     all_examples = []
+#     for flag, exp in results:
+#         if flag:
+#             all_examples.append(exp)
+#
+#     # Save
+#     logger.info(f"Saving processed features into {cached_file_path}.")
+#     torch.save((all_examples, raw_texts), cached_file_path)
+#
+#     return WikiPathDatasetV6wPatternPair(all_examples, raw_texts, pattern_pair_file, add_cf_pair_data=add_cf_pair_data)
+#
+#
+def convert_examples_into_features_v3_pair(file_path: str, tokenizer: PreTrainedTokenizer, id2rel_path_decode_id_file: str,
+                                           shuffle_context: bool = False, max_neg_num: int = 3, aug_num: int = 10,
+                                           max_seq_length: int = 512, geo_p: float = 0.5, min_rep_num: int = 1,
+                                           deduct_ratio: float = 1.0, context_ratio: float = 1.0, noise_sent_ratio: float = 0.5,
+                                           remove_deduct: bool = False, remove_context: bool = False,
+                                           max_neg_samples_num: int = 8, num_workers=48,
+                                           ):
     tokenizer_name = tokenizer.__class__.__name__
     tokenizer_name = tokenizer_name.replace('TokenizerFast', '')
     tokenizer_name = tokenizer_name.replace('Tokenizer', '').lower()
@@ -964,13 +1132,13 @@ def convert_examples_into_features_ctr(file_path: str, tokenizer: PreTrainedToke
     file_suffix = f"{tokenizer_name}_{shuffle_context}_{max_neg_num}_{aug_num}_" \
                   f"{max_seq_length}_{geo_p}_{min_rep_num}_" \
                   f"{deduct_ratio}_{context_ratio}_{noise_sent_ratio}_{max_neg_samples_num}_" \
-                  f"{'' if not remove_context else 'no-ctx-ex_'}{'' if not remove_deduct else 'no-duc-ex_'}path_v9.1"
+                  f"{'' if not remove_context else 'no-ctx-ex_'}{'' if not remove_deduct else 'no-duc-ex_'}path_v9.1_split_vqvae_v3"
 
     cached_file_path = f"{file_path}_{file_suffix}"
     if os.path.exists(cached_file_path):
         logger.info(f"Loading cached file from {cached_file_path}")
         all_examples, raw_texts = torch.load(cached_file_path)
-        dataset = WikiPathDatasetV5(all_examples, raw_texts)
+        dataset = WikiPathDatasetPatternPairVQVAE(all_examples, raw_texts, id2rel_path_decode_id_file)
         return dataset
 
     examples, context_examples, raw_texts = read_examples(file_path, shuffle_context=shuffle_context, max_neg_num=max_neg_num,
@@ -980,16 +1148,15 @@ def convert_examples_into_features_ctr(file_path: str, tokenizer: PreTrainedToke
                                                           remove_deduct=remove_deduct, remove_context=remove_context,
                                                           max_neg_samples_num=max_neg_samples_num,
                                                           num_workers=num_workers)
-
     with Pool(num_workers, initializer=length_filter_init, initargs=(tokenizer,)) as p:
-        _annotate = partial(length_filter, max_seq_length=max_seq_length)
-        flags = list(tqdm(
+        _annotate = partial(length_filter_w_sentence_spans_only_pos, max_seq_length=max_seq_length)
+        results = list(tqdm(
             p.imap(_annotate, examples + context_examples, chunksize=32),
             total=(len(examples) + len(context_examples)),
             desc="filtering examples by length",
         ))
     all_examples = []
-    for flag, exp in zip(flags, examples + context_examples):
+    for flag, exp in results:
         if flag:
             all_examples.append(exp)
 
@@ -997,103 +1164,16 @@ def convert_examples_into_features_ctr(file_path: str, tokenizer: PreTrainedToke
     logger.info(f"Saving processed features into {cached_file_path}.")
     torch.save((all_examples, raw_texts), cached_file_path)
 
-    return WikiPathDatasetV5(all_examples, raw_texts)
+    return WikiPathDatasetPatternPairVQVAE(all_examples, raw_texts, id2rel_path_decode_id_file)
 
 
-def convert_examples_into_features(file_path: str, tokenizer: PreTrainedTokenizer, pattern_pair_file: str,
-                                   shuffle_context: bool = False, max_neg_num: int = 3, aug_num: int = 10,
-                                   max_seq_length: int = 512, geo_p: float = 0.5, min_rep_num: int = 1,
-                                   deduct_ratio: float = 1.0, context_ratio: float = 1.0, noise_sent_ratio: float = 0.5,
-                                   remove_deduct: bool = False, remove_context: bool = False,
-                                   max_neg_samples_num: int = 8, num_workers=48,
-                                   add_cf_pair_data: bool = True):
-    tokenizer_name = tokenizer.__class__.__name__
-    tokenizer_name = tokenizer_name.replace('TokenizerFast', '')
-    tokenizer_name = tokenizer_name.replace('Tokenizer', '').lower()
-
-    file_suffix = f"{tokenizer_name}_{shuffle_context}_{max_neg_num}_{aug_num}_" \
-                  f"{max_seq_length}_{geo_p}_{min_rep_num}_" \
-                  f"{deduct_ratio}_{context_ratio}_{noise_sent_ratio}_{max_neg_samples_num}_" \
-                  f"{'' if not remove_context else 'no-ctx-ex_'}{'' if not remove_deduct else 'no-duc-ex_'}path_v9.1"
-
-    cached_file_path = f"{file_path}_{file_suffix}"
-    if os.path.exists(cached_file_path):
-        logger.info(f"Loading cached file from {cached_file_path}")
-        all_examples, raw_texts = torch.load(cached_file_path)
-        dataset = WikiPathDatasetV6wPatternPair(all_examples, raw_texts, pattern_pair_file, add_cf_pair_data=add_cf_pair_data)
-        return dataset
-
-    examples, context_examples, raw_texts = read_examples(file_path, shuffle_context=shuffle_context, max_neg_num=max_neg_num,
-                                                          aug_num=aug_num, geo_p=geo_p, min_rep_num=min_rep_num,
-                                                          deduct_ratio=deduct_ratio, context_ratio=context_ratio,
-                                                          noise_sent_ratio=noise_sent_ratio,
-                                                          remove_deduct=remove_deduct, remove_context=remove_context,
-                                                          max_neg_samples_num=max_neg_samples_num,
-                                                          num_workers=num_workers)
-    all_examples = examples + context_examples
-
-    # Save
-    logger.info(f"Saving processed features into {cached_file_path}.")
-    torch.save((all_examples, raw_texts), cached_file_path)
-
-    return WikiPathDatasetV6wPatternPair(all_examples, raw_texts, pattern_pair_file, add_cf_pair_data=add_cf_pair_data)
-
-
-def convert_examples_into_features_v2(file_path: str, tokenizer: PreTrainedTokenizer, pattern_pair_file: str,
+def convert_examples_into_features_v3(file_path: str, tokenizer: PreTrainedTokenizer, id2rel_path_decode_id_file: str,
                                       shuffle_context: bool = False, max_neg_num: int = 3, aug_num: int = 10,
                                       max_seq_length: int = 512, geo_p: float = 0.5, min_rep_num: int = 1,
                                       deduct_ratio: float = 1.0, context_ratio: float = 1.0, noise_sent_ratio: float = 0.5,
                                       remove_deduct: bool = False, remove_context: bool = False,
-                                      max_neg_samples_num: int = 8, num_workers=48):
-    tokenizer_name = tokenizer.__class__.__name__
-    tokenizer_name = tokenizer_name.replace('TokenizerFast', '')
-    tokenizer_name = tokenizer_name.replace('Tokenizer', '').lower()
-
-    file_suffix = f"{tokenizer_name}_{shuffle_context}_{max_neg_num}_{aug_num}_" \
-                  f"{max_seq_length}_{geo_p}_{min_rep_num}_" \
-                  f"{deduct_ratio}_{context_ratio}_{noise_sent_ratio}_{max_neg_samples_num}_" \
-                  f"{'' if not remove_context else 'no-ctx-ex_'}{'' if not remove_deduct else 'no-duc-ex_'}path_v9.1"
-
-    cached_file_path = f"{file_path}_{file_suffix}"
-    if os.path.exists(cached_file_path):
-        logger.info(f"Loading cached file from {cached_file_path}")
-        all_examples, raw_texts = torch.load(cached_file_path)
-        dataset = WikiPathDatasetV6wPatternPairFull(all_examples, raw_texts, pattern_pair_file)
-        return dataset
-
-    examples, context_examples, raw_texts = read_examples(file_path, shuffle_context=shuffle_context, max_neg_num=max_neg_num,
-                                                          aug_num=aug_num, geo_p=geo_p, min_rep_num=min_rep_num,
-                                                          deduct_ratio=deduct_ratio, context_ratio=context_ratio,
-                                                          noise_sent_ratio=noise_sent_ratio,
-                                                          remove_deduct=remove_deduct, remove_context=remove_context,
-                                                          max_neg_samples_num=max_neg_samples_num,
-                                                          num_workers=num_workers)
-    with Pool(num_workers, initializer=length_filter_init, initargs=(tokenizer,)) as p:
-        _annotate = partial(length_filter, max_seq_length=max_seq_length)
-        flags = list(tqdm(
-            p.imap(_annotate, examples + context_examples, chunksize=32),
-            total=(len(examples) + len(context_examples)),
-            desc="filtering examples by length",
-        ))
-    all_examples = []
-    for flag, exp in zip(flags, examples + context_examples):
-        if flag:
-            all_examples.append(exp)
-
-    # Save
-    logger.info(f"Saving processed features into {cached_file_path}.")
-    torch.save((all_examples, raw_texts), cached_file_path)
-
-    return WikiPathDatasetV6wPatternPairFull(all_examples, raw_texts, pattern_pair_file)
-
-
-def convert_examples_into_features_v3(file_path: str, tokenizer: PreTrainedTokenizer, id2rel_path_decode_id_file: str, rel_vocab: str,
-                                      shuffle_context: bool = False, max_neg_num: int = 3, aug_num: int = 10,
-                                      max_seq_length: int = 512, geo_p: float = 0.5, min_rep_num: int = 1,
-                                      deduct_ratio: float = 1.0, context_ratio: float = 1.0, noise_sent_ratio: float = 0.5,
-                                      remove_deduct: bool = False, remove_context: bool = False,
-                                      max_neg_samples_num: int = 8, num_workers=48, code_drop_threshold: int = 0,
-                                      remove_cf_data_decoding: bool = False
+                                      max_neg_samples_num: int = 8, num_workers=48,
+                                      generative_order: bool = False, rel_vocab: str = None, rel_vocab_size: int = None,
                                       ):
     tokenizer_name = tokenizer.__class__.__name__
     tokenizer_name = tokenizer_name.replace('TokenizerFast', '')
@@ -1102,14 +1182,14 @@ def convert_examples_into_features_v3(file_path: str, tokenizer: PreTrainedToken
     file_suffix = f"{tokenizer_name}_{shuffle_context}_{max_neg_num}_{aug_num}_" \
                   f"{max_seq_length}_{geo_p}_{min_rep_num}_" \
                   f"{deduct_ratio}_{context_ratio}_{noise_sent_ratio}_{max_neg_samples_num}_" \
-                  f"{'' if not remove_context else 'no-ctx-ex_'}{'' if not remove_deduct else 'no-duc-ex_'}path_v9.1"
+                  f"{'' if not remove_context else 'no-ctx-ex_'}{'' if not remove_deduct else 'no-duc-ex_'}path_v9.1_split_vqvae_v3"
 
     cached_file_path = f"{file_path}_{file_suffix}"
     if os.path.exists(cached_file_path):
         logger.info(f"Loading cached file from {cached_file_path}")
         all_examples, raw_texts = torch.load(cached_file_path)
-        dataset = WikiPathDatasetRelGenerateV1(all_examples, raw_texts, id2rel_path_decode_id_file, rel_vocab, code_drop_threshold,
-                                               remove_cf_data_decoding)
+        dataset = WikiPathDatasetRelGenerateV3(all_examples, raw_texts, id2rel_path_decode_id_file, rel_vocab_size, rel_vocab,
+                                               generative_order)
         return dataset
 
     examples, context_examples, raw_texts = read_examples(file_path, shuffle_context=shuffle_context, max_neg_num=max_neg_num,
@@ -1120,14 +1200,14 @@ def convert_examples_into_features_v3(file_path: str, tokenizer: PreTrainedToken
                                                           max_neg_samples_num=max_neg_samples_num,
                                                           num_workers=num_workers)
     with Pool(num_workers, initializer=length_filter_init, initargs=(tokenizer,)) as p:
-        _annotate = partial(length_filter, max_seq_length=max_seq_length)
-        flags = list(tqdm(
+        _annotate = partial(length_filter_w_sentence_spans_only_pos, max_seq_length=max_seq_length)
+        results = list(tqdm(
             p.imap(_annotate, examples + context_examples, chunksize=32),
             total=(len(examples) + len(context_examples)),
             desc="filtering examples by length",
         ))
     all_examples = []
-    for flag, exp in zip(flags, examples + context_examples):
+    for flag, exp in results:
         if flag:
             all_examples.append(exp)
 
@@ -1135,16 +1215,18 @@ def convert_examples_into_features_v3(file_path: str, tokenizer: PreTrainedToken
     logger.info(f"Saving processed features into {cached_file_path}.")
     torch.save((all_examples, raw_texts), cached_file_path)
 
-    return WikiPathDatasetRelGenerateV1(all_examples, raw_texts, id2rel_path_decode_id_file, rel_vocab, code_drop_threshold,
-                                        remove_cf_data_decoding)
+    return WikiPathDatasetRelGenerateV3(all_examples, raw_texts, id2rel_path_decode_id_file, rel_vocab_size, rel_vocab, generative_order)
 
 
-def convert_examples_into_features_v4(file_path: str, tokenizer: PreTrainedTokenizer, rel_path_set_file: str,
-                                      shuffle_context: bool = False, max_neg_num: int = 3, aug_num: int = 10,
-                                      max_seq_length: int = 512, geo_p: float = 0.5, min_rep_num: int = 1,
-                                      deduct_ratio: float = 1.0, context_ratio: float = 1.0, noise_sent_ratio: float = 0.5,
-                                      remove_deduct: bool = False, remove_context: bool = False,
-                                      max_neg_samples_num: int = 8, num_workers=48):
+def convert_examples_into_features_v3_ent(file_path: str, tokenizer: PreTrainedTokenizer, id2rel_path_decode_id_file: str,
+                                          shuffle_context: bool = False, max_neg_num: int = 3, aug_num: int = 10,
+                                          max_seq_length: int = 512, geo_p: float = 0.5, min_rep_num: int = 1,
+                                          deduct_ratio: float = 1.0, context_ratio: float = 1.0, noise_sent_ratio: float = 0.5,
+                                          remove_deduct: bool = False, remove_context: bool = False,
+                                          max_neg_samples_num: int = 8, num_workers=48,
+                                          generative_order: bool = False, rel_vocab: str = None, rel_vocab_size: int = None,
+                                          code_drop_threshold: int = 0, remove_cf_data_decoding: bool = False,
+                                          ):
     tokenizer_name = tokenizer.__class__.__name__
     tokenizer_name = tokenizer_name.replace('TokenizerFast', '')
     tokenizer_name = tokenizer_name.replace('Tokenizer', '').lower()
@@ -1152,13 +1234,14 @@ def convert_examples_into_features_v4(file_path: str, tokenizer: PreTrainedToken
     file_suffix = f"{tokenizer_name}_{shuffle_context}_{max_neg_num}_{aug_num}_" \
                   f"{max_seq_length}_{geo_p}_{min_rep_num}_" \
                   f"{deduct_ratio}_{context_ratio}_{noise_sent_ratio}_{max_neg_samples_num}_" \
-                  f"{'' if not remove_context else 'no-ctx-ex_'}{'' if not remove_deduct else 'no-duc-ex_'}path_v9.1"
+                  f"{'' if not remove_context else 'no-ctx-ex_'}{'' if not remove_deduct else 'no-duc-ex_'}path_v9.1_split_vqvae_v3_ent"
 
     cached_file_path = f"{file_path}_{file_suffix}"
     if os.path.exists(cached_file_path):
         logger.info(f"Loading cached file from {cached_file_path}")
         all_examples, raw_texts = torch.load(cached_file_path)
-        dataset = WikiPathDatasetV6wPatternPairsKMeans(all_examples, raw_texts, rel_path_set_file)
+        dataset = WikiPathDatasetRelGenerateV3(all_examples, raw_texts, id2rel_path_decode_id_file, rel_vocab_size, rel_vocab,
+                                               generative_order, code_drop_threshold, remove_cf_data_decoding)
         return dataset
 
     examples, context_examples, raw_texts = read_examples(file_path, shuffle_context=shuffle_context, max_neg_num=max_neg_num,
@@ -1169,14 +1252,14 @@ def convert_examples_into_features_v4(file_path: str, tokenizer: PreTrainedToken
                                                           max_neg_samples_num=max_neg_samples_num,
                                                           num_workers=num_workers)
     with Pool(num_workers, initializer=length_filter_init, initargs=(tokenizer,)) as p:
-        _annotate = partial(length_filter, max_seq_length=max_seq_length)
-        flags = list(tqdm(
+        _annotate = partial(length_filter_w_sentence_spans_only_pos, max_seq_length=max_seq_length)
+        results = list(tqdm(
             p.imap(_annotate, examples + context_examples, chunksize=32),
             total=(len(examples) + len(context_examples)),
             desc="filtering examples by length",
         ))
     all_examples = []
-    for flag, exp in zip(flags, examples + context_examples):
+    for flag, exp in results:
         if flag:
             all_examples.append(exp)
 
@@ -1184,7 +1267,61 @@ def convert_examples_into_features_v4(file_path: str, tokenizer: PreTrainedToken
     logger.info(f"Saving processed features into {cached_file_path}.")
     torch.save((all_examples, raw_texts), cached_file_path)
 
-    return WikiPathDatasetV6wPatternPairsKMeans(all_examples, raw_texts, rel_path_set_file)
+    return WikiPathDatasetRelGenerateV3(all_examples, raw_texts, id2rel_path_decode_id_file, rel_vocab_size, rel_vocab, generative_order,
+                                        code_drop_threshold, remove_cf_data_decoding)
+
+
+def convert_examples_into_features_v3_ent_local_pair(file_path: str, tokenizer: PreTrainedTokenizer, id2rel_path_decode_id_file: str,
+                                                     shuffle_context: bool = False, max_neg_num: int = 3, aug_num: int = 10,
+                                                     max_seq_length: int = 512, geo_p: float = 0.5, min_rep_num: int = 1,
+                                                     deduct_ratio: float = 1.0, context_ratio: float = 1.0, noise_sent_ratio: float = 0.5,
+                                                     remove_deduct: bool = False, remove_context: bool = False,
+                                                     max_neg_samples_num: int = 8, num_workers=48,
+                                                     rel_path_set_file: str = None,
+                                                     code_drop_threshold: int = 0,
+                                                     ):
+    tokenizer_name = tokenizer.__class__.__name__
+    tokenizer_name = tokenizer_name.replace('TokenizerFast', '')
+    tokenizer_name = tokenizer_name.replace('Tokenizer', '').lower()
+
+    file_suffix = f"{tokenizer_name}_{shuffle_context}_{max_neg_num}_{aug_num}_" \
+                  f"{max_seq_length}_{geo_p}_{min_rep_num}_" \
+                  f"{deduct_ratio}_{context_ratio}_{noise_sent_ratio}_{max_neg_samples_num}_" \
+                  f"{'' if not remove_context else 'no-ctx-ex_'}{'' if not remove_deduct else 'no-duc-ex_'}path_v9.1_split_vqvae_v3_ent"
+
+    cached_file_path = f"{file_path}_{file_suffix}"
+    if os.path.exists(cached_file_path):
+        logger.info(f"Loading cached file from {cached_file_path}")
+        all_examples, raw_texts = torch.load(cached_file_path)
+        dataset = WikiPathDatasetPatternPairKMeansLocal(all_examples, raw_texts, rel_path_set_file, id2rel_path_decode_id_file,
+                                                        code_drop_threshold)
+        return dataset
+
+    examples, context_examples, raw_texts = read_examples(file_path, shuffle_context=shuffle_context, max_neg_num=max_neg_num,
+                                                          aug_num=aug_num, geo_p=geo_p, min_rep_num=min_rep_num,
+                                                          deduct_ratio=deduct_ratio, context_ratio=context_ratio,
+                                                          noise_sent_ratio=noise_sent_ratio,
+                                                          remove_deduct=remove_deduct, remove_context=remove_context,
+                                                          max_neg_samples_num=max_neg_samples_num,
+                                                          num_workers=num_workers)
+    with Pool(num_workers, initializer=length_filter_init, initargs=(tokenizer,)) as p:
+        _annotate = partial(length_filter_w_sentence_spans_only_pos, max_seq_length=max_seq_length)
+        results = list(tqdm(
+            p.imap(_annotate, examples + context_examples, chunksize=32),
+            total=(len(examples) + len(context_examples)),
+            desc="filtering examples by length",
+        ))
+    all_examples = []
+    for flag, exp in results:
+        if flag:
+            all_examples.append(exp)
+
+    # Save
+    logger.info(f"Saving processed features into {cached_file_path}.")
+    torch.save((all_examples, raw_texts), cached_file_path)
+
+    return WikiPathDatasetPatternPairKMeansLocal(all_examples, raw_texts, rel_path_set_file, id2rel_path_decode_id_file,
+                                                 code_drop_threshold)
 
 
 def _quick_loading(file_path: str, pattern_pair_file: str, **kwargs):
