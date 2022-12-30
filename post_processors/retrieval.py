@@ -1,5 +1,6 @@
 import collections
 from typing import List, Union, Tuple, Dict, Any
+import os
 
 import torch
 
@@ -70,3 +71,38 @@ class MERItRetrieval(DistGatherMixin):
             k: sorted(v, key=lambda x: x[0], reverse=True) for k, v in self.scores_list.items()
         }
         return {}, sorted_index
+
+
+class MERItPairRetrieval(DistGatherMixin):
+    def __init__(self, output_file_name: str):
+        self.output_file_name = output_file_name
+        self.indices = []
+        self.hidden_states = []
+
+    def __call__(self, meta_data, batch_model_outputs: Dict[str, Any], ddp: bool = False):
+        indices = meta_data["index"]
+        hidden_states = batch_model_outputs["retrieval_hidden_states"].detach().cpu()
+
+        if ddp:
+            obj = [indices, hidden_states]
+            gather_res = self.gather_object(obj)
+            if dist.get_rank() == 0:
+                _indices, _hidden_states = [], []
+                for item in gather_res:
+                    _indices.extend(item[0])
+                    _hidden_states.append(item[1])
+                indices = _indices
+                hidden_states = torch.cat(_hidden_states, dim=0)
+
+        self.indices.extend(indices)
+        self.hidden_states.append(hidden_states)
+
+    def get_result(self, output_dir: str):
+        output_file = os.path.join(output_dir, self.output_file_name)
+
+        hidden_states = torch.cat(self.hidden_states, dim=0)
+        torch.save({
+            "hidden_states": hidden_states,
+            "indices": self.indices,
+        }, output_file)
+        return {}

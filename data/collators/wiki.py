@@ -29,8 +29,8 @@ class WikiPathDatasetV5(Dataset):
                 _aligned_texts.extend(raw_texts[:])
         assert len(_aligned_texts) == len(self.examples)
 
-        cnt = Counter(list(map(lambda x: len(x["negative"]) if "negative" in x else len(x["negative_context"]), examples)))
-        assert len(cnt) == 1, cnt
+        # cnt = Counter(list(map(lambda x: len(x["negative"]) if "negative" in x else len(x["negative_context"]), examples)))
+        # assert len(cnt) == 1, cnt
 
         self.raw_texts = _aligned_texts
 

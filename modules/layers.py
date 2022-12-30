@@ -49,6 +49,34 @@ def get_accuracy(logits: Tensor, labels: Tensor, pad_id: int = -1):
     return acc, true_label_num
 
 
+def get_precision_recall(logits: Tensor, labels: Tensor, pad_id: int = -1, positive_id: int = 1):
+    assert logits.size()[:-1] == labels.size()
+
+    _, pred = logits.max(dim=-1)
+    true_label_num = (labels != pad_id).sum().item()
+
+    tp = ((pred == labels) & (labels == positive_id)).sum(dim=1)
+
+    if true_label_num == 0:
+        return 0., 0.
+
+    masked_pred = pred.masked_fill(labels == pad_id, 0)
+    tp_fp = (masked_pred == positive_id).sum(dim=1)
+    precision = tp / tp_fp
+    precision.masked_fill_(tp_fp == 0, 0)
+    precision = precision.mean().item()
+    # precision = (tp / (masked_pred == 1).sum(dim=1)).mean().item()
+
+    masked_labels = labels.masked_fill(labels == pad_id, 0)
+    # recall = (tp / (masked_labels == 1).sum(dim=1)).mean().item()
+    tp_fn = (masked_labels == positive_id).sum(dim=1)
+    recall = tp / tp_fn
+    recall.masked_fill_(tp_fn == 0, 0)
+    recall = recall.mean().item()
+
+    return precision, recall, labels.size(0)
+
+
 def freeze_module(module: torch.nn.Module):
     for param in module.parameters():
         param.requires_grad = False

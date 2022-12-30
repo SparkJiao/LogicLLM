@@ -2,6 +2,8 @@ import json
 from torch.utils.data import Dataset
 from transformers import AutoTokenizer, PreTrainedTokenizer
 from transformers.tokenization_utils import PaddingStrategy, TruncationStrategy
+from data.data_utils import tokenizer_get_name, get_sep_tokens, get_unused_tokens
+from torch.utils.data import default_collate
 
 
 def read_reclor_raw_data(file: str):
@@ -19,6 +21,27 @@ def read_reclor_raw_data(file: str):
             all_answer.append(sample["answers"][sample["label"]])
 
     return all_context, all_question, all_answer, all_id
+
+
+def read_reclor_raw_data_w_options(file_path):
+    data = json.load(open(file_path, 'r'))
+
+    all_context = []
+    all_question = []
+    all_option_list = []
+    all_label = []
+    all_id = []
+    for sample in data:
+        all_context.append(sample["context"])
+        all_question.append(sample["question"])
+        if "label" not in sample:
+            all_label.append(-1)
+        else:
+            all_label.append(sample["label"])
+        all_option_list.append(sample["answers"])
+        all_id.append(sample["id_string"])
+
+    return all_context, all_question, all_option_list, all_label, all_id
 
 
 class ReClorIndexDataset(Dataset):
@@ -84,3 +107,45 @@ class ReClorIndexCollator:
         return model_inputs
 
 
+class ReClorPairRepresentationDataset(Dataset):
+    def __init__(self, file_path: str, tokenizer: PreTrainedTokenizer, max_seq_length: int, use_answer: bool = False):
+        super().__init__()
+
+        context, question, option_list, labels, id_list = read_reclor_raw_data_w_options(file_path)
+
+        inputs_a = []
+        inputs_b = []
+        indices = []
+
+        if use_answer:
+            for c, q, op_ls, label, sample_id in zip(context, question, option_list, labels, id_list):
+                inputs_a.append(c)
+                inputs_b.append(q + ' '.join(get_sep_tokens(tokenizer)) + op_ls[label])
+                indices.append(f"{sample_id}")
+        else:
+            for c, q, op_ls, sample_id in zip(context, question, option_list, id_list):
+                for op_id, op in enumerate(op_ls):
+                    inputs_a.append(c)
+                    inputs_b.append(q + ' '.join(get_sep_tokens(tokenizer)) + op)
+                    indices.append(f"{sample_id}_op{op_id}")
+
+        model_inputs = tokenizer(inputs_a,
+                                 text_pair=inputs_b,
+                                 max_length=max_seq_length,
+                                 padding=PaddingStrategy.LONGEST,
+                                 truncation=TruncationStrategy.LONGEST_FIRST,
+                                 return_tensors="pt")
+
+        self.model_inputs = model_inputs
+        self.indices = indices
+
+    def __len__(self):
+        assert len(self.model_inputs["input_ids"]) == len(self.indices)
+        return len(self.indices)
+
+    def __getitem__(self, index):
+        res = {k: v[index] for k, v in self.model_inputs.items()}
+        res["meta_data"] = {
+            "index": self.indices[index]
+        }
+        return res
