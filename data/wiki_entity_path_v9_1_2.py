@@ -1320,6 +1320,12 @@ def length_filter_w_sentence_h_t_spans(sample, max_seq_length: int):
         if len(per_tokens) > max_seq_length:
             return False, None
 
+    for op_id, op_tokens in enumerate(ctx_tokens):
+        if op_id == 0:
+            continue
+        op_string = _tokenizer.convert_tokens_to_string(op_tokens)
+        ctx_tokens[op_id] = op_string
+
     assert len(ctx_tokens) == 4
 
     sample["tokens"] = ctx_tokens
@@ -1358,7 +1364,18 @@ def convert_examples_into_features(file_path: str, tokenizer: PreTrainedTokenize
         logger.info(f"Loading cached file from {cached_file_path}")
         all_examples, raw_texts = torch.load(cached_file_path)
 
+        # if isinstance(all_examples[0]["tokens"][1], list):
+        #     for sample in tqdm(all_examples, total=len(all_examples)):
+        #         ctx_tokens = sample["tokens"]
+        #         for op_id, op_tokens in enumerate(ctx_tokens):
+        #             if op_id == 0:
+        #                 continue
+        #             op_string = tokenizer.convert_tokens_to_string(op_tokens)
+        #             ctx_tokens[op_id] = op_string
+        #     torch.save((all_examples, raw_texts), cached_file_path)
+
         dataset = WikiPathDatasetRelGenerateV1(all_examples, raw_texts, id2rel_path_decode_id_file, rel_vocab)
+
         return dataset
 
     examples, context_examples, raw_texts = read_examples(file_path, shuffle_context=shuffle_context, max_neg_num=max_neg_num,

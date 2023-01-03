@@ -8,13 +8,20 @@ from transformers.tokenization_utils import BatchEncoding
 
 
 class DictTensorDataset(Dataset):
-    def __init__(self, data: Union[Dict[str, Tensor], BatchEncoding], meta_data: List[Dict[str, Any]] = None):
+    def __init__(self, data: Union[Dict[str, Tensor], BatchEncoding],
+                 meta_data: Union[List[Dict[str, Any]], Dict[str, List[Any]]] = None):
         self.data = data
         self.meta_data = meta_data
         self.keys = list(self.data.keys())
         for v in self.data.values():
             if meta_data is not None:
-                assert len(v) == len(meta_data)
+                if isinstance(meta_data, list):
+                    assert len(v) == len(meta_data)
+                elif isinstance(meta_data, dict):
+                    for meta_v in meta_data.values():
+                        assert len(v) == len(meta_v)
+                else:
+                    raise RuntimeError()
             else:
                 assert len(v) == self.data[self.keys[0]].size(0)
 
@@ -24,7 +31,10 @@ class DictTensorDataset(Dataset):
     def __getitem__(self, idx):
         res = {k: v[idx] for k, v in self.data.items()}
         if self.meta_data is not None:
-            res["meta_data"] = self.meta_data[idx]
+            if isinstance(self.meta_data, list):
+                res["meta_data"] = self.meta_data[idx]
+            elif isinstance(self.meta_data, dict):
+                res["meta_data"] = {k: v[idx] for k, v in self.meta_data.items()}
         if "index" not in res or "index" not in res["meta_data"]:
             res["index"] = torch.LongTensor([idx])
         return res

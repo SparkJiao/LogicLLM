@@ -58,7 +58,15 @@ class WikiPathTokensDatasetCollator:
         texts = [b["text"] for b in batch]
 
         option_num = len(examples[0]["tokens"])
-        max_seq_length = max(map(lambda x: max(map(len, x["tokens"])), examples))
+        max_seq_length = 0
+        for exp in examples:
+            for op_id, op in enumerate(exp["tokens"]):
+                if isinstance(op, str):
+                    assert op_id > 0
+                    exp["tokens"][op_id] = self.tokenizer.tokenize(op)
+                max_seq_length = max(max_seq_length, len(exp["tokens"][op_id]))
+
+        # max_seq_length = max(map(lambda x: max(map(len, x["tokens"])), examples))
         assert max_seq_length <= self.max_seq_length, max_seq_length
         input_ids = torch.zeros(len(examples), option_num, max_seq_length, dtype=torch.long).fill_(self.tokenizer.pad_token_id)
         attention_mask = torch.zeros(len(examples), option_num, max_seq_length, dtype=torch.long)
@@ -67,20 +75,20 @@ class WikiPathTokensDatasetCollator:
                 input_ids[exp_id, op_id, :len(op_tokens)] = torch.tensor(self.tokenizer.convert_tokens_to_ids(op_tokens), dtype=torch.long)
                 attention_mask[exp_id, op_id, :len(op_tokens)] = 1
 
-        # TODO: Add sentence spans conversion.
-
         max_sent_num = 0
+        max_sent_len = 0
         for exp in examples:
             max_sent_num = max(max_sent_num, len(exp["h_spans"][0]))  # [batch_size, option_num, sent_num, span_num]
+            max_sent_len = max(max_sent_len, max(map(lambda x: x[1] - x[0], exp["sentence_spans"][0])))
 
+        sent_token_index = torch.zeros(len(examples), max_sent_num, max_sent_len, dtype=torch.long)
+        sent_token_mask = torch.zeros(len(examples), max_sent_num, max_sent_len)
         tagging_labels = torch.zeros(len(examples), max_seq_length, dtype=torch.long)
         h_span_marks = torch.zeros(len(examples), max_sent_num, max_seq_length)
         t_span_marks = torch.zeros(len(examples), max_sent_num, max_seq_length)
         entity_pair_mask = torch.zeros(len(examples), max_sent_num)
         for exp_id, exp in enumerate(examples):
             for sent_id, sent_h_spans in enumerate(exp["h_spans"][0]):
-                # FIXME: Some positive examples have no head-tail entity spans. Check it out.
-                # assert len(sent_h_spans) >= 1, (sent_id, exp["h_spans"][0])
                 token_num = 0
 
                 for span in sent_h_spans:
@@ -110,7 +118,12 @@ class WikiPathTokensDatasetCollator:
                 else:
                     entity_pair_mask[exp_id, sent_id] = 1
 
-            assert len(exp["t_spans"][0]) == len(exp["h_spans"][0])
+            for sent_id, sent_span in enumerate(exp["sentence_spans"][0]):
+                _sent_len = sent_span[1] - sent_span[0]
+                sent_token_index[exp_id, sent_id, :_sent_len] = torch.arange(sent_span[0], sent_span[1], dtype=torch.long)
+                sent_token_mask[exp_id, sent_id, :_sent_len] = 1
+
+            assert len(exp["t_spans"][0]) == len(exp["h_spans"][0]) == len(exp["sentence_spans"][0])
 
         tagging_labels[input_ids[:, 0] == self.tokenizer.pad_token_id] = -1
 
@@ -129,6 +142,8 @@ class WikiPathTokensDatasetCollator:
             "tagging_labels": tagging_labels,
             "h_span_marks": h_span_marks,
             "t_span_marks": t_span_marks,
+            "sent_token_index": sent_token_index,
+            "sent_token_mask": sent_token_mask,
             "mlm_input_ids": mlm_input_ids,
             "mlm_attention_mask": mlm_attention_mask,
             "mlm_labels": mlm_labels,

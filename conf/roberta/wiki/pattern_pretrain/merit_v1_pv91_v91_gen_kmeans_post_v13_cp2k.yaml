@@ -3,7 +3,6 @@ hydra:
     dir: ./
 
 train_file: wiki_erica_path/v9.1/train_distant.path_v9.1.train.re_id.pkl
-#train_file: wiki_erica_path/v9.1/train_distant.path_v9.1.dev.shuffle.re_id.pkl
 dev_file: wiki_erica_path/v9.1/train_distant.path_v9.1.dev.shuffle.re_id.pkl
 test_file:
 
@@ -14,6 +13,8 @@ model:
   mlp_hidden_size: 2048
   mlm_alpha: 1.0
   rel_emb_weights: wiki_erica_path/v9.1/edge_rel_train_0_cluster_1000_s42.pt
+  hidden_dropout_prob: 0.2
+  attention_probs_dropout_prob: 0.2
 #  tagging_coff: 2.0
 #  rel_gen_coff: 0.0
 #  tagging_coff: 0.0
@@ -70,10 +71,8 @@ do_preprocess: False
 model_name_or_path: pretrained-models/roberta-large
 pretrain:
 
-#output_dir: experiments/roberta.large.wiki_erica_path_v9.1_v9.1.gen.kmeans.post.c1000.v1.1.1aug.seq512.w4.lamb.500steps.NA100
-output_dir: experiments/roberta.large.wiki_erica_path_v9.1_v9.1.gen.kmeans.post.c1000.v1.1.1aug.seq512.w8.lamb.500steps.RTXA6K
-#output_dir: experiments/roberta.large.wiki_erica_path_v9.1_v9.1.gen.kmeans.post.c1000.v1.2.1aug.seq512.w4.lamb.500steps.NA100
-#output_dir: experiments/roberta.large.wiki_erica_path_v9.1_v9.1.gen.kmeans.post.c1000.v1.3.1aug.seq512.w4.lamb.500steps.NA100
+output_dir: experiments/roberta.large.wiki_erica_path_v9.1_v9.1.gen.kmeans.post.c1000.v1.3.1aug.seq512.w4.lamb.2k_steps.RTXA6K
+
 
 do_train: True
 evaluate_during_training: True
@@ -91,7 +90,7 @@ adam_epsilon: 1e-6
 adam_betas: "(0.9, 0.98)"
 max_grad_norm: 5.0
 num_train_epochs: 10
-max_steps: 500
+max_steps: 2000
 warmup_proportion: 0.1
 warmup_steps: 0
 

@@ -623,8 +623,10 @@ def attentive_pooling(linear_layer, sentence_hidden: Tensor, sent_token_index: T
                                          batch, sent_num * sent_len, h
                                      )).reshape(batch, sent_num, sent_len, h)
     sent_token_scores = linear_layer(sent_token_hidden).squeeze(-1)
-    sent_token_scores = (1 - sent_token_mask) * torch.finfo(sentence_hidden.dtype).min + sent_token_scores
-    sent_hidden = torch.einsum("bst,bsth->bsh", torch.softmax(sent_token_scores, dim=2), sent_token_hidden)
+    # sent_token_scores = (1 - sent_token_mask) * torch.finfo(sentence_hidden.dtype).min + sent_token_scores
+    sent_token_scores = (1 - sent_token_mask) * -10000.0 + sent_token_scores
+    alpha = torch.softmax(sent_token_scores, dim=2)
+    sent_hidden = torch.einsum("bst,bsth->bsh", alpha, sent_token_hidden)
     if sent_index is not None:
         sent_hidden = torch.index_select(sent_hidden.reshape(batch * sent_num, h), dim=0, index=sent_index)
     return sent_hidden
