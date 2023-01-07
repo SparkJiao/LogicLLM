@@ -2,7 +2,7 @@ import copy
 import pickle
 from abc import ABC
 from dataclasses import dataclass
-from typing import Union
+from typing import Union, Dict
 
 import torch
 import transformers
@@ -239,6 +239,10 @@ class RobertaForMultipleChoicePreTrainTaggerV1(RobertaForMultipleChoiceForPreTra
         )
 
 
+def extract_seq_hidden(tf_outputs: Dict, layer_idx: int):
+    return tf_outputs["hidden_states"][layer_idx]
+
+
 class RobertaForMultipleChoicePreTrainTaggerV2(RobertaForMultipleChoicePreTrainTaggerV1, ABC):
     def __init__(self, config: RobertaConfig,
                  rel_vocab: str = None,
@@ -252,12 +256,17 @@ class RobertaForMultipleChoicePreTrainTaggerV2(RobertaForMultipleChoicePreTrainT
                  rel_emb_weights: Union[str, torch.Tensor] = None,
                  rel_gen_coff: float = 1.0,
                  tagging_coff: float = 1.0,
-                 s_rel_gen_coff: float = 1.0):
+                 s_rel_gen_coff: float = 1.0,
+                 cls_coff: float = 1.0,
+                 token_prediction_layer: int = -1,
+                 prior_prediction_layer: int = -1):
         super().__init__(config, rel_vocab, rel_vocab_size, mlp_hidden_size, mlm_alpha, mlm_disabled,
                          fs_checkpoint, fs_checkpoint_offload_to_cpu, fs_checkpoint_start_layer_id,
-                         rel_emb_weights, rel_gen_coff, tagging_coff)
+                         rel_emb_weights, rel_gen_coff, tagging_coff, token_prediction_layer)
 
+        self.cls_coff = cls_coff
         self.s_rel_gen_coff = s_rel_gen_coff
+        self.prior_prediction_layer = prior_prediction_layer
 
         self.sent_attn_pooler = nn.Linear(config.hidden_size, 1)
         self._init_weights(self.sent_attn_pooler)
@@ -299,6 +308,7 @@ class RobertaForMultipleChoicePreTrainTaggerV2(RobertaForMultipleChoicePreTrainT
             :obj:`input_ids` above)
         """
         return_dict = return_dict if return_dict is not None else self.config.use_return_dict
+        output_hidden_states = True
         batch_size, num_choices, seq_len = input_ids.size()
 
         input_ids = self.fold_tensor(input_ids)
@@ -318,7 +328,8 @@ class RobertaForMultipleChoicePreTrainTaggerV2(RobertaForMultipleChoicePreTrainT
         logits = self.cls(self.dropout(self.pooler(pooled_output)))
         reshaped_logits = logits.view(-1, num_choices)
 
-        seq_hidden = self.dropout(outputs[0].reshape(batch_size, num_choices, seq_len, -1)[:, 0])
+        seq_hidden = extract_seq_hidden(outputs, self.token_prediction_layer).reshape(batch_size, num_choices, seq_len, -1)[:, 0]
+        seq_hidden = self.dropout(seq_hidden)
 
         tagging_logits = self.tagger(seq_hidden)
 
@@ -327,12 +338,12 @@ class RobertaForMultipleChoicePreTrainTaggerV2(RobertaForMultipleChoicePreTrainT
         rel_inputs = torch.cat([h_hidden, t_hidden], dim=-1)
         sent_rel_logits = self.rel_decoder(rel_inputs)
 
+        if self.prior_prediction_layer != self.token_prediction_layer:
+            seq_hidden = extract_seq_hidden(outputs, self.prior_prediction_layer).reshape(batch_size, num_choices, seq_len, -1)[:, 0]
+            seq_hidden = self.dropout(seq_hidden)
+
         s_rel_inputs = attentive_pooling(self.sent_attn_pooler, seq_hidden, sent_token_index, sent_token_mask)
         s_sent_rel_logits = self.s_rel_decoder(s_rel_inputs)
-
-        # debug = torch.isnan(s_rel_inputs)
-        # if torch.any(debug):
-        #     print(debug.tolist())
 
         loss = 0.
         mlm_loss = 0.
@@ -342,7 +353,7 @@ class RobertaForMultipleChoicePreTrainTaggerV2(RobertaForMultipleChoicePreTrainT
         tagging_loss = 0.
         if labels is not None:
             loss_fct = CrossEntropyLoss(ignore_index=-1)
-            cls_loss = loss_fct(reshaped_logits, labels)
+            cls_loss = self.cls_coff * loss_fct(reshaped_logits, labels)
             loss = loss + cls_loss
 
             if mlm_labels is not None and (self.mlm_disabled is False or self.training is False):

@@ -210,43 +210,12 @@ class WikiPathDatasetCollatorRelSeqGenV1(WikiPathTokensDatasetCollator):
 
         decoder_input_ids, invalid = transform_rel_label_to_tensor(rel_decode)
 
-        # dropped_op_cnt = 0
-        # if self.option_dropout > 0:
-        #     examples = [b["example"] for b in batch]
-        #     inputs_a = []
-        #     inputs_b = []
-        #     for exp in examples:
-        #         inputs_a.append(exp["context"])
-        #
-        #         _r = random.random()
-        #         if _r < self.option_dropout:
-        #             inputs_b.append("")
-        #             dropped_op_cnt += 1
-        #             continue
-        #
-        #         if "negative_context" in exp:
-        #             op = exp["condition"]
-        #         else:
-        #             op = exp["positive"]
-        #         inputs_b.append(op)
-        #     assert len(inputs_a) == len(inputs_b)
-        #     dropout_res = self.tokenizer(inputs_a, inputs_b, padding=PaddingStrategy.LONGEST,
-        #                                  truncation=TruncationStrategy.LONGEST_FIRST, max_length=self.max_seq_length,
-        #                                  return_tensors="pt")
-        # else:
-        #     dropout_res = None
-
         res = super().__call__(batch)
         res["rel_labels"] = decoder_input_ids
         res["invalid_path"] = invalid
-        # res["dropped_op_cnt"] = dropped_op_cnt
-        # if dropout_res is not None:
-        #     for k, v in dropout_res.items():
-        #         res[f"{k}_dropout"] = v
-        #         assert v.size(0) == decoder_input_ids.size(0)
 
         if self.gen_only:
-            res["input_ids"] = res["input_ids"][:, 0]
-            res["attention_mask"] = res["attention_mask"][:, 0]
+            res["input_ids"] = res["input_ids"][:, :1]  # To avoid further modification on model level.
+            res["attention_mask"] = res["attention_mask"][:, :1]
 
         return res
