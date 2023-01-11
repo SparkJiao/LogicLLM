@@ -101,8 +101,9 @@ class WikiPathTokensDatasetCollator:
                 else:
                     entity_pair_mask[exp_id, sent_id] = 1
 
-            assert len(exp["h_spans"][0]) == len(batch[exp_id]["rel_labels"]) - 1 or batch[exp_id]["rel_labels"] == [-1], (
-                exp["h_spans"][0], batch[exp_id]["rel_labels"])
+            if "rel_labels" in batch[exp_id]:
+                assert len(exp["h_spans"][0]) == len(batch[exp_id]["rel_labels"]) - 1 or batch[exp_id]["rel_labels"] == [-1], (
+                    exp["h_spans"][0], batch[exp_id]["rel_labels"])
 
             for sent_id, sent_t_spans in enumerate(exp["t_spans"][0]):
                 token_num = 0

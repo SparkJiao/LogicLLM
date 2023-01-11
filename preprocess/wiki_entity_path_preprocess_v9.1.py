@@ -261,8 +261,11 @@ def workflow(sample):
                     "all_sentences": sentences,
                     "id": sample_id,
                 })
-                ent_pair_vis.update((h, t))
-                ent_pair_vis.update((t, h))
+                # FIXME: 这里不是`update`，应该是`add`，这样会导致有至少一半的重复样本
+                # ent_pair_vis.update((h, t))
+                # ent_pair_vis.update((t, h))
+                ent_pair_vis.add((h, t))
+                ent_pair_vis.add((t, h))
 
     return examples
 
@@ -291,7 +294,8 @@ if __name__ == '__main__':
     if args.output_dir and not os.path.exists(args.output_dir):
         os.makedirs(args.output_dir)
 
-    for _file in input_files:
+    all_examples_cnt = 0
+    for _file_id, _file in enumerate(input_files):
         samples = json.load(open(_file))
 
         processed_samples = []
@@ -307,7 +311,8 @@ if __name__ == '__main__':
         for ex_id, _res in enumerate(_results):
             if _res:
                 for _r in _res:
-                    _r["id"] = ex_id
+                    _r["id"] = f"{_r['id']}_{_file_id}_{all_examples_cnt}"
+                    all_examples_cnt += 1
                     processed_samples.append(_r)
 
         for ex in processed_samples:

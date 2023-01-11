@@ -5,6 +5,7 @@ from torch import Tensor
 from models.roberta import RobertaForMultipleChoiceForPreTrainWithPairFull
 from dataclasses import dataclass
 from transformers.modeling_outputs import MultipleChoiceModelOutput
+from torch.utils.data import DataLoader
 
 
 @dataclass
@@ -53,3 +54,19 @@ class RobertaMCPretrainPairInference(RobertaForMultipleChoiceForPreTrainWithPair
         return MultipleChoicePreTrainModelOutput(
             retrieval_hidden_states=pair_q
         )
+
+
+class RetrieverMixin:
+    cached_indices: torch.FloatTensor = None
+
+    def encode_index(self, *args, **kwargs):
+        raise NotImplementedError
+
+    def encode_query(self, *args, **kwargs):
+        raise NotImplementedError
+
+    def build_index(self, data_loader: DataLoader, *args, **kwargs):
+        raise NotImplementedError
+
+    def search(self, *args, **kwargs):
+        raise NotImplementedError

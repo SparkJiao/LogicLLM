@@ -11,6 +11,7 @@ if __name__ == '__main__':
     parser.add_argument('--input_file', type=str, required=True)
     parser.add_argument('--output_file', type=str, required=True)
     parser.add_argument('--dev_ratio', type=float, default=0.05)
+    parser.add_argument('--no_shuffle', default=False, action="store_true")
     parser.add_argument('--group', type=int, default=1)
 
     args = parser.parse_args()
@@ -30,14 +31,22 @@ if __name__ == '__main__':
     dev_ids = {key: set(random.sample(range(len(all_data[key])), dev_num[key])) for key in all_data}
 
     if args.dev_ratio > 0:
-        train_data = collections.defaultdict(list)
-        dev_data = collections.defaultdict(list)
-        for key in all_data:
-            for t_id, t in enumerate(tqdm(all_data[key], desc=f'splitting data in {key}', total=len(all_data))):
-                if t_id in dev_ids[key]:
-                    dev_data[key].append(t)
-                else:
-                    train_data[key].append(t)
+        if args.no_shuffle:
+            train_data = {
+                key: all_data[key][:-dev_num[key]] for key in all_data
+            }
+            dev_data = {
+                key: all_data[key][-dev_num[key]:] for key in all_data
+            }
+        else:
+            train_data = collections.defaultdict(list)
+            dev_data = collections.defaultdict(list)
+            for key in all_data:
+                for t_id, t in enumerate(tqdm(all_data[key], desc=f'splitting data in {key}', total=len(all_data))):
+                    if t_id in dev_ids[key]:
+                        dev_data[key].append(t)
+                    else:
+                        train_data[key].append(t)
     else:
         train_data = all_data
         dev_data = None

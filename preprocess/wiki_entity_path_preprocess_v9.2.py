@@ -254,8 +254,8 @@ def workflow(sample, max_min_len: int = 5):
                         "all_sentences": sentences,
                         "id": sample_id,
                     })
-                    ent_pair_vis.update((h, t))
-                    ent_pair_vis.update((t, h))
+                    ent_pair_vis.add((h, t))
+                    ent_pair_vis.add((t, h))
 
     return examples
 
@@ -286,7 +286,7 @@ if __name__ == '__main__':
         os.makedirs(args.output_dir)
 
     all_examples_cnt = 0
-    for _file in input_files:
+    for _file_id, _file in enumerate(input_files):
         samples = json.load(open(_file))
 
         processed_samples = []
@@ -303,7 +303,8 @@ if __name__ == '__main__':
         for ex_id, _res in enumerate(_results):
             if _res:
                 for _r in _res:
-                    _r["id"] = all_examples_cnt
+                    # _r["id"] = all_examples_cnt
+                    _r["id"] = f"{_r['id']}_{_file_id}_{all_examples_cnt}"
                     all_examples_cnt += 1
                     processed_samples.append(_r)
                     path_len_cnt[len(_r["path"])] += 1
