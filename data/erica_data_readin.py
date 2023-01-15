@@ -1,3 +1,4 @@
+import copy
 import glob
 import json
 import os
@@ -437,6 +438,182 @@ class WikiPathSentenceConditionDataset(Dataset):
         }
 
 
+class WikiSentenceMultipleConditionDataset(Dataset):
+    def __init__(self, file_path: str, tokenizer: PreTrainedTokenizer, max_seq_length: int,
+                 cache_path: str = None, evaluating: bool = False, remove_path: bool = False,
+                 entity_mask_ratio: float = 0.0, entity_shuffle: bool = False, counterfactual_ratio: float = 0.0):
+        self.evaluating = evaluating
+        self.entity_mask_ratio = entity_mask_ratio
+        self.entity_shuffle = entity_shuffle
+        self.remove_path = remove_path
+        self.counterfactual_ratio = counterfactual_ratio
+        logger.info(f"{self.evaluating}\t{self.remove_path}\t{self.entity_mask_ratio}\t{self.entity_shuffle}\t"
+                    f"{self.counterfactual_ratio}")
+
+        if cache_path is not None and os.path.exists(cache_path):
+            self.sentences, self.indices = torch.load(cache_path)
+        else:
+            data = pickle.load(open(file_path, "rb"))["examples"]
+
+            sentences: List[Dict[str, Any]] = []
+            indices = []
+            for item in tqdm(data, total=len(data)):
+                for s_id, s in item["selected_sentences"].items():
+                    sent = " ".join(s["sent"])
+                    if len(tokenizer.tokenize(sent)) + 2 <= max_seq_length:
+                        sentences.append(s)
+                        indices.append(f"{item['id']}-path-{s_id}")
+
+                for pos_id, pos in enumerate(item["pos"]):
+                    sent = " ".join(pos["sent"])
+                    if len(tokenizer.tokenize(sent)) + 2 <= max_seq_length:
+                        sentences.append(pos)
+                        indices.append(f"{item['id']}-pos-{pos_id}")
+
+                for r_id, rest_s in item["rest_sentences"].items():
+                    sent = " ".join(rest_s["sent"])
+                    if len(tokenizer.tokenize(sent)) + 2 <= max_seq_length:
+                        sentences.append(rest_s)
+                        indices.append(f"{item['id']}-rest-{r_id}")
+
+            if cache_path is not None:
+                torch.save((sentences, indices), cache_path)
+
+            self.sentences = sentences
+            self.indices = indices
+
+        sentences, indices = [], []
+        for sent, idx in zip(self.sentences, self.indices):
+            if len(sent["ent"]) <= 1:
+                continue
+            if self.remove_path and "rest" not in idx:
+                if len(sent["ent"]) <= 2:
+                    continue
+            if self.evaluating and "rest" in idx:
+                continue
+            sentences.append(sent)
+            indices.append(idx)
+        self.sentences = sentences
+        self.indices = indices
+
+        self.tokenizer = tokenizer
+
+    def __len__(self):
+        return len(self.sentences)
+
+    def __getitem__(self, index):
+        sent = self.sentences[index]
+
+        entity_mentions = []
+        entities = {}
+        if self.evaluating:
+            entity_dict = {
+                sent["h"]: copy.deepcopy(sent["ent"][sent["h"]]),
+                sent["t"]: copy.deepcopy(sent["ent"][sent["t"]]),
+            }
+        else:
+            entity_dict = copy.deepcopy(sent["ent"])
+
+        for ent_id, ent in entity_dict.items():
+            tmp = []
+            for mention_id, e in enumerate(ent):
+                entity_mentions.append((e, ent_id, mention_id))
+                tmp.append(
+                    {
+                        "mention": " ".join(sent["sent"][e["pos"][0]: e["pos"][1]]),
+                        "id": e["id"],
+                    }
+                )
+            entities[ent_id] = tmp
+        entity_mentions = sorted(entity_mentions, key=lambda x: x[0]["pos"][0])
+        for m_id, m in enumerate(entity_mentions):
+            if m_id == 0:
+                continue
+            assert m[0]["pos"][0] >= entity_mentions[m_id - 1][0]["pos"][1]
+
+        tokens = [self.tokenizer.cls_token]
+        words = sent["sent"]
+        _s = 0
+        masked_mention_num = 0
+        for m in entity_mentions:
+            # Before entity
+            if m[0]["pos"][0] > _s:
+                span = " ".join(words[_s: m[0]["pos"][0]])
+                if _s > 0:
+                    span = " " + span
+                tokens.extend(self.tokenizer.tokenize(span))
+
+            # Process entity
+            entity = " ".join(words[m[0]["pos"][0]: m[0]["pos"][1]])
+            if m[0]["pos"][0] > 0:
+                entity = " " + entity
+            entity_tokens = self.tokenizer.tokenize(entity)
+
+            if self.entity_mask_ratio:
+                _r = random.random()
+                if _r < self.entity_mask_ratio:
+                    _num_subwords = len(entity_tokens)
+                    entity_tokens = [self.tokenizer.mask_token] * _num_subwords
+                    masked_mention_num += 1
+
+            pos = [len(tokens), -1]
+            tokens.extend(entity_tokens)
+            pos[1] = len(tokens)
+            pos = tuple(pos)
+
+            entities[m[1]][m[2]]["pos"] = pos
+
+            # _s = pos[1]  # FIXED
+            _s = m[0]["pos"][1]
+
+        if _s < len(words):
+            tokens.extend(self.tokenizer.tokenize(" " + " ".join(words[_s:])))
+        tokens.append(self.tokenizer.sep_token)
+
+        if self.entity_shuffle:
+            ent_ids = list(entities.keys())
+            random.shuffle(ent_ids)
+            entities = {ent_id: entities[ent_id] for ent_id in ent_ids}
+
+        if self.counterfactual_ratio:
+            _r = random.random()
+            if _r < self.counterfactual_ratio:
+                mentions = [ent[0]["mention"] for ent in entities.values()]
+                random.shuffle(mentions)
+                # Only modify the first mention since we only use the first one as the inputs during reconstruction
+                for i, ent_id in enumerate(entities.keys()):
+                    entities[ent_id][0]["mention"] = mentions[i]
+
+                # Reorganize the output text to be reconstructed.
+                _s = 0
+                new_words = []
+                for m in entity_mentions:
+                    # Before entity
+                    new_words.extend(words[_s: m[0]["pos"][0]])
+
+                    new_words.append(entities[m[1]][0]["mention"])
+                    _s = m[0]["pos"][1]
+
+                if _s < len(words):
+                    new_words.extend(words[_s:])
+
+                words = new_words
+
+        # print(" ".join(words))
+        # print(self.tokenizer.convert_tokens_to_string(tokens))
+        # print("=====================")
+
+        return {
+            "text": " ".join(words),
+            "tokens": tokens,
+            "entities": entities,
+            "index": self.indices[index],
+            "h": sent["h"] if "h" in sent else -1,
+            "t": sent["t"] if "t" in sent else -1,
+            "entity_mask_num": masked_mention_num,
+        }
+
+
 class ERICATextCollator:
     def __init__(self, tokenizer, max_seq_length: int):
         self.tokenizer: PreTrainedTokenizer = AutoTokenizer.from_pretrained(tokenizer, use_fast=False)
@@ -619,6 +796,102 @@ class WikiPathSentenceConditionCollator:
             "decoder_output_ids": decoder_inputs["labels"],
             "h_span": h_span,
             "t_span": t_span,
+            "meta_data": {
+                "indices": indices,
+            }
+        }
+
+
+class WikiSentenceMultipleConditionCollator:
+    def __init__(self, enc_tokenizer: str, dec_tokenizer: str, max_seq_length: int, reverse: bool = False, remove_path: bool = False,
+                 entity_pair_dropout: float = 0.0):
+        self.enc_tokenizer: PreTrainedTokenizer = AutoTokenizer.from_pretrained(enc_tokenizer)
+        self.dec_tokenizer: PreTrainedTokenizer = AutoTokenizer.from_pretrained(dec_tokenizer)
+        self.max_seq_length = max_seq_length
+        self.reverse = reverse
+        self.remove_path = remove_path
+        self.entity_pair_dropout = entity_pair_dropout
+
+    def __call__(self, batch):
+        seq_len = max(map(lambda x: len(x["tokens"]), batch))
+        entity_num = max(map(lambda x: len(x["entities"]), batch))
+
+        input_ids = torch.zeros(len(batch), seq_len, dtype=torch.long)
+        attention_mask = torch.zeros(len(batch), seq_len, dtype=torch.int)
+        entity_spans = torch.zeros(len(batch), entity_num, seq_len)
+        relation_indices = []
+        indices = []
+        decoder_inputs = []
+        decoder_outputs = []
+        masked_mention_num = 0
+        for b_id, b in enumerate(batch):
+            input_ids[b_id, :len(b["tokens"])] = torch.tensor(self.enc_tokenizer.convert_tokens_to_ids(b["tokens"]), dtype=torch.int)
+            attention_mask[b_id, :len(b["tokens"])] = 1
+
+            for ent_id, ent in enumerate(b["entities"].values()):
+                cnt = 0
+                for e in ent:
+                    entity_spans[b_id, ent_id, e["pos"][0]: e["pos"][1]] = 1
+                    cnt += e["pos"][1] - e["pos"][0]
+                entity_spans[b_id, ent_id] /= cnt
+
+            indices.append(b["index"])
+
+            triplets = []
+            b_rel_indices = []
+            for ent_id_1, ent1 in enumerate(b["entities"].values()):
+                for ent_id_2, ent2 in enumerate(list(b["entities"].values())[(ent_id_1 + 1):]):
+                    if self.remove_path and ((ent1[0]["id"] == b["h"] and ent2[0]["id"] == b["t"]) or (
+                            ent1[0]["id"] == b["t"] and ent2[0]["id"] == b["h"])):
+                        continue
+                    triplets.append(f"{ent1[0]['mention']} {self.dec_tokenizer.mask_token} {ent2[0]['mention']}")
+                    b_rel_indices.append((ent_id_1, ent_id_1 + 1 + ent_id_2))
+
+            if self.entity_pair_dropout:
+                _remove_num = int(round(len(triplets) * self.entity_pair_dropout))
+                _kept_num = len(triplets) - _remove_num
+                if _kept_num >= 1:
+                    _kept_idx = random.sample(list(range(len(triplets))), _kept_num)
+                    triplets = [triplets[i] for i in _kept_idx]
+                    b_rel_indices = [b_rel_indices[i] for i in _kept_idx]
+                    assert len(b_rel_indices)
+
+            relation_indices.append(b_rel_indices)
+
+            if not self.reverse:
+                decoder_inputs.append(self.dec_tokenizer.sep_token.join(triplets))
+                decoder_outputs.append(b["text"])
+            else:
+                # decoder_inputs.append(b["text"])
+                # decoder_outputs.append(self.dec_tokenizer.sep_token.join([tri.replace(self.dec_tokenizer.mask_token, "")
+                #                                                           for tri in triplets]))
+                raise RuntimeError("`rel_emb_index` was not adjust for `self.reverse == True`.")
+
+            masked_mention_num += b.pop("entity_mask_num")
+
+        max_relation_num = max(map(len, relation_indices))
+        rel_ent_index = torch.zeros(len(batch), max_relation_num, 2, dtype=torch.long)
+        for b_id, b_rel_indices in enumerate(relation_indices):
+            rel_ent_index[b_id, :len(b_rel_indices)] = torch.tensor(b_rel_indices, dtype=torch.long)
+
+        decoder_inputs = self.dec_tokenizer(decoder_inputs, text_target=decoder_outputs,
+                                            padding="longest", truncation=True, max_length=self.max_seq_length, return_tensors="pt")
+
+        rel_inputs = decoder_inputs["input_ids"] if not self.reverse else decoder_inputs["labels"]
+        sep_mask = rel_inputs == self.dec_tokenizer.sep_token_id
+        rel_emb_index = torch.cumsum(sep_mask.to(dtype=torch.long), dim=1)
+        rel_emb_index[rel_emb_index >= max_relation_num] = 0
+
+        return {
+            "input_ids": input_ids,
+            "attention_mask": attention_mask,
+            "decoder_input_ids": decoder_inputs["input_ids"],
+            "decoder_input_attention_mask": decoder_inputs["attention_mask"],
+            "decoder_output_ids": decoder_inputs["labels"],
+            "entity_spans": entity_spans,
+            "rel_ent_index": rel_ent_index,
+            "rel_emb_index": rel_emb_index,
+            "entity_mask_num": masked_mention_num,
             "meta_data": {
                 "indices": indices,
             }

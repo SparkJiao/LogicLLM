@@ -211,16 +211,17 @@ class WikiPathDatasetPartialPair(WikiPathTokensDatasetCollator):
         for b_id, b in enumerate(batch):
             item_input_tokens = []
 
-            exp_tokens, left_sentence_ids = prepare_partial_single_example_positive(b["pair_q"], sentence_ids=None)
+            # exp_tokens, left_sentence_ids = prepare_partial_single_example_positive(b["pair_q"], sentence_ids=None)
+            exp_tokens, left_sentence_ids = prepare_partial_single_example_positive_fixed(b["pair_q"], sentence_ids=None)
             item_input_tokens.append(exp_tokens)
             max_seq_length = max(max_seq_length, len(exp_tokens))
 
-            exp_tokens = prepare_partial_single_example_positive(b["pair_k"], sentence_ids=left_sentence_ids)
+            exp_tokens = prepare_partial_single_example_positive_fixed(b["pair_k"], sentence_ids=left_sentence_ids)
             item_input_tokens.append(exp_tokens)
             max_seq_length = max(max_seq_length, len(exp_tokens))
 
             for exp in b["pair_neg"]:
-                exp_tokens, _ = prepare_partial_single_example_positive(exp, sentence_ids=None)
+                exp_tokens, _ = prepare_partial_single_example_positive_fixed(exp, sentence_ids=None)
                 item_input_tokens.append(exp_tokens)
                 max_seq_length = max(max_seq_length, len(exp_tokens))
 

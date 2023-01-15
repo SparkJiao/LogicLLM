@@ -4,11 +4,16 @@ import torch
 from torch.distributed.fsdp import FullyShardedDataParallel, CPUOffload, MixedPrecision, ShardingStrategy
 from torch.distributed.fsdp.wrap import transformer_auto_wrap_policy, size_based_auto_wrap_policy
 from transformers.models.bart.modeling_bart import BartEncoderLayer
+from general_util.logger import get_child_logger
+
 
 """
 Refer to https://pytorch.org/blog/introducing-pytorch-fully-sharded-data-parallel-api/,
 and https://pytorch.org/tutorials/intermediate/FSDP_tutorial.html.
 """
+
+logger = get_child_logger(__name__)
+
 
 
 def torch_fsdp_initialize_default(model,
@@ -83,7 +88,11 @@ def torch_fsdp_init_quantizer_ignore(model,
     my_auto_wrap_policy = partial(transformer_auto_wrap_policy,
                                   transformer_layer_cls={BartEncoderLayer})
 
-    ignored_modules = [model.quantizer, model.dense1, model.dense2]
+    if hasattr(model, "get_non_sharded_modules"):
+        ignored_modules = model.get_non_sharded_modules()
+    else:
+        ignored_modules = [model.quantizer, model.dense1, model.dense2]
+    logger.info(f"FSDP ignored modules: {ignored_modules}")
 
     if fp16:
         fp16_type = torch.float16 if not fp16_bfloat16 else torch.bfloat16

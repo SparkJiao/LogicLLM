@@ -1,0 +1,174 @@
+hydra:
+  run:
+    dir: ./
+
+train_file: wiki_erica_path/v9.1_fixed/distant_path_v9.1_fix_no_shuffle.train.0.pkl
+dev_file: wiki_erica_path/v9.1_fixed/distant_path_v9.1_fix_no_shuffle.dev.pkl
+test_file:
+
+# Model
+model:
+  _target_: models.vq_vae.RobertaVQVAEMultiple.from_pretrained
+  seq2seq_path: pretrained-models/bart-base
+  quantizer:
+    _target_: models.quantizer.CogViewEMAQuantizer
+    dim: 768
+    n_embed: 1024
+    decay: 0.96
+    add_l2_norm: True
+  embedding_dim: ${model.quantizer.dim}
+  input_type: "concat$1"
+  z_to_decoder: True
+  z_add_top: False
+  seq2seq_decoder_layer: 3
+  freeze_seq2seq_encoder: True
+
+# Data loading
+read_tensor:
+  _target_: data.erica_data_readin.WikiSentenceMultipleConditionDataset
+  max_seq_length: 256
+  cache_path: ${train_file}_wiki_mul_256
+  evaluating: False
+  remove_path: True
+  entity_mask_ratio: 0.25  # Fixed the masking error in the new version.
+  entity_shuffle: True
+  counterfactual_ratio: 0.5
+
+read_tensor_dev:
+  _target_: data.erica_data_readin.WikiSentenceMultipleConditionDataset
+  max_seq_length: 256
+  cache_path: ${dev_file}_wiki_mul_256
+  evaluating: False
+  remove_path: False
+  entity_mask_ratio: 0.0
+  entity_shuffle: False
+
+
+extended_vocab:
+
+# Data collator
+collator:
+  _target_: data.erica_data_readin.WikiSentenceMultipleConditionCollator
+  enc_tokenizer: roberta-large
+  dec_tokenizer: pretrained-models/bart-base
+  max_seq_length: ${read_tensor.max_seq_length}
+  reverse: False
+  # During training:
+  remove_path: True
+  entity_pair_dropout: 0.1
+
+# dev collator
+dev_collator:
+  _target_: data.erica_data_readin.WikiSentenceMultipleConditionCollator
+  enc_tokenizer: roberta-large
+  dec_tokenizer: pretrained-models/bart-base
+  max_seq_length: ${read_tensor.max_seq_length}
+  reverse: False
+  # During evaluating:
+  remove_path: False
+  entity_pair_dropout: 0.0
+
+
+# Dataloader
+num_workers: 4
+prefetch_factor: 2
+
+do_preprocess: False
+
+# Wiki path pretrain v8.2
+model_name_or_path: roberta-base
+pretrain:
+
+output_dir: experiments/roberta.base.bart.base.vqvae.ema.wiki_path.c${model.quantizer.n_embed}.v7.7.w2.adamw.PA100
+
+do_train: True
+evaluate_during_training: False
+
+do_eval: True
+eval_sub_path: checkpoint-*
+
+# Training hyper-parameters
+per_gpu_train_batch_size: 64
+per_gpu_eval_batch_size: 64
+learning_rate: 1e-4
+gradient_accumulation_steps: 4
+weight_decay: 1e-5
+adam_epsilon: 1e-6
+adam_betas: "(0.9, 0.98)"
+max_grad_norm: 5.0
+num_train_epochs: 40
+max_steps: 0
+warmup_proportion: 0.06
+warmup_steps: 0
+
+lr_scheduler: linear
+
+# Optimizer
+optimizer:
+use_nvlamb:
+bit_training:
+
+
+logging_steps: 1
+save_best: False
+save_steps: 5000
+eval_steps: 10000
+ddp_eval: True
+no_cuda: False
+seed: 42
+local_rank: -1
+fp16: True
+fp16_opt_level: O1
+fp16_bfloat16: True
+
+# Prediction config
+prediction_cfg:
+  metric: "loss"
+  measure: -1
+  best_checkpoint:
+  best_result:
+eval_forward_fn:
+  _target_: general_util.evaluator.DefaultForwardFn
+post_process:
+  _target_: post_processors.erica_post_processor.WikiPathInferencePostProcessor
+predict_dir: ${output_dir}/dev-predictions-seq256
+
+#dist_init:
+#  _target_: general_util.dist_utils.setup_slurm_distributed
+
+
+# fairscale.FullyShardedDP
+fairscale_config:
+#  _target_: general_util.fsdp_utils.recursive_initialize
+  _target_: general_util.fsdp_utils.default_initialize
+#  _target_: general_util.fsdp_utils.vae_specific_initialize
+  fp16: ${fp16}
+  move_grads_to_cpu: False
+  move_params_to_cpu: False
+  flatten_parameters: False
+
+fsdp_config:
+  _target_: general_util.torch_fsdp_utils.torch_fsdp_init_quantizer_ignore
+  fp16: ${fp16}
+  fp16_bfloat16: ${fp16_bfloat16}
+
+# Lightseq config
+with_lightseq: False
+
+summary_helper:
+  _target_: general_util.tensorboard_helper.SummaryWriterHelper
+  batch_index_or_keys:
+    "train/entity_mask_num": entity_mask_num
+  outputs_index_or_keys:
+#    "train/vq_loss": vq_loss
+    "train/commitment_loss": commitment_loss
+    "train/mlm_loss": mlm_loss
+    "train/z_encoder_mean": z_encoder_mean
+    "train/z_decoder_mean": z_decoder_mean
+
+# Temporary variables
+n_gpu:
+device:
+train_batch_size:
+eval_batch_size:
+world_size:
