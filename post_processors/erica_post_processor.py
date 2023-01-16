@@ -4,7 +4,10 @@ from typing import Dict, List, Any, Tuple
 import torch
 import torch.distributed as dist
 
+from general_util.logger import get_child_logger
 from post_processors.dist_mixin import DistGatherMixin
+
+logger = get_child_logger(__name__)
 
 
 class ERICAPredictionSaver(DistGatherMixin):
@@ -90,4 +93,5 @@ class WikiPathInferencePostProcessor(DistGatherMixin):
             "indices": self.indices,
             "codes": self.codes,
         }, output_file)
+        logger.info(f"Index num: {len(self.indices)}\tCode num:{len(self.codes)}")
         return {}, []

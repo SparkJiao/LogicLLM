@@ -4,6 +4,7 @@ hydra:
 
 train_file: wiki_erica_path/v9.1_fixed/distant_path_v9.1_fix_no_shuffle.train.0.pkl
 dev_file: wiki_erica_path/v9.1_fixed/distant_path_v9.1_fix_no_shuffle.dev.pkl
+#dev_file: wiki_erica_path/v9.1_fixed/distant_path_v9.1_fix_no_shuffle.train.0.pkl
 test_file:
 
 # Model
@@ -38,7 +39,7 @@ read_tensor_dev:
   _target_: data.erica_data_readin.WikiSentenceMultipleConditionDataset
   max_seq_length: 256
   cache_path: ${dev_file}_wiki_mul_256
-  evaluating: False
+  evaluating: True
   remove_path: False
   entity_mask_ratio: 0.0
   entity_shuffle: False
@@ -132,7 +133,7 @@ eval_forward_fn:
   _target_: general_util.evaluator.DefaultForwardFn
 post_process:
   _target_: post_processors.erica_post_processor.WikiPathInferencePostProcessor
-predict_dir: ${output_dir}/dev-predictions-seq256
+predict_dir: ${output_dir}/dev-predictions-seq256-eval
 
 #dist_init:
 #  _target_: general_util.dist_utils.setup_slurm_distributed
