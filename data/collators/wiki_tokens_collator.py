@@ -220,3 +220,60 @@ class WikiPathDatasetCollatorRelSeqGenV1(WikiPathTokensDatasetCollator):
             res["attention_mask"] = res["attention_mask"][:, :1]
 
         return res
+
+
+class WikiPathDatasetCollatorRelGenV1(WikiPathTokensDatasetCollator):
+    def __init__(self, max_seq_length: int, tokenizer: str, mlm_probability: float = 0.15, rmlm_probability: float = 1.0):
+        super().__init__(max_seq_length, tokenizer, mlm_probability)
+        # self.tokenizer.add_tokens([f"<entity_{i}>" for i in range(10)])
+        self.rmlm_probability = rmlm_probability
+
+    def __call__(self, batch):
+        # Generating the rationale part of some sentence given the other parts of the logical circle.
+        examples = [b["example"] for b in batch]
+        sentence_spans = [exp["sentence_spans"][0] for exp in examples]
+        h_spans = [exp["h_spans"][0] for exp in examples]
+        t_spans = [exp["t_spans"][0] for exp in examples]
+
+        inputs = super().__call__(batch)
+
+        input_ids = inputs["input_ids"][:, 0].clone()
+        attention_mask = inputs["attention_mask"][:, 0].clone()
+
+        # labels = input_ids.clone()
+
+        non_mask_field = torch.ones(input_ids.size(), dtype=torch.int)
+
+        for b in range(len(examples)):
+            target_sentence_id = random.choice(list(range(len(sentence_spans[b]))))
+            assert len(sentence_spans[b]) == len(h_spans[b]) == len(t_spans[b]), (len(sentence_spans), len(h_spans[b]), len(t_spans[b]))
+
+            sent_span = sentence_spans[b][target_sentence_id]
+            # h_span = h_spans[b][target_sentence_id]
+            # t_span = t_spans[b][target_sentence_id]
+            # logger.info(input_ids.size(), sent_span, h_span, t_span)
+            # input_ids[b, sent_span[0]: sent_span[1]] = self.tokenizer.mask_token_id
+            non_mask_field[b, sent_span[0]: sent_span[1]] = 0
+            for h_span in h_spans[b][target_sentence_id]:
+                # input_ids[b, h_span[0]: h_span[1]] = labels[b, h_span[0]: h_span[1]].clone()
+                non_mask_field[b, h_span[0]: h_span[1]] = 1
+            for t_span in t_spans[b][target_sentence_id]:
+                # input_ids[b, t_span[0]: t_span[1]] = labels[b, t_span[0]: t_span[1]].clone()
+                non_mask_field[b, t_span[0]: t_span[1]] = 1
+
+            # print(self.tokenizer.convert_tokens_to_string(self.tokenizer.convert_ids_to_tokens(input_ids[b])))
+
+        input_ids, labels = mask_tokens(self.tokenizer, input_ids, non_mask_field, self.rmlm_probability)
+        # print(f"++++++++++++++++++++++++++++++++")
+        # print(self.tokenizer.convert_tokens_to_ids(self.tokenizer.convert_ids_to_tokens(input_ids[0])))
+        # print(f"=================================")
+
+        # mlm_mask = input_ids == self.tokenizer.mask_token_id
+        # labels[~mlm_mask] = -1
+
+        inputs.update({
+            "rmlm_input_ids": input_ids,
+            "rmlm_attention_mask": attention_mask,
+            "rmlm_labels": labels,
+        })
+        return inputs
