@@ -1,3 +1,4 @@
+import collections
 import copy
 import glob
 import json
@@ -36,6 +37,75 @@ class SeperatorInterface:
     h_e_sep = "</e1>"
     t_s_sep = "<e2>"
     t_e_sep = "</e2>"
+
+
+def process_erica_para_word(example, tokenizer: PreTrainedTokenizer, max_seq_length: int, mlm: bool):
+    entities = example["vertexSet"]
+    sentences = example["sents"]
+
+    sent_len_offset = []
+    words = []
+    for sent in sentences:
+        sent_len_offset.append(len(words))
+        words.extend(sent)
+
+    all_mentions = []
+    for ent in entities:
+        for mention in ent:
+            offset = sent_len_offset[mention["sent_id"]]
+            mention["pos"] = [mention["pos"][0] + offset, mention["pos"][1] + offset]
+            all_mentions.append(mention)
+
+    sorted_mentions = sorted(all_mentions, key=lambda x: x["pos"][0])
+    for i in range(len(sorted_mentions)):
+        if i == 0:
+            continue
+        if sorted_mentions[i]["pos"][0] < sorted_mentions[i - 1]["pos"][1]:
+            logger.warning(f"Bad instance checked: {sorted_mentions[i - 1]}\t{sorted_mentions[i]}")
+
+    tokens = [tokenizer.cls_token]
+    last_e = 0
+    entity_subword_spans = defaultdict(list)
+    reach_limit_flag = False
+    for mention in sorted_mentions:
+        word_s, word_e = mention["pos"]
+        if word_s > last_e:
+            span = " ".join(words[last_e: word_s])
+            if last_e > 0:
+                span = " " + span
+            tokens.extend(tokenizer.tokenize(span))
+
+        subword_s = len(tokens)
+        entity_span = " ".join(words[word_s: word_e])
+        if word_s > 0:
+            entity_span = " " + entity_span
+        entity_tokens = tokenizer.tokenize(entity_span)
+        if mlm:
+            tokens.extend([tokenizer.mask_token] * len(entity_tokens))
+        else:
+            tokens.extend(entity_tokens)
+
+        if len(tokens) >= max_seq_length - 1:  # `-1` for **sep token**.
+            tokens = tokens[:(max_seq_length - 1)]
+            reach_limit_flag = True
+
+        subword_e = len(tokens)
+
+        entity_subword_spans[mention["id"]].append((subword_s, subword_e))
+
+        last_e = word_e
+
+        if reach_limit_flag:
+            break
+
+    if last_e < len(words) and not reach_limit_flag:
+        tokens.extend(tokenizer.tokenize(" " + " ".join(words[last_e:])))
+        if len(tokens) > max_seq_length - 1:
+            tokens = tokens[:(max_seq_length - 1)]
+
+    tokens.append(tokenizer.sep_token)
+
+    return tokenizer.convert_tokens_to_ids(tokens), entity_subword_spans, sorted_mentions
 
 
 class ERICATextDataset(Dataset):
@@ -119,9 +189,40 @@ class ERICATextDataset(Dataset):
                 # entity_subword_spans.append((ent_span_s, ent_span_e))
                 entity_subword_spans[mention["id"]].append((ent_span_s, ent_span_e))
 
-            last_s = ent_span_e
+            last_s = ent_span_e  # FIXME: This is also a bug!!!!!!! （2023/1/25. The entity hidden states extracted from ERICA maybe influenced.)
 
         return self.tokenizer.convert_tokens_to_ids(tokens), entity_subword_spans, sorted_mentions
+
+
+class ERICATextDatasetV2(Dataset):
+    def __init__(self, file_path: str, max_seq_length: int, tokenizer: PreTrainedTokenizer, mlm: bool = False):
+        if os.path.exists(file_path):
+            input_files = [file_path]
+        else:
+            input_files = list(glob.glob(file_path))
+            input_files = sorted(input_files)
+        assert input_files, input_files
+
+        self.indices = []
+        self.samples = []
+        for _file in input_files:
+            logger.info(f"Reading from {_file}")
+            data = json.load(open(_file))
+            file_name = _file.split("/")[-1]
+            for item_id, item in enumerate(data):
+                self.indices.append((file_name, item_id))
+                self.samples.append(item)
+
+        self.max_seq_length = max_seq_length
+        self.tokenizer = tokenizer
+        self.special_token_num = self.tokenizer.num_special_tokens_to_add()
+        self.mlm = mlm
+
+    def __len__(self):
+        return len(self.samples)
+
+    def __getitem__(self, index):
+        return process_erica_para_word(self.samples[index], self.tokenizer, self.max_seq_length, self.mlm) + (self.indices[index],)
 
 
 class ERICASentenceDataset(Dataset):
@@ -438,6 +539,52 @@ class WikiPathSentenceConditionDataset(Dataset):
         }
 
 
+# def annotate_para_entity_mask(, tokenizer: PreTrainedTokenizer):
+#     # FIXME: 这里这个方法不太对，ERICA的训练方式决定了还是要从paragraph的角度去求entity pair的表示。考虑在paragraph的角度上计算隐表示的距离。
+#     #   但或许也不太好操作，因为一个paragraph太短，因此根据距离取出来的对应的句子很可能是重复的。
+#
+#     entity_mentions = []
+#     for ent_id in [ent1, ent2]:
+#         for mention_id, e in enumerate(sent["ent"][ent_id]):
+#             entity_mentions.append((e, ent_id, mention_id))
+#     entity_mentions = sorted(entity_mentions, key=lambda x: x[0]["pos"][0])
+#     for m_id, m in enumerate(entity_mentions):
+#         if m_id == 0:
+#             continue
+#         assert m[0]["pos"][0] >= entity_mentions[m_id - 1][0]["pos"][1]
+#
+#     tokens = [tokenizer.cls_token]
+#     words = sent["sent"]
+#     _s = 0
+#     ent_spans = collections.defaultdict(list)
+#     for m in entity_mentions:
+#         if m[0]["pos"][0] > _s:
+#             span = " ".join(words[_s: m[0]["pos"][0]])
+#             if _s > 0:
+#                 span = " " + span
+#             tokens.extend(tokenizer.tokenize(span))
+#
+#         entity = " ".join(words[m[0]["pos"][0]: m[0]["pos"][1]])
+#         if m[0]["pos"][0] > 0:
+#             entity = " " + entity
+#         entity_tokens = tokenizer.tokenize(entity)
+#
+#         pos = [len(tokens)]
+#         tokens.extend(entity_tokens)
+#         pos.append(len(tokens))
+#         pos = tuple(pos)
+#
+#         ent_spans[m[1]].append(pos)
+#
+#         _s = m[0]["pos"][1]
+#
+#     if _s < len(words):
+#         tokens.extend(tokenizer.tokenize(" " + " ".join(words[_s:])))
+#     tokens.append(tokenizer.sep_token)
+#
+#     return tokens, ent_spans[ent1], ent_spans[ent2]
+
+
 class WikiSentenceMultipleConditionDataset(Dataset):
     def __init__(self, file_path: str, tokenizer: PreTrainedTokenizer, max_seq_length: int,
                  cache_path: str = None, evaluating: bool = False, remove_path: bool = False,
@@ -648,11 +795,54 @@ class ERICATextCollator:
         for i, b_ent_spans in enumerate(batch_entity_spans):
             for j, ent_mentions in enumerate(b_ent_spans.values()):
                 for ent_mention in ent_mentions:
+                    # FIXME: A bug here!!!!
+                    #   For previous version, i.e., ERICATextDataset, the span does not conut the special tokens.
+                    #   So we need to use `ent_mention[0] + 1` and `ent_mention[1] + 1` instead.
                     ent_seq_mapping[i, j, ent_mention[0]: ent_mention[1]] = 1.0 / len(ent_mentions) / (ent_mention[1] - ent_mention[0])
 
         return {
             "input_ids": input_ids,
             "attention_mask": attention_mask,
+            "ent_seq_mapping": ent_seq_mapping,
+            "meta_data": {
+                "index": indices,
+                "entity_spans": batch_entity_spans,
+                "entity_mentions": batch_ent_mentions,
+            }
+        }
+
+
+class ERICATextCollatorV2(ERICATextCollator):
+    def __call__(self, batch):
+        batch_ids, batch_entity_spans, batch_ent_mentions, indices = list(zip(*batch))
+
+        batch_size = len(batch)
+
+        max_seq_length = max(map(len, batch_ids))
+        batch_input_ids = torch.zeros(batch_size, max_seq_length, dtype=torch.long).fill_(self.tokenizer.pad_token_id)
+        batch_attention_mask = torch.zeros(batch_size, max_seq_length, dtype=torch.long)
+        for b_id, ids in enumerate(batch_ids):
+            batch_input_ids[b_id, :len(ids)] = torch.tensor(ids, dtype=torch.long)
+            batch_attention_mask[b_id, :len(ids)] = 1
+
+        max_ent_num = max(map(len, batch_entity_spans))
+
+        ent_seq_mapping = torch.zeros(batch_size, max_ent_num, max_seq_length)
+        for i, b_ent_spans in enumerate(batch_entity_spans):
+            assert isinstance(b_ent_spans, dict), type(b_ent_spans)
+            for j, ent_mentions in enumerate(b_ent_spans.values()):
+                total_token_num = 0
+                for span in ent_mentions:
+                    ent_seq_mapping[i, j, span[0]: span[1]] = 1.0
+                    total_token_num += span[1] - span[0]
+                if total_token_num == 0:
+                    logger.warning(f"Empty entity span list: {ent_mentions}")
+                else:
+                    ent_seq_mapping[i, j] /= total_token_num
+
+        return {
+            "input_ids": batch_input_ids,
+            "attention_mask": batch_attention_mask,
             "ent_seq_mapping": ent_seq_mapping,
             "meta_data": {
                 "index": indices,

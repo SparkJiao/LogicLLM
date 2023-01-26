@@ -294,7 +294,8 @@ class WikiPathDatasetRelGenerateV1(WikiPathDatasetV5):
     def __getitem__(self, index):
         item = super().__getitem__(index)
 
-        if self.remove_cf_data_decoding and "rep_ent_num" in item["example"]:
+        # if self.remove_cf_data_decoding and "rep_ent_num" in item["example"]:
+        if self.remove_cf_data_decoding and "h" in item["example"]:
             item["rel_labels"] = [-1]
             return item
 

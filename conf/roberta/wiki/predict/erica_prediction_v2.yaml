@@ -1,0 +1,122 @@
+hydra:
+  run:
+    dir: ./
+
+_idx: 0
+train_file:
+dev_file: wiki_erica_path/sampled_data_roberta/train_distant_${_idx}.json
+#test_file: wiki_erica_path/sampled_data_roberta/train_distant_${_idx}.json
+test_file: wiki_erica_path/sampled_data_roberta/train_distant_*.json
+
+# Model
+model:
+  _target_: models.erica.ERICAPredictor.from_pretrained
+
+# Data loading
+read_tensor:
+  _target_: data.erica_data_readin.ERICATextDatasetV2
+  max_seq_length: 512
+
+extended_vocab:
+
+# Data collator
+collator:
+  _target_: data.erica_data_readin.ERICATextCollatorV2
+  max_seq_length: 512
+  tokenizer: /export/home2/fangkai/ERICA/pretrain/ckpt/ckpt_doc_dw_f_alpha_1_uncased/checkpoint-2500
+
+# Dataloader
+num_workers: 32
+prefetch_factor: 2
+
+do_preprocess: False
+
+# Wiki path pretrain v8.2
+model_name_or_path: /export/home2/fangkai/ERICA/pretrain/ckpt/ckpt_doc_dw_f_alpha_1_uncased/checkpoint-2500
+pretrain:
+
+output_dir: /export/home2/fangkai/ERICA/pretrain/ckpt/ckpt_doc_dw_f_alpha_1_uncased/checkpoint-2500
+predict_dir: experiments/roberta.base.erica.entity_no_none_cp2500
+
+do_train: False
+evaluate_during_training: True
+
+do_eval: True
+eval_sub_path:
+
+# Training hyper-parameters
+per_gpu_train_batch_size: 64
+per_gpu_eval_batch_size: 64
+learning_rate: 1e-4
+gradient_accumulation_steps: 256
+weight_decay: 0.01
+adam_epsilon: 1e-6
+adam_betas: "(0.9, 0.98)"
+max_grad_norm: 5.0
+num_train_epochs: 10
+max_steps: 500
+warmup_proportion: 0.1
+warmup_steps: 0
+
+# Optimizer
+optimizer:
+use_nvlamb:
+bit_training:
+
+
+logging_steps: 1
+save_best: False
+save_steps: 100
+eval_steps: 100
+ddp_eval: True
+no_cuda: False
+seed: 42
+local_rank: -1
+fp16: True
+fp16_opt_level: O1
+fp16_bfloat16: True
+
+# Prediction config
+prediction_cfg:
+  metric: "acc"
+  measure: 1
+  best_checkpoint:
+  best_result:
+eval_forward_fn:
+  _target_: general_util.evaluator.DefaultForwardFn
+post_process:
+  _target_: post_processors.erica_post_processor.ERICAPredictionSaver
+
+#dist_init:
+#  _target_: general_util.dist_utils.setup_slurm_distributed
+
+
+# fairscale.FullyShardedDP
+fairscale_config:
+#  _target_: general_util.fsdp_utils.recursive_initialize
+  _target_: general_util.fsdp_utils.default_initialize
+  fp16: ${fp16}
+  move_grads_to_cpu: False
+  move_params_to_cpu: False
+
+# Lightseq config
+with_lightseq: False
+
+summary_helper:
+  _target_: general_util.tensorboard_helper.SummaryWriterHelper
+  batch_index_or_keys:
+    "train/pair_value_num": pair_value_num
+    "train/pair_label_num": pair_label_num
+    "train/dropped_op_cnt": dropped_op_cnt
+    "train/k_sent_drop_cnt": k_sent_drop_cnt
+  outputs_index_or_keys:
+    "train/mlm_loss": mlm_loss
+    "train/cls_loss": cls_loss
+    "train/pair_loss": pair_loss
+
+# Temporary variables
+n_gpu:
+device:
+train_batch_size:
+eval_batch_size:
+world_size:

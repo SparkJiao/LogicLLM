@@ -50,7 +50,10 @@ class ERICAPredictionSaver(DistGatherMixin):
         self.indices.extend(indices)
 
     def get_results(self, output_dir: str):
-        output_file = os.path.join(output_dir, f"predictions-rank{dist.get_rank()}.pt")
+        if dist.is_initialized():
+            output_file = os.path.join(output_dir, f"predictions-rank{dist.get_rank()}.pt")
+        else:
+            output_file = os.path.join(output_dir, f"predictions.pt")
         torch.save({
             "mentions": self.entity_mentions,
             "hidden": self.entity_hidden,

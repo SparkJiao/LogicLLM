@@ -102,7 +102,8 @@ class WikiPathTokensDatasetCollator:
                     entity_pair_mask[exp_id, sent_id] = 1
 
             if "rel_labels" in batch[exp_id]:
-                assert len(exp["h_spans"][0]) == len(batch[exp_id]["rel_labels"]) - 1 or batch[exp_id]["rel_labels"] == [-1], (
+                wo_noise_num = len([span for span in exp["h_spans"][0] if len(span) > 0])
+                assert wo_noise_num == len(batch[exp_id]["rel_labels"]) - 1 or batch[exp_id]["rel_labels"] == [-1], (
                     exp["h_spans"][0], batch[exp_id]["rel_labels"])
 
             for sent_id, sent_t_spans in enumerate(exp["t_spans"][0]):
@@ -166,7 +167,9 @@ def transform_rel_label_to_tensor(rel_labels):
     decoder_input_ids = torch.zeros(len(rel_labels), max_input_len, dtype=torch.long).fill_(-1)
     for b, b_decoder_inputs in enumerate(rel_labels):
         decoder_input_ids[b, :len(b_decoder_inputs)] = torch.tensor(b_decoder_inputs, dtype=torch.long)
-        if b_decoder_inputs[0] == -1:
+        # if b_decoder_inputs[0] == -1:
+        #     invalid += 1
+        if all(x == -1 for x in b_decoder_inputs):
             invalid += 1
 
     return decoder_input_ids, invalid
@@ -189,11 +192,17 @@ def get_sentence_level_label_v2(example, rel_ids):
     if rel_ids == [-1]:
         return rel_ids * (len(path_s_ids) + 2)
 
-    assert len(path_s_ids_order) == len(path_s_ids) == (len(rel_ids) - 2), (path_s_ids_order, path_s_ids, rel_ids,
-                                                                            len(example["h_spans"][0]))
+    if "-1" in path_s_ids:
+        wo_noise_s_num = [tmp for tmp in path_s_ids if tmp != "-1"]
+        assert len(path_s_ids_order) == len(wo_noise_s_num) == (len(rel_ids) - 2), (path_s_ids_order, path_s_ids, rel_ids,
+                                                                                    len(example["h_spans"][0]))
+    else:
+        assert len(path_s_ids_order) == len(path_s_ids) == (len(rel_ids) - 2), (path_s_ids_order, path_s_ids, rel_ids,
+                                                                                len(example["h_spans"][0]))
+
     s_id2rel_id = {s_id: rel_id for s_id, rel_id in zip(path_s_ids_order, rel_ids[:-2])}
-    rel_ids_input_order = [s_id2rel_id[s_id] for s_id in path_s_ids] + rel_ids[-2:]
-    assert len(rel_ids_input_order) == len(rel_ids)
+    rel_ids_input_order = [s_id2rel_id[s_id] if s_id != "-1" else -1 for s_id in path_s_ids] + rel_ids[-2:]
+    # assert len(rel_ids_input_order) == len(rel_ids)
     return rel_ids_input_order
 
 
@@ -277,3 +286,50 @@ class WikiPathDatasetCollatorRelGenV1(WikiPathTokensDatasetCollator):
             "rmlm_labels": labels,
         })
         return inputs
+
+
+class WikiPathDatasetCollatorRelSeqGenMEV1(WikiPathDatasetCollatorRelSeqGenV1):
+    def __call__(self, batch):
+        me_input = [b["example"]["me_input"] for b in batch]
+        me_candidate_ent = [b["example"]["me_candidate_ent"] for b in batch]
+        me_label = [b["example"]["me_target_id"] for b in batch]
+
+        me_tokenizer_outputs = self.tokenizer(me_input, padding=PaddingStrategy.LONGEST,
+                                              truncation=TruncationStrategy.LONGEST_FIRST, max_length=self.max_seq_length,
+                                              return_tensors="pt")
+
+        max_candidate_num = max(map(len, me_candidate_ent))
+        max_ent_len = 0
+        me_label_ids = []
+        me_candidate_ent_input_ids = []
+        for b in range(len(batch)):
+            b_ent_input_ids = []
+            for i, (ent_id, ent_str) in enumerate(me_candidate_ent[b].items()):
+                ent_tokens = self.tokenizer.tokenize(ent_str)
+                ent_input_ids = self.tokenizer.convert_tokens_to_ids(ent_tokens)
+                b_ent_input_ids.append(ent_input_ids)
+                max_ent_len = max(max_ent_len, len(ent_input_ids))
+
+                if ent_id == me_label[b]:
+                    me_label_ids.append(i)
+            me_candidate_ent_input_ids.append(b_ent_input_ids)
+
+        assert len(me_label_ids) == len(batch)
+
+        me_ent_input_ids_tensor = torch.zeros(len(batch), max_candidate_num, max_ent_len, dtype=torch.long).fill_(
+            self.tokenizer.pad_token_id)
+        me_ent_mask = torch.zeros(len(batch), max_candidate_num)
+        for b in range(len(batch)):
+            for ent_id, ent_input_ids in enumerate(me_candidate_ent_input_ids[b]):
+                me_ent_input_ids_tensor[b, ent_id, :len(ent_input_ids)] = torch.tensor(ent_input_ids, dtype=torch.long)
+                me_ent_mask[b, ent_id] = 1
+
+        results = super().__call__(batch)
+        results.update({
+            "me_input_ids": me_tokenizer_outputs["input_ids"],
+            "me_attention_mask": me_tokenizer_outputs["attention_mask"],
+            "me_ent_input_ids": me_ent_input_ids_tensor,
+            "me_ent_mask": me_ent_mask,
+            "me_labels": torch.tensor(me_label_ids, dtype=torch.long),
+        })
+        return results

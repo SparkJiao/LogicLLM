@@ -6,7 +6,10 @@ import torch.distributed as dist
 from typing import Optional, Tuple
 from torch import Tensor
 from dataclasses import dataclass
+import torch.nn.functional as F
 from general_util.logger import get_child_logger
+
+logger = get_child_logger(__name__)
 
 
 @dataclass
@@ -37,12 +40,7 @@ class ERICAPredictor(RobertaModel, ABC):
                 return_dict: Optional[bool] = None, ):
         return_dict = return_dict if return_dict is not None else self.config.use_return_dict
 
-        # outputs = self.roberta(
-        #     input_ids,
-        #     attention_mask=attention_mask,
-        #     return_dict=return_dict,
-        # )
-        outputs = super().forward(input_ids, attention_mask, return_dict=return_dict)
+        outputs = super().forward(input_ids, attention_mask=attention_mask, return_dict=return_dict)
         sequence_output = outputs[0]
         ent_hidden = torch.einsum("bes,bsh->beh", ent_seq_mapping, sequence_output)
 
