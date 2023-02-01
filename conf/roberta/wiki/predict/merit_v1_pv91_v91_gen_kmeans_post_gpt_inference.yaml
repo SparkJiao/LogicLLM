@@ -1,0 +1,124 @@
+hydra:
+  run:
+    dir: ./
+
+train_file: wiki_erica_path/v9.1_fixed/distant_path_v9.1_fix_no_shuffle.train.0.pkl
+dev_file: wiki_erica_path/v9.1_fixed/distant_path_v9.1_fix_no_shuffle.dev.pkl
+test_file: wiki_erica_path/v9.1_fixed/distant_path_v9.1_fix_no_shuffle.train.0.pkl_roberta_False_8_1_512_0.4_5_1.0_1.0_0.0_8_path_v9.1.2
+
+data_dir: wiki_erica_path/v9.1_fixed/kmeans_v2
+
+# Model
+model:
+  _target_: models.gpt2.GPT2CausalLMInferenceInterface.from_pretrained
+
+
+# Data loading
+read_tensor:
+  _target_: data.collators.wiki_tokens_collator.GPTInference
+  num_workers: 96
+
+extended_vocab:
+
+# Data collator
+collator:
+  _target_: data.collators.wiki_tokens_collator.GPTInferenceCollator
+  max_seq_length: 1024
+  tokenizer_path: pretrained-models/gpt2-large
+
+# Dataloader
+num_workers: 16
+prefetch_factor: 2
+
+do_preprocess: False
+
+# Wiki path pretrain v8.2
+model_name_or_path: pretrained-models/gpt2-large
+pretrain:
+
+#output_dir: experiments/roberta.large.wiki_erica_path_v9.1_v9.1.gen.kmeans.post.c256.v1.12.1aug.seq512.w8.lamb.500steps.RTXA6K
+#output_dir: experiments/roberta.large.wiki_erica_path_v9.1_v9.1.gen.kmeans.post.c256.tmp
+output_dir: pretrained-models/gpt2-large
+predict_dir: experiments/roberta.large.wiki_erica_path_v9.1_v9.1.gen.kmeans.post.c256.tmp
+
+do_train: False
+evaluate_during_training: True
+
+do_eval: True
+eval_sub_path:
+
+# Training hyper-parameters
+per_gpu_train_batch_size: 4
+per_gpu_eval_batch_size: 32
+learning_rate: 1e-4
+gradient_accumulation_steps: 128
+weight_decay: 0.01
+adam_epsilon: 1e-6
+adam_betas: "(0.9, 0.98)"
+max_grad_norm: 5.0
+num_train_epochs: 10
+max_steps: 500
+warmup_proportion: 0.1
+warmup_steps: 0
+
+# Optimizer
+optimizer: lamb
+use_nvlamb: True
+bit_training:
+
+
+logging_steps: 1
+save_best: False
+save_steps: 100
+eval_steps: 100
+ddp_eval: True
+no_cuda: False
+seed: 42
+local_rank: -1
+fp16: True
+fp16_opt_level: O1
+fp16_bfloat16: True
+
+# Prediction config
+prediction_cfg:
+  metric: "acc"
+  measure: 1
+  best_checkpoint:
+  best_result:
+eval_forward_fn:
+  _target_: general_util.evaluator.DefaultForwardFn
+post_process:
+  _target_: post_processors.erica_post_processor.CausalLMInferencePostProcessor
+
+
+#dist_init:
+#  _target_: general_util.dist_utils.setup_slurm_distributed
+
+
+# fairscale.FullyShardedDP
+fairscale_config:
+#  _target_: general_util.fsdp_utils.recursive_initialize
+  _target_: general_util.fsdp_utils.default_initialize
+  fp16: ${fp16}
+  move_grads_to_cpu: False
+  move_params_to_cpu: False
+
+summary_helper:
+  _target_: general_util.tensorboard_helper.SummaryWriterHelper
+  batch_index_or_keys:
+#    "train/pair_value_num": pair_value_num
+#    "train/pair_label_num": pair_label_num
+#    "train/dropped_op_cnt": dropped_op_cnt
+    "train/invalid_path": invalid_path
+  outputs_index_or_keys:
+    "train/mlm_loss": mlm_loss
+    "train/cls_loss": cls_loss
+    "train/tagging_loss": tagging_loss
+    "train/path_gen_loss": path_gen_loss
+
+# Temporary variables
+n_gpu:
+device:
+train_batch_size:
+eval_batch_size:
+world_size:

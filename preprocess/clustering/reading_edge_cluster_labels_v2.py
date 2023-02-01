@@ -1,4 +1,6 @@
 import argparse
+import glob
+import os.path
 import pickle
 from collections import defaultdict
 from typing import Dict
@@ -57,8 +59,20 @@ def load_edge_relation_file(edge_cluster_file):
 def main():
     args = parse_args()
 
-    data = pickle.load(open(args.input_file, "rb"))
-    examples = data["examples"]
+    # data = pickle.load(open(args.input_file, "rb"))
+    # examples = data["examples"]
+    # print(len(set([exp["id"] for exp in examples])))
+    # print(len(examples))
+    if os.path.exists(args.input_file):
+        print(f"Loading examples from {args.input_file}")
+        examples = pickle.load(open(args.input_file, "rb"))["examples"]
+    else:
+        examples = []
+        files = glob.glob(args.input_file)
+        for _file in files:
+            print(f"Loading examples from {_file}")
+            sub_examples = pickle.load(open(_file, "rb"))["examples"]
+            examples.extend(sub_examples)
     print(len(set([exp["id"] for exp in examples])))
     print(len(examples))
 

@@ -98,3 +98,40 @@ class WikiPathInferencePostProcessor(DistGatherMixin):
         }, output_file)
         logger.info(f"Index num: {len(self.indices)}\tCode num:{len(self.codes)}")
         return {}, []
+
+
+class CausalLMInferencePostProcessor(DistGatherMixin):
+    def __init__(self):
+        self.indices = []
+        self.losses = []
+
+    def __call__(self, meta_data: Dict[str, Any], batch_model_outputs: Dict[str, Any], ddp: bool = False):
+        indices = meta_data["index"]
+        losses = batch_model_outputs["loss"].tolist()
+
+        # if ddp:
+        #     obj = [losses, indices]
+        #     gather_res = self.gather_object(obj)
+        #     if dist.get_rank() == 0:
+        #         tmp_a = []
+        #         tmp_b = []
+        #         for item in gather_res:
+        #             tmp_a.extend(item[0])
+        #             tmp_b.extend(item[1])
+        #         losses = tmp_a
+        #         indices = tmp_b
+
+        self.indices.extend(indices)
+        self.losses.extend(losses)
+
+    def get_results(self, output_dir: str):
+        if dist.is_initialized():
+            output_file = os.path.join(output_dir, f"predictions-rank{dist.get_rank()}.pt")
+        else:
+            output_file = os.path.join(output_dir, f"predictions.pt")
+        torch.save({
+            "indices": self.indices,
+            "losses": self.losses,
+        }, output_file)
+        logger.info(f"Index num: {len(self.indices)}\tLoss num:{len(self.losses)}")
+        return {}, []

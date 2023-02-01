@@ -9,17 +9,32 @@ import torch
 from tqdm import tqdm
 
 file_name_mapping = {
-    f"train_distant_{i}.path_v9.1.pkl": f"train_distant_{i}.json" for i in range(10)
+    # f"train_distant_{i}.path_v9.1.pkl": f"train_distant_{i}.json" for i in range(10)
+    f"train_distant_{i}.path_v9.2_mm5.pkl": f"train_distant_{i}.json" for i in range(10)
 }
 
 
 def organize_entity_hidden(file_path):
-    print(f"Loading entity hidden.")
-    predictions = torch.load(file_path, map_location="cpu")
-    print(f"Entity hidden loaded.")
-    entity_hidden = predictions["hidden"]
-    indices = predictions["index"]
-    print(indices[:20])
+    # print(f"Loading entity hidden.")
+    # predictions = torch.load(file_path, map_location="cpu")
+    # print(f"Entity hidden loaded.")
+    # entity_hidden = predictions["hidden"]
+    # indices = predictions["index"]
+    # print(indices[:20])
+    print(file_path)
+    if os.path.exists(file_path):
+        files = [file_path]
+    else:
+        files = glob(file_path)
+    print(files)
+    entity_hidden = []
+    indices = []
+    for file in files:
+        print(f"Loading entity hidden from {file}")
+        predictions = torch.load(file, map_location="cpu")
+        entity_hidden.extend(predictions["hidden"])
+        indices.extend(predictions["index"])
+    print(f"Loaded.")
 
     file_ent_hidden = collections.defaultdict(dict)
     for item_ent_hidden, index in tqdm(zip(entity_hidden, indices), total=len(indices)):
@@ -99,4 +114,5 @@ def main():
 
 
 if __name__ == '__main__':
+    print(f"Start")
     main()

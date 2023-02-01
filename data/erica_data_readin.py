@@ -91,7 +91,8 @@ def process_erica_para_word(example, tokenizer: PreTrainedTokenizer, max_seq_len
 
         subword_e = len(tokens)
 
-        entity_subword_spans[mention["id"]].append((subword_s, subword_e))
+        if subword_e > subword_s:
+            entity_subword_spans[mention["id"]].append((subword_s, subword_e))
 
         last_e = word_e
 

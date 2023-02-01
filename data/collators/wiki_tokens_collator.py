@@ -1,7 +1,12 @@
+import os.path
 import random
 from typing import Tuple, Optional
+from tqdm import tqdm
+from multiprocessing import Pool
+from functools import partial
 
 import torch
+from torch.utils.data import Dataset
 from transformers import AutoTokenizer, PreTrainedTokenizer
 from transformers.tokenization_utils import PaddingStrategy, TruncationStrategy
 
@@ -333,3 +338,100 @@ class WikiPathDatasetCollatorRelSeqGenMEV1(WikiPathDatasetCollatorRelSeqGenV1):
             "me_labels": torch.tensor(me_label_ids, dtype=torch.long),
         })
         return results
+
+
+def _init_():
+    global roberta_tokenizer
+    roberta_tokenizer = AutoTokenizer.from_pretrained('pretrained-models/roberta-large')
+
+
+def _extract_text_single_example(example):
+    example_id, example = example
+    examples = []
+    indices = []
+    for op_id, op in enumerate(example["tokens"]):
+        if isinstance(op, list):
+            token_ids = roberta_tokenizer.convert_tokens_to_ids(op)
+        else:
+            tokens = roberta_tokenizer.tokenize(op)
+            token_ids = roberta_tokenizer.convert_tokens_to_ids(tokens)
+        text = roberta_tokenizer.decode(token_ids, skip_special_tokens=True)
+
+        if op_id == 0:
+            index = f"{example_id}-{example['orig_id']}-pos-{op_id}"
+            if "h" in example:
+                index = index + "-aug"
+            else:
+                index = index + "-nom"
+        else:
+            index = f"{example_id}-{example['orig_id']}-neg-{op_id}"
+            if "h" in example:
+                index = index + "-aug"
+            else:
+                index = index + "-nom"
+        examples.append(text)
+        indices.append(index)
+    return examples, indices
+
+
+def extracting_text_entrance(file_path, num_workers: int = 48):
+    all_examples, raw_texts = torch.load(file_path)
+
+    examples = []
+    indices = []
+    with Pool(num_workers, initializer=_init_) as p:
+        _results = list(tqdm(
+            p.imap(_extract_text_single_example, list(enumerate(all_examples)), chunksize=32),
+            total=len(all_examples),
+            desc="Reading examples"
+        ))
+    for res in _results:
+        examples.extend(res[0])
+        indices.extend(res[1])
+    return examples, indices
+
+
+class GPTInference(Dataset):
+    def __init__(self, file_path, tokenizer, num_workers: int = 48):
+        super().__init__()
+
+        cache_path = f"{file_path}_kkkkktmp"
+        if os.path.exists(cache_path):
+            self.examples, self.indices = torch.load(cache_path)
+        else:
+            examples, indices = extracting_text_entrance(file_path, num_workers=num_workers)
+            torch.save((examples, indices), cache_path)
+            self.examples = examples
+            self.indices = indices
+
+    def __len__(self):
+        return len(self.examples)
+
+    def __getitem__(self, index):
+        return {
+            "text": self.examples[index],
+            "index": self.indices[index],
+        }
+
+
+class GPTInferenceCollator:
+    def __init__(self, tokenizer_path, max_seq_length: int = 512):
+        self.tokenizer = AutoTokenizer.from_pretrained(tokenizer_path, use_fast=False)
+        self.max_seq_length = max_seq_length
+        self.tokenizer.pad_token = self.tokenizer.eos_token
+
+    def __call__(self, batch):
+        texts = [b["text"] for b in batch]
+        indices = [b["index"] for b in batch]
+
+        inputs = self.tokenizer(texts, padding=PaddingStrategy.LONGEST,
+                                truncation=TruncationStrategy.LONGEST_FIRST,
+                                max_length=self.max_seq_length,
+                                return_tensors="pt")
+        labels = inputs["input_ids"].clone()
+
+        inputs["labels"] = labels
+        inputs["meta_data"] = {
+            "index": indices
+        }
+        return inputs

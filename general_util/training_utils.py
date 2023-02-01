@@ -1,5 +1,7 @@
+import glob
 import random
 from typing import Dict, List
+import os
 
 import hydra
 import numpy as np
@@ -53,22 +55,26 @@ def batch_to_device(batch: Dict[str, torch.Tensor], device):
     return batch_on_device
 
 
-def load_and_cache_examples(cfg, tokenizer: PreTrainedTokenizer, _split="train"):
+def load_and_cache_examples(cfg, tokenizer: PreTrainedTokenizer, _split="train", _file: str = None):
     if_barrier = False
 
-    if _split == "train":
-        input_file = cfg.train_file
+    if _file is not None:
+        input_file = _file
         if_barrier = True
-    elif _split == "dev":
-        input_file = cfg.dev_file
-        if cfg.ddp_eval and cfg.local_rank != -1:
-            if_barrier = True
-    elif _split == "test":
-        input_file = cfg.test_file
-        if cfg.ddp_eval and cfg.local_rank != -1:
-            if_barrier = True
     else:
-        raise RuntimeError(_split)
+        if _split == "train":
+            input_file = cfg.train_file
+            if_barrier = True
+        elif _split == "dev":
+            input_file = cfg.dev_file
+            if cfg.ddp_eval and cfg.local_rank != -1:
+                if_barrier = True
+        elif _split == "test":
+            input_file = cfg.test_file
+            if cfg.ddp_eval and cfg.local_rank != -1:
+                if_barrier = True
+        else:
+            raise RuntimeError(_split)
 
     if if_barrier and cfg.local_rank not in [-1, 0]:
         dist.barrier()  # Make sure only the first process in distributed training process the dataset, and the others will use the cache
