@@ -226,6 +226,83 @@ class ERICATextDatasetV2(Dataset):
         return process_erica_para_word(self.samples[index], self.tokenizer, self.max_seq_length, self.mlm) + (self.indices[index],)
 
 
+class ERICATextSeq2SeqDataset(Dataset):
+    def __init__(self, file_path: str, tokenizer: PreTrainedTokenizer):
+        if os.path.exists(file_path):
+            input_files = [file_path]
+        else:
+            input_files = list(glob.glob(file_path))
+            input_files = sorted(input_files)
+        assert input_files, input_files
+
+        self.indices = []
+        self.paragraphs = []
+        for _file in input_files:
+            logger.info(f"Reading from {_file}")
+            data = json.load(open(_file))
+            file_name = _file.split("/")[-1]
+            for item_id, item in tqdm(enumerate(data), total=len(data), desc=f"Reading {file_name}"):
+                self.indices.append((file_name, item_id))
+                sentences = [" ".join(sent) for sent in item["sents"]]
+                self.paragraphs.append(sentences)
+
+        assert len(self.paragraphs) == len(self.indices)
+
+        self.tokenizer = tokenizer
+
+    def __len__(self):
+        return len(self.paragraphs)
+
+    def __getitem__(self, index):
+        return {
+            "text": self.paragraphs[index],
+            "index": self.indices[index],
+        }
+
+
+def mention_swap(template: Dict, i: int, j: int, keep_span: bool = False):
+    assert i != j
+    m1 = template["entity_replacement"][i]
+    m2 = template["entity_replacement"][j]
+
+    span1 = template["spans"][m1["span_index"]]
+    span2 = template["spans"][m2["span_index"]]
+
+    spans = copy.deepcopy(template["spans"])
+    spans[m1["span_index"]] = span2
+    spans[m2["span_index"]] = span1
+
+    if keep_span:
+        return spans, m1["span_index"], m2["span_index"]
+    return " ".join(spans)
+
+
+class ERICAContextPredictDataset(Dataset):
+    # Inference only.
+    def __init__(self, file_path: str, tokenizer: PreTrainedTokenizer):
+        self.data = torch.load(file_path)
+        self.examples = []
+        self.indices = []
+        for i, item in tqdm(enumerate(self.data), total=len(self.data), desc=f"Reading from {file_path}"):
+            item_id = item["id"]
+            for s_id, s_neg_ls in enumerate(item["templates"]):
+                for neg_id, neg in enumerate(s_neg_ls["neg"]):
+                    self.examples.append((i, s_id, neg["id1"], neg["id2"]))
+                    self.indices.append(f"{item_id}-{s_id}-{neg_id}")
+
+    def __len__(self):
+        return len(self.examples)
+
+    def __getitem__(self, index):
+        item = self.examples[index]
+        template = self.data[item[0]]["templates"][item[1]]["template"]
+        neg = mention_swap(template, item[2], item[3], keep_span=True)
+        return {
+            "text": neg,
+            "index": self.indices[index],
+        }
+
+
 class ERICASentenceDataset(Dataset):
     def __init__(self, file_path: str, tokenizer: PreTrainedTokenizer, cached_path: str = None, keep_original: bool = False):
         if os.path.exists(file_path):
@@ -851,6 +928,104 @@ class ERICATextCollatorV2(ERICATextCollator):
                 "entity_mentions": batch_ent_mentions,
             }
         }
+
+
+class ERICATextSeq2SeqCollator:
+    def __init__(self, tokenizer, max_input_len: int, max_output_len: int, shuffle: bool = True):
+        self.tokenizer: PreTrainedTokenizer = AutoTokenizer.from_pretrained(tokenizer)
+        self.max_input_len = max_input_len
+        self.max_output_len = max_output_len
+        self.shuffle = shuffle
+
+    def __call__(self, batch):
+        texts = [b["text"] for b in batch]
+        inputs = []
+        outputs = []
+        for sentences in texts:
+            range_ids = range(len(sentences))
+            target_id = random.choice(range_ids)
+            context = [sent for s_id, sent in enumerate(sentences) if s_id != target_id]
+            if self.shuffle:
+                random.shuffle(context)
+            inputs.append(" ".join(context))
+            outputs.append(sentences[target_id])
+
+        seq2seq_inputs = self.tokenizer(inputs, text_target=outputs,
+                                        padding="longest", truncation=True, max_length=self.max_input_len, return_tensors="pt")
+        # with self.tokenizer.as_target_tokenizer():
+        #     labels = self.tokenizer(outputs, padding="longest", truncation=True, max_length=self.max_output_len, return_tensors="pt")
+        #     seq2seq_inputs["labels"] = labels["input_ids"]
+
+        seq2seq_inputs["meta_data"] = {
+            "index": [b["index"] for b in batch],
+        }
+
+        return seq2seq_inputs
+
+
+class ERICAContextPredictCollator:
+    def __init__(self, tokenizer, max_seq_len: int = 512, mlm: bool = True):
+        self.tokenizer: PreTrainedTokenizer = AutoTokenizer.from_pretrained(tokenizer)
+        self.max_seq_len = max_seq_len
+        self.mlm = mlm
+
+    def mask_tokens(self, spans: List[str], idx1: int, idx2: int):
+        tokens = [self.tokenizer.cls_token]
+        labels = [-1]
+
+        for span_id, span in enumerate(spans):
+            span_tokens = self.tokenizer.tokenize(" " + span)
+            if span_id == idx1 or span_id == idx2:
+                tokens.extend([self.tokenizer.mask_token] * len(span_tokens))
+                labels.extend(self.tokenizer.convert_tokens_to_ids(span_tokens))
+            else:
+                tokens.extend(span_tokens)
+                labels.extend([-1] * len(span_tokens))
+
+            assert len(tokens) == len(labels), (len(tokens), len(labels))
+
+            if len(tokens) >= self.max_seq_len - 1:
+                tokens = tokens[:(self.max_seq_len - 1)]
+                labels = labels[:(self.max_seq_len - 1)]
+
+        tokens.append(self.tokenizer.sep_token)
+        labels.append(-1)
+        assert len(tokens) <= self.max_seq_len
+        return tokens, labels
+
+    def __call__(self, batch):
+        texts = [b["text"] for b in batch]
+        indices = [b["index"] for b in batch]
+
+        if self.mlm:
+            input_ids_list = []
+            labels_list = []
+            for text in texts:
+                tokens, labels = self.mask_tokens(*text)
+                input_ids_list.append(self.tokenizer.convert_tokens_to_ids(tokens))
+                labels_list.append(labels)
+
+            max_seq_len = max(map(len, input_ids_list))
+            input_ids = torch.zeros(len(batch), max_seq_len, dtype=torch.long).fill_(self.tokenizer.pad_token_id)
+            attention_mask = torch.zeros(len(batch), max_seq_len, dtype=torch.long)
+            labels = torch.zeros(len(batch), max_seq_len, dtype=torch.long).fill_(-1)
+            for b, (x, y) in enumerate(zip(input_ids_list, labels_list)):
+                input_ids[b, :len(x)] = torch.tensor(x, dtype=torch.long)
+                attention_mask[b, :len(x)] = 1
+                labels[b, :len(y)] = torch.tensor(y, dtype=torch.long)
+
+            model_inputs = {
+                "input_ids": input_ids,
+                "attention_mask": attention_mask,
+                "labels": labels,
+            }
+        else:
+            raise NotImplementedError
+
+        model_inputs["meta_data"] = {
+            "index": indices,
+        }
+        return model_inputs
 
 
 class ERICASentenceCollator:

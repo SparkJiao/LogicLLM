@@ -1222,13 +1222,16 @@ class RobertaForMaskedLM(RobertaPreTrainedModel, LogMixin, ABC):
 
         masked_lm_loss = None
         if labels is not None:
-            loss_fct = CrossEntropyLoss(ignore_index=-1)
-            masked_lm_loss = loss_fct(prediction_scores.view(-1, self.vocab_size), labels.view(-1))
+            # loss_fct = CrossEntropyLoss(ignore_index=-1)
+            loss_fct = CrossEntropyLoss(ignore_index=-1, reduction="none")
+            masked_lm_loss = loss_fct(prediction_scores.view(-1, self.vocab_size), labels.view(-1)).reshape(labels.size())
+            non_pad_mask = (labels != self.config.pad_token_id).to(masked_lm_loss.dtype)
+            masked_lm_loss = (masked_lm_loss * non_pad_mask).sum(dim=-1) / non_pad_mask.sum(dim=-1)  # [b]
 
             if not self.training:
                 acc, true_label_num = layers.get_accuracy(prediction_scores, labels)
                 self.eval_metrics.update("acc", acc, n=true_label_num)
-                self.eval_metrics.update("loss", masked_lm_loss.item(), n=true_label_num)
+                self.eval_metrics.update("loss", masked_lm_loss.mean().item(), n=true_label_num)
 
         if not return_dict:
             output = (prediction_scores,) + outputs[2:]

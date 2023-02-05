@@ -73,7 +73,7 @@ class T5ForSeq2Seq(T5ForConditionalGeneration, LogMixin, ABC):
         # else:
         #     self.lm_scale_modifier = 1
 
-        self.init_metric("loss", "acc")
+        self.init_metric("loss", "acc", "bleu")
 
         self.logits_processor = logits_processor
         if self.logits_processor is not None:
@@ -257,21 +257,21 @@ class T5ForSeq2Seq(T5ForConditionalGeneration, LogMixin, ABC):
 
             if not self.training:
                 # Generate sentences for BLEU evaluation
-                # max_output_length = labels.size(1)
+                max_output_length = labels.size(1)
                 # Greedy decoding.
-                # eval_gen_sentences = self.generate(input_ids=input_ids, attention_mask=attention_mask, max_length=max_output_length,
-                #                                    num_beams=1, do_sample=False)
-                # eval_gen_sentences = self.tokenizer.batch_decode(eval_gen_sentences, skip_special_tokens=True)
-                # target = self.tokenizer.batch_decode(labels.masked_fill(label_padding_mask, self.config.pad_token_id),
-                #                                      skip_special_tokens=True)
+                eval_gen_sentences = self.generate(input_ids=input_ids, attention_mask=attention_mask, max_length=max_output_length,
+                                                   num_beams=1, do_sample=False)
+                eval_gen_sentences = self.tokenizer.batch_decode(eval_gen_sentences, skip_special_tokens=True)
+                target = self.tokenizer.batch_decode(labels.masked_fill(label_padding_mask, self.config.pad_token_id),
+                                                     skip_special_tokens=True)
                 # bleu = sum(
                 #     [sentence_bleu([tgt.split()], gen_sentence.split()) for tgt, gen_sentence in zip(target, eval_gen_sentences)]
                 # ) / labels.size(0)
-                # bleu = sum(
-                #     [sentence_bleu([word_tokenize(tgt)], word_tokenize(gen_sentence))
-                #      for tgt, gen_sentence in zip(target, eval_gen_sentences)]
-                # ) / labels.size(0)  # FIXED: the value should be the averaged one.
-                # self.eval_metrics.update("bleu", bleu, n=labels.size(0))
+                bleu = sum(
+                    [sentence_bleu([word_tokenize(tgt)], word_tokenize(gen_sentence))
+                     for tgt, gen_sentence in zip(target, eval_gen_sentences)]
+                ) / labels.size(0)  # FIXED: the value should be the averaged one.
+                self.eval_metrics.update("bleu", bleu, n=labels.size(0))
 
                 acc, true_label_num = layers.get_accuracy(lm_logits, labels)
                 self.eval_metrics.update("acc", acc, n=true_label_num)
