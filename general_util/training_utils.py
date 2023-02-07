@@ -184,6 +184,10 @@ def initialize_lr_scheduler(cfg: DictConfig, optimizer, num_warmup_steps: int, n
             from transformers import get_cosine_schedule_with_warmup
 
             lr_scheduler = get_cosine_schedule_with_warmup(optimizer, num_warmup_steps, num_training_steps)
+        elif cfg.lr_scheduler == "constant":
+            from transformers import get_constant_schedule_with_warmup
+
+            lr_scheduler = get_constant_schedule_with_warmup(optimizer, num_warmup_steps)
         else:
             raise NotImplementedError()
     else:

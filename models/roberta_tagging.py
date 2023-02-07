@@ -2,7 +2,8 @@ import copy
 import pickle
 from abc import ABC
 from dataclasses import dataclass
-from typing import Union, Dict
+from typing import Union, Dict, Optional
+import os
 
 import torch
 import transformers
@@ -12,8 +13,11 @@ from transformers.models.roberta.modeling_roberta import RobertaConfig
 from transformers import AutoTokenizer
 
 from general_util.logger import get_child_logger
-from models.roberta import RobertaForMultipleChoiceForPreTrain, RelDecoderHead, MultipleChoicePreTrainModelOutput, attentive_pooling
+from models.roberta import RobertaForMultipleChoiceForPreTrain, RelDecoderHead, MultipleChoicePreTrainModelOutput, attentive_pooling, \
+    RobertaModel, RobertaLMHead
 from modules import layers
+from transformers.models.gpt2.modeling_gpt2 import GPT2LMHeadModel, GPT2Config, GPT2Model
+from models.gpt2 import GPT2ForConditionalGeneration
 
 logger = get_child_logger("RoBERTa.Tagger")
 
@@ -861,4 +865,392 @@ class RobertaForMultipleChoicePreTrainTaggerMEV1(RobertaForMultipleChoicePreTrai
             tagging_loss=tagging_loss,
             tagging_logits=tagging_logits,
             me_loss=me_loss,
+        )
+
+
+class RobertaGPTForReconstruction(RobertaForMultipleChoiceForPreTrain, ABC):
+    def __init__(self, config: RobertaConfig,
+                 mlp_hidden_size: int = 768,
+                 mlm_alpha: float = 1.0,
+                 mlm_disabled: bool = False,
+                 decoder: GPT2LMHeadModel = None):
+        super().__init__(config, mlp_hidden_size, mlm_alpha, mlm_disabled)
+
+        self.roberta = RobertaModel(config)
+        self.lm_head = RobertaLMHead(config)
+        self.dropout = nn.Dropout(p=getattr(config, "pooler_dropout", config.hidden_dropout_prob))
+        self.vocab_size = config.vocab_size
+
+        self.init_weights()
+
+        self.gpt2: GPT2LMHeadModel = decoder
+        self.decoder_config = self.gpt2.config
+
+        self.decoder_proj = nn.Linear(config.hidden_size, self.decoder_config.n_embd)
+        self._init_weights(self.decoder_proj)
+
+        self.init_metric("loss", "reconstruct_acc", "reconstruct_loss", "mlm_loss", "mlm_acc", "")
+
+        self.mlm_alpha = mlm_alpha
+        # The option is added to disable the MLM loss but keep computing the MLM accuracy on the validation set,
+        # in order to observe if there is the catastrophic forgetting problem.
+        self.mlm_disabled = mlm_disabled
+
+    def forward(
+            self,
+            input_ids: Tensor,
+            attention_mask: Tensor = None,
+            token_type_ids: Tensor = None,
+            mlm_input_ids: Tensor = None,
+            mlm_attention_mask: Tensor = None,
+            mlm_labels: Tensor = None,
+            decoder_input_ids: Tensor = None,
+            decoder_attention_mask: Tensor = None,
+            decoder_labels: Tensor = None,
+            output_attentions=None,
+            output_hidden_states=None,
+            return_dict=None,
+            **kwargs
+    ):
+        r"""
+        labels (:obj:`torch.LongTensor` of shape :obj:`(batch_size,)`, `optional`):
+            Labels for computing the multiple choice classification loss. Indices should be in ``[0, ...,
+            num_choices-1]`` where :obj:`num_choices` is the size of the second dimension of the input tensors. (See
+            :obj:`input_ids` above)
+        """
+        return_dict = return_dict if return_dict is not None else self.config.use_return_dict
+        batch_size, seq_len = input_ids.size()
+
+        outputs = self.roberta(
+            input_ids,
+            token_type_ids=token_type_ids,
+            attention_mask=attention_mask,
+            output_attentions=output_attentions,
+            output_hidden_states=output_hidden_states,
+            return_dict=return_dict,
+        )
+        pooled_output = outputs[0][:, :1]
+        rel_hidden_states = self.decoder_proj(pooled_output)
+
+        decoder_outputs = self.gpt2(input_ids=decoder_input_ids,
+                                    attention_mask=decoder_attention_mask,
+                                    labels=decoder_labels,
+                                    z_hidden_states=rel_hidden_states,
+                                    return_dict=True)
+
+        reconstruct_loss = decoder_outputs["loss"]
+        reconstruct_logits = decoder_outputs["logits"][:, :-1].contiguous()
+
+        loss = reconstruct_loss
+        mlm_loss = 0.
+        if decoder_labels is not None:
+            loss_fct = CrossEntropyLoss(ignore_index=-1)
+
+            if mlm_labels is not None and (self.mlm_disabled is False or self.training is False):
+                mlm_outputs = self.roberta(
+                    mlm_input_ids,
+                    attention_mask=mlm_attention_mask,
+                    return_dict=return_dict
+                )
+
+                mlm_scores = self.lm_head(mlm_outputs[0])
+                mlm_loss = self.mlm_alpha * loss_fct(mlm_scores.reshape(-1, self.vocab_size), mlm_labels.reshape(-1))
+                if not self.mlm_disabled:
+                    loss = loss + mlm_loss
+            else:
+                mlm_scores = None
+                mlm_loss = None
+
+            if not self.training:
+                masked_decoder_labels = decoder_labels.masked_fill(decoder_labels == self.decoder_config.eos_token_id, -1)
+                acc, true_label_num = layers.get_accuracy(reconstruct_logits, masked_decoder_labels)
+                self.eval_metrics.update("reconstruct_acc", val=acc, n=true_label_num)
+                self.eval_metrics.update("loss", val=loss.item(), n=true_label_num)
+                self.eval_metrics.update("reconstruct_loss", val=reconstruct_loss.item(), n=true_label_num)
+
+                if mlm_labels is not None:
+                    acc, true_label_num = layers.get_accuracy(mlm_scores, mlm_labels)
+                    self.eval_metrics.update("mlm_acc", val=acc, n=true_label_num)
+                    self.eval_metrics.update("mlm_loss", val=mlm_loss.item(), n=true_label_num)
+
+        if not return_dict:
+            output = (reconstruct_logits,) + outputs[2:] + (mlm_loss, reconstruct_loss,)
+            return ((loss,) + output) if loss is not None else output
+
+        return TaggingOutputClass(
+            loss=loss,
+            logits=reconstruct_logits,
+            hidden_states=outputs.hidden_states,
+            attentions=outputs.attentions,
+            mlm_loss=mlm_loss,
+        )
+
+
+class RobertaGPTForReconstructionMCQA(RobertaGPTForReconstruction, ABC):
+    def __init__(self, config: RobertaConfig,
+                 mlp_hidden_size: int = 768,
+                 mlm_alpha: float = 1.0,
+                 mlm_disabled: bool = False,
+                 decoder: GPT2LMHeadModel = None):
+        super().__init__(config, mlp_hidden_size, mlm_alpha, mlm_disabled, decoder)
+
+        self.init_metric("loss", "reconstruct_acc", "reconstruct_loss", "mlm_loss", "mlm_acc", "acc", "cls_loss")
+
+    def forward(
+            self,
+            input_ids: Tensor,
+            attention_mask: Tensor = None,
+            token_type_ids: Tensor = None,
+            labels: Tensor = None,
+            mlm_input_ids: Tensor = None,
+            mlm_attention_mask: Tensor = None,
+            mlm_labels: Tensor = None,
+            decoder_input_ids: Tensor = None,
+            decoder_attention_mask: Tensor = None,
+            decoder_labels: Tensor = None,
+            output_attentions=None,
+            output_hidden_states=None,
+            return_dict=None,
+            **kwargs
+    ):
+        r"""
+        labels (:obj:`torch.LongTensor` of shape :obj:`(batch_size,)`, `optional`):
+            Labels for computing the multiple choice classification loss. Indices should be in ``[0, ...,
+            num_choices-1]`` where :obj:`num_choices` is the size of the second dimension of the input tensors. (See
+            :obj:`input_ids` above)
+        """
+        return_dict = return_dict if return_dict is not None else self.config.use_return_dict
+        batch_size, num_choices, seq_len = input_ids.size()
+
+        input_ids = self.fold_tensor(input_ids)
+        attention_mask = self.fold_tensor(attention_mask)
+        token_type_ids = self.fold_tensor(token_type_ids)
+
+        outputs = self.roberta(
+            input_ids,
+            token_type_ids=token_type_ids,
+            attention_mask=attention_mask,
+            output_attentions=output_attentions,
+            output_hidden_states=output_hidden_states,
+            return_dict=return_dict,
+        )
+        pooled_output = outputs[0][:, 0]
+        logits = self.cls(self.dropout(self.pooler(pooled_output)))
+        reshaped_logits = logits.view(-1, num_choices)
+
+        rel_pooled_output = pooled_output.reshape(batch_size, num_choices, -1)[:, :1]
+        rel_hidden_states = self.decoder_proj(rel_pooled_output)
+
+        decoder_outputs = self.gpt2(input_ids=decoder_input_ids,
+                                    attention_mask=decoder_attention_mask,
+                                    labels=decoder_labels,
+                                    z_hidden_states=rel_hidden_states,
+                                    return_dict=True)
+
+        reconstruct_loss = decoder_outputs["loss"]
+        reconstruct_logits = decoder_outputs["logits"][:, :-1].contiguous()
+
+        loss = reconstruct_loss
+        mlm_loss = 0.
+        if decoder_labels is not None:
+            loss_fct = CrossEntropyLoss(ignore_index=-1)
+            cls_loss = loss_fct(reshaped_logits, labels)
+            loss = loss + cls_loss
+
+            if mlm_labels is not None and (self.mlm_disabled is False or self.training is False):
+                mlm_outputs = self.roberta(
+                    mlm_input_ids,
+                    attention_mask=mlm_attention_mask,
+                    return_dict=return_dict
+                )
+
+                mlm_scores = self.lm_head(mlm_outputs[0])
+                mlm_loss = self.mlm_alpha * loss_fct(mlm_scores.reshape(-1, self.vocab_size), mlm_labels.reshape(-1))
+                if not self.mlm_disabled:
+                    loss = loss + mlm_loss
+            else:
+                mlm_scores = None
+                mlm_loss = None
+
+            if not self.training:
+                acc, true_label_num = layers.get_accuracy(reshaped_logits, labels)
+                self.eval_metrics.update("acc", val=acc, n=true_label_num)
+                self.eval_metrics.update("loss", val=loss.item(), n=true_label_num)
+                self.eval_metrics.update("cls_loss", val=cls_loss.item(), n=true_label_num)
+
+                masked_decoder_labels = decoder_labels.masked_fill(decoder_labels == self.decoder_config.eos_token_id, -1)
+                acc, true_label_num = layers.get_accuracy(reconstruct_logits, masked_decoder_labels)
+                self.eval_metrics.update("reconstruct_acc", val=acc, n=true_label_num)
+                self.eval_metrics.update("reconstruct_loss", val=reconstruct_loss.item(), n=true_label_num)
+
+                if mlm_labels is not None:
+                    acc, true_label_num = layers.get_accuracy(mlm_scores, mlm_labels)
+                    self.eval_metrics.update("mlm_acc", val=acc, n=true_label_num)
+                    self.eval_metrics.update("mlm_loss", val=mlm_loss.item(), n=true_label_num)
+
+        if not return_dict:
+            output = (reconstruct_logits,) + outputs[2:] + (mlm_loss, reconstruct_loss,)
+            return ((loss,) + output) if loss is not None else output
+
+        return TaggingOutputClass(
+            loss=loss,
+            logits=reconstruct_logits,
+            hidden_states=outputs.hidden_states,
+            attentions=outputs.attentions,
+            mlm_loss=mlm_loss,
+        )
+
+
+def encode(input_ids, attention_mask, return_dict, encoder):
+    outputs = encoder(input_ids, attention_mask=attention_mask, return_dict=return_dict)
+    seq_hidden = outputs[0]
+    pooled_output = seq_hidden[:, 0]
+    return seq_hidden, pooled_output
+
+
+class RobertaGPTForReconstructionV2(RobertaForMultipleChoiceForPreTrain, ABC):
+    def __init__(self, config: RobertaConfig,
+                 mlp_hidden_size: int = 768,
+                 mlm_alpha: float = 1.0,
+                 mlm_disabled: bool = False,
+                 decoder: GPT2LMHeadModel = None,
+                 decoder_config: GPT2Config = None):
+        super().__init__(config, mlp_hidden_size, mlm_alpha, mlm_disabled)
+
+        self.gpt2: GPT2LMHeadModel = decoder
+        self.decoder_config = decoder_config if decoder_config is not None else self.gpt2.config
+
+        self.decoder_proj = nn.Linear(config.hidden_size, self.decoder_config.n_embd)
+        self.entity_proj = nn.Linear(config.hidden_size, self.decoder_config.n_embd)
+        self._init_weights(self.decoder_proj)
+        self._init_weights(self.entity_proj)
+
+        self.init_metric("loss", "reconstruct_acc", "reconstruct_loss", "mlm_loss", "mlm_acc")
+
+        self.mlm_alpha = mlm_alpha
+        # The option is added to disable the MLM loss but keep computing the MLM accuracy on the validation set,
+        # in order to observe if there is the catastrophic forgetting problem.
+        self.mlm_disabled = mlm_disabled
+
+    @classmethod
+    def from_pretrained(cls, pretrained_model_name_or_path: Optional[Union[str, os.PathLike]], *model_args, **kwargs):
+        decoder = kwargs.pop("decoder")
+        config = copy.deepcopy(decoder.config)
+
+        model = super().from_pretrained(pretrained_model_name_or_path, *model_args, **kwargs, decoder_config=config)
+
+        model.gpt2 = decoder
+        return model
+
+    def forward(
+            self,
+            input_ids: Tensor,
+            attention_mask: Tensor = None,
+            token_type_ids: Tensor = None,
+            mlm_input_ids: Tensor = None,
+            mlm_attention_mask: Tensor = None,
+            mlm_labels: Tensor = None,
+            p_input_ids: Tensor = None,
+            p_attention_mask: Tensor = None,
+            decoding_input_ids: Tensor = None,
+            decoding_attention_mask: Tensor = None,
+            p_decoding_input_ids: Tensor = None,
+            p_decoding_attention_mask: Tensor = None,
+            h_span_marks: Tensor = None,
+            t_span_marks: Tensor = None,
+            entity_pair_mask: Tensor = None,
+            p_h_span_marks: Tensor = None,
+            p_t_span_marks: Tensor = None,
+            p_entity_pair_mask: Tensor = None,
+            output_attentions=None,
+            output_hidden_states=None,
+            return_dict=None,
+            **kwargs
+    ):
+        r"""
+        labels (:obj:`torch.LongTensor` of shape :obj:`(batch_size,)`, `optional`):
+            Labels for computing the multiple choice classification loss. Indices should be in ``[0, ...,
+            num_choices-1]`` where :obj:`num_choices` is the size of the second dimension of the input tensors. (See
+            :obj:`input_ids` above)
+        """
+        return_dict = return_dict if return_dict is not None else self.config.use_return_dict
+        batch_size, seq_len = input_ids.size()
+
+        seq_hidden, pooled_output = encode(input_ids, attention_mask, return_dict, self.roberta)
+        p_seq_hidden, p_pooled_output = encode(p_input_ids, p_attention_mask, return_dict, self.roberta)
+
+        z = self.decoder_proj(pooled_output)
+        pz = self.decoder_proj(p_pooled_output)
+
+        equ = "bst,bth->bsh"
+        s_num = h_span_marks.size(1)
+        ps_num = p_h_span_marks.size(1)
+        h_hidden = self.entity_proj(torch.einsum(equ, h_span_marks, seq_hidden))
+        t_hidden = self.entity_proj(torch.einsum(equ, t_span_marks, seq_hidden))
+        p_h_hidden = self.entity_proj(torch.einsum(equ, p_h_span_marks, p_seq_hidden))
+        p_t_hidden = self.entity_proj(torch.einsum(equ, p_t_span_marks, p_seq_hidden))
+        dec_inputs_embeds = torch.cat([h_hidden[:, :, None, :], t_hidden[:, :, None, :]], dim=2).reshape(batch_size, s_num * 2, -1)
+        p_dec_inputs_embeds = torch.cat([p_h_hidden[:, :, None, :], p_t_hidden[:, :, None, :]], dim=2).reshape(batch_size, ps_num * 2, -1)
+        dec_attention_mask = entity_pair_mask.unsqueeze(2).expand(-1, -1, 2).reshape(batch_size, s_num * 2)
+        p_dec_attention_mask = p_entity_pair_mask.unsqueeze(2).expand(-1, -1, 2).reshape(batch_size, ps_num * 2)
+
+        decoder_outputs1 = self.gpt2(inputs_embeds=dec_inputs_embeds,
+                                     attention_mask=dec_attention_mask,
+                                     labels=p_decoding_input_ids,
+                                     target_attention_mask=p_decoding_attention_mask,
+                                     z_hidden_states=pz.unsqueeze(1),
+                                     return_dict=True)
+        decoder_outputs2 = self.gpt2(inputs_embeds=p_dec_inputs_embeds,
+                                     attention_mask=p_dec_attention_mask,
+                                     labels=decoding_input_ids,
+                                     target_attention_mask=decoding_attention_mask,
+                                     z_hidden_states=z.unsqueeze(1),
+                                     return_dict=True)
+
+        reconstruct_loss = (decoder_outputs1["loss"] + decoder_outputs2["loss"]) / 2.
+        reconstruct_logits = torch.cat([decoder_outputs1["logits"][:, :-1], decoder_outputs2["logits"][:, :-1]], dim=1)
+
+        loss = reconstruct_loss
+        mlm_loss = 0.
+        if decoding_input_ids is not None:
+            loss_fct = CrossEntropyLoss(ignore_index=-1)
+
+            if mlm_labels is not None and (self.mlm_disabled is False or self.training is False):
+                mlm_outputs = self.roberta(
+                    mlm_input_ids,
+                    attention_mask=mlm_attention_mask,
+                    return_dict=return_dict
+                )
+
+                mlm_scores = self.lm_head(mlm_outputs[0])
+                mlm_loss = self.mlm_alpha * loss_fct(mlm_scores.reshape(-1, self.vocab_size), mlm_labels.reshape(-1))
+                if not self.mlm_disabled:
+                    loss = loss + mlm_loss
+            else:
+                mlm_scores = None
+                mlm_loss = None
+
+            if not self.training:
+                # masked_decoder_labels = decoder_labels.masked_fill(decoder_labels == self.decoder_config.eos_token_id, -1)
+                masked_decoder_labels = torch.cat([p_decoding_input_ids, decoding_input_ids], dim=1)
+                masked_decoder_labels = masked_decoder_labels.masked_fill(~torch.cat([
+                    p_decoding_attention_mask, decoding_attention_mask], dim=1).bool(), -1)
+                acc, true_label_num = layers.get_accuracy(reconstruct_logits, masked_decoder_labels)
+                self.eval_metrics.update("reconstruct_acc", val=acc, n=true_label_num)
+                self.eval_metrics.update("loss", val=loss.item(), n=true_label_num)
+                self.eval_metrics.update("reconstruct_loss", val=reconstruct_loss.item(), n=true_label_num)
+
+                if mlm_labels is not None:
+                    acc, true_label_num = layers.get_accuracy(mlm_scores, mlm_labels)
+                    self.eval_metrics.update("mlm_acc", val=acc, n=true_label_num)
+                    self.eval_metrics.update("mlm_loss", val=mlm_loss.item(), n=true_label_num)
+
+        if not return_dict:
+            output = (reconstruct_logits,) + (mlm_loss, reconstruct_loss,)
+            return ((loss,) + output) if loss is not None else output
+
+        return TaggingOutputClass(
+            loss=loss,
+            logits=reconstruct_logits,
+            mlm_loss=mlm_loss,
         )

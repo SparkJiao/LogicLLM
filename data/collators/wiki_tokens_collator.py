@@ -1,3 +1,4 @@
+import collections
 import os.path
 import random
 from typing import Tuple, Optional
@@ -11,6 +12,7 @@ from transformers import AutoTokenizer, PreTrainedTokenizer
 from transformers.tokenization_utils import PaddingStrategy, TruncationStrategy
 
 from general_util.logger import get_child_logger
+from data.collators.wiki import WikiPathDatasetV5
 
 logger = get_child_logger("Wiki.Entity.Path.tokens.collator")
 
@@ -434,4 +436,282 @@ class GPTInferenceCollator:
         inputs["meta_data"] = {
             "index": indices
         }
+        return inputs
+
+
+# ===================== Relation-based graph-to-text generation
+
+class WikiReconstructDataset(WikiPathDatasetV5):
+    def __init__(self, examples, raw_texts, remove_cf_data_decoding: bool = False):
+        super().__init__(examples, raw_texts)
+
+        self.orig_id2exp_id = collections.defaultdict(list)
+        for exp_id, exp in enumerate(examples):
+            self.orig_id2exp_id[exp["orig_id"]].append(exp_id)
+
+    def __getitem__(self, index):
+        item = super().__getitem__(index)
+
+        example = item["example"]
+        exp_id = item["index"]
+        pair_exp_ids = list(set(self.orig_id2exp_id[example["orig_id"]]) - {exp_id})
+        if len(pair_exp_ids):
+            pair_example = self.examples[random.choice(pair_exp_ids)]
+        else:
+            pair_example = example
+        item["paired_example"] = pair_example
+
+        return item
+
+
+class WikiPathTokensDatasetCollator:
+    def __init__(self, max_seq_length: int, tokenizer: str, decoder_tokenizer: str,
+                 decoder_max_seq_length: int = 1024, mlm_probability: float = 0.15):
+        self.max_seq_length = max_seq_length
+        self.decoder_max_seq_length = decoder_max_seq_length
+        self.tokenizer: PreTrainedTokenizer = AutoTokenizer.from_pretrained(tokenizer, use_fast=False)
+        self.decoder_tokenizer: PreTrainedTokenizer = AutoTokenizer.from_pretrained(decoder_tokenizer, use_fast=False)
+        self.mlm_probability = mlm_probability
+
+        self.decoder_tokenizer.pad_token = self.decoder_tokenizer.eos_token
+
+    def __call__(self, batch):
+        examples = [b["example"] for b in batch]
+        paired_examples = [b["paired_example"] for b in batch]
+        texts = [b["text"] for b in batch]
+
+        max_seq_length = 0
+        for exp in examples:
+            max_seq_length = max(max_seq_length, len(exp["tokens"][0]))
+
+        input_ids = torch.zeros(len(examples), max_seq_length, dtype=torch.long).fill_(self.tokenizer.pad_token_id)
+        attention_mask = torch.zeros(len(examples), max_seq_length, dtype=torch.long)
+        for exp_id, exp in enumerate(examples):
+            input_ids[exp_id, :len(exp["tokens"][0])] = torch.tensor(self.tokenizer.convert_tokens_to_ids(exp["tokens"][0]),
+                                                                     dtype=torch.long)
+            attention_mask[exp_id, :len(exp["tokens"][0])] = 1
+
+        output_texts = []
+        entity_mentions = []
+        for exp_id, exp in enumerate(paired_examples):
+            text = self.tokenizer.decode(self.tokenizer.convert_tokens_to_ids(exp["tokens"][0]), skip_special_tokens=True)
+            output_texts.append(text)
+
+            exp_ent_mentions = []
+            for ent_pair in exp["ent_mentions"]:
+                exp_ent_mentions.append(" ".join(ent_pair))
+            entity_mentions.append(" ".join(exp_ent_mentions))
+
+        decoding_inputs = self.decoder_tokenizer(entity_mentions, text_target=output_texts,
+                                                 padding=PaddingStrategy.LONGEST,
+                                                 truncation=TruncationStrategy.LONGEST_FIRST, max_length=self.decoder_max_seq_length,
+                                                 return_tensors="pt")
+
+        mlm_tokenize_outputs = self.tokenizer(texts, padding=PaddingStrategy.LONGEST,
+                                              truncation=TruncationStrategy.LONGEST_FIRST, max_length=self.max_seq_length,
+                                              return_tensors="pt")
+        mlm_input_ids = mlm_tokenize_outputs["input_ids"]
+        mlm_attention_mask = mlm_tokenize_outputs["attention_mask"]
+
+        mlm_input_ids, mlm_labels = mask_tokens(self.tokenizer, mlm_input_ids, mlm_probability=self.mlm_probability)
+
+        inputs = {
+            "input_ids": input_ids,
+            "attention_mask": attention_mask,
+            "mlm_input_ids": mlm_input_ids,
+            "mlm_attention_mask": mlm_attention_mask,
+            "mlm_labels": mlm_labels,
+        }
+        for k, v in decoding_inputs.items():
+            inputs[f"decoder_{k}"] = v
+        return inputs
+
+
+class WikiPathTokensDatasetCollatorMC(WikiPathTokensDatasetCollator):
+    def __call__(self, batch):
+        inputs = super().__call__(batch)
+
+        examples = [b["example"] for b in batch]
+
+        option_num = len(examples[0]["tokens"])
+        max_seq_length = 0
+        for exp in examples:
+            for op_id, op in enumerate(exp["tokens"]):
+                if isinstance(op, str):
+                    assert op_id > 0
+                    exp["tokens"][op_id] = self.tokenizer.tokenize(op)
+                max_seq_length = max(max_seq_length, len(exp["tokens"][op_id]))
+
+        # max_seq_length = max(map(lambda x: max(map(len, x["tokens"])), examples))
+        assert max_seq_length <= self.max_seq_length, max_seq_length
+        input_ids = torch.zeros(len(examples), option_num, max_seq_length, dtype=torch.long).fill_(self.tokenizer.pad_token_id)
+        attention_mask = torch.zeros(len(examples), option_num, max_seq_length, dtype=torch.long)
+        for exp_id, exp in enumerate(examples):
+            for op_id, op_tokens in enumerate(exp["tokens"]):
+                input_ids[exp_id, op_id, :len(op_tokens)] = torch.tensor(self.tokenizer.convert_tokens_to_ids(op_tokens), dtype=torch.long)
+                attention_mask[exp_id, op_id, :len(op_tokens)] = 1
+
+        inputs["input_ids"] = input_ids
+        inputs["attention_mask"] = attention_mask
+        inputs["labels"] = torch.zeros(len(examples), dtype=torch.long)
+        return inputs
+
+
+def processing_examples_w_spans(examples, tokenizer: PreTrainedTokenizer):
+    option_num = len(examples[0]["tokens"])
+    max_seq_length = 0
+    for exp in examples:
+        for op_id, op in enumerate(exp["tokens"]):
+            if isinstance(op, str):
+                assert op_id > 0
+                exp["tokens"][op_id] = tokenizer.tokenize(op)
+            max_seq_length = max(max_seq_length, len(exp["tokens"][op_id]))
+
+    output_texts = []
+    entity_mentions = []
+    input_ids = torch.zeros(len(examples), option_num, max_seq_length, dtype=torch.long).fill_(tokenizer.pad_token_id)
+    attention_mask = torch.zeros(len(examples), option_num, max_seq_length, dtype=torch.long)
+    for exp_id, exp in enumerate(examples):
+        b_texts = []
+        for op_id, op_tokens in enumerate(exp["tokens"]):
+            op_token_ids = tokenizer.convert_tokens_to_ids(op_tokens)
+
+            input_ids[exp_id, op_id, :len(op_tokens)] = torch.tensor(op_token_ids, dtype=torch.long)
+            attention_mask[exp_id, op_id, :len(op_tokens)] = 1
+
+            text = tokenizer.decode(op_token_ids, skip_special_tokens=True)
+            b_texts.append(text)
+
+        output_texts.append(b_texts)
+
+        exp_ent_mentions = []
+        for ent_pair in exp["ent_mentions"]:
+            exp_ent_mentions.append(" ".join(ent_pair))
+        entity_mentions.append(" ".join(exp_ent_mentions))
+
+    max_sent_num = 0
+    max_sent_len = 0
+    for exp in examples:
+        max_sent_num = max(max_sent_num, len(exp["h_spans"][0]))  # [batch_size, option_num, sent_num, span_num]
+        max_sent_len = max(max_sent_len, max(map(lambda x: x[1] - x[0], exp["sentence_spans"][0])))
+
+    # sent_token_index = torch.zeros(len(examples), max_sent_num, max_sent_len, dtype=torch.long)
+    # sent_token_mask = torch.zeros(len(examples), max_sent_num, max_sent_len)
+    # tagging_labels = torch.zeros(len(examples), max_seq_length, dtype=torch.long)
+    h_span_marks = torch.zeros(len(examples), max_sent_num, max_seq_length)
+    t_span_marks = torch.zeros(len(examples), max_sent_num, max_seq_length)
+    entity_pair_mask = torch.zeros(len(examples), max_sent_num)
+    for exp_id, exp in enumerate(examples):
+        for sent_id, sent_h_spans in enumerate(exp["h_spans"][0]):
+            token_num = 0
+
+            for span in sent_h_spans:
+                # tagging_labels[exp_id, span[0]: span[1]] = 1
+                h_span_marks[exp_id, sent_id, span[0]: span[1]] = 1
+                token_num += span[1] - span[0]
+
+            if token_num:
+                h_span_marks[exp_id, sent_id] = h_span_marks[exp_id, sent_id] * 1.0 / token_num
+            else:
+                entity_pair_mask[exp_id, sent_id] = 1
+
+        # if "rel_labels" in batch[exp_id]:
+        #     wo_noise_num = len([span for span in exp["h_spans"][0] if len(span) > 0])
+        #     assert wo_noise_num == len(batch[exp_id]["rel_labels"]) - 1 or batch[exp_id]["rel_labels"] == [-1], (
+        #         exp["h_spans"][0], batch[exp_id]["rel_labels"])
+
+        for sent_id, sent_t_spans in enumerate(exp["t_spans"][0]):
+            token_num = 0
+            # assert len(sent_t_spans) >= 1, (sent_id, exp["t_spans"][0])
+
+            for span in sent_t_spans:
+                # tagging_labels[exp_id, span[0]: span[1]] = 1
+                t_span_marks[exp_id, sent_id, span[0]: span[1]] = 1
+                token_num += span[1] - span[0]
+
+            if token_num:
+                t_span_marks[exp_id, sent_id] = t_span_marks[exp_id, sent_id] * 1.0 / token_num
+            else:
+                entity_pair_mask[exp_id, sent_id] = 1
+
+        # for sent_id, sent_span in enumerate(exp["sentence_spans"][0]):
+        #     _sent_len = sent_span[1] - sent_span[0]
+        #     sent_token_index[exp_id, sent_id, :_sent_len] = torch.arange(sent_span[0], sent_span[1], dtype=torch.long)
+        #     sent_token_mask[exp_id, sent_id, :_sent_len] = 1
+
+        # assert len(exp["t_spans"][0]) == len(exp["h_spans"][0]) == len(exp["sentence_spans"][0])
+        return input_ids, attention_mask, output_texts, entity_mentions, h_span_marks, t_span_marks, entity_pair_mask
+
+
+class WikiPathTokensDatasetCollatorContiguous:
+    def __init__(self, max_seq_length: int, tokenizer: str, decoder_tokenizer: str,
+                 decoder_max_seq_length: int = 1024, mlm_probability: float = 0.15, add_mc: bool = False):
+        self.max_seq_length = max_seq_length
+        self.decoder_max_seq_length = decoder_max_seq_length
+        self.tokenizer: PreTrainedTokenizer = AutoTokenizer.from_pretrained(tokenizer, use_fast=False)
+        self.decoder_tokenizer: PreTrainedTokenizer = AutoTokenizer.from_pretrained(decoder_tokenizer, use_fast=False)
+        self.mlm_probability = mlm_probability
+        self.add_mc = add_mc
+
+        self.decoder_tokenizer.pad_token = self.decoder_tokenizer.eos_token
+
+    def __call__(self, batch):
+        examples = [b["example"] for b in batch]
+        paired_examples = [b["paired_example"] for b in batch]
+        texts = [b["text"] for b in batch]
+
+        input_ids, attention_mask, output_texts, _, h_span_marks, t_span_marks, \
+            entity_pair_mask = processing_examples_w_spans(examples, self.tokenizer)
+
+        p_input_ids, p_attention_mask, p_output_texts, _, p_h_span_marks, p_t_span_marks, \
+            p_entity_pair_mask = processing_examples_w_spans(paired_examples, self.tokenizer)
+
+        p_input_ids = p_input_ids[:, 0]
+        p_attention_mask = p_attention_mask[:, 0]
+        p_output_texts = [x[0] for x in p_output_texts]
+        if not self.add_mc:
+            input_ids = input_ids[:, 0]
+            attention_mask = attention_mask[:, 0]
+            output_texts = [x[0] for x in output_texts]
+
+        decoding_outputs = self.decoder_tokenizer(output_texts,
+                                                  padding=PaddingStrategy.LONGEST,
+                                                  truncation=TruncationStrategy.LONGEST_FIRST,
+                                                  max_length=self.decoder_max_seq_length,
+                                                  return_tensors="pt")
+        p_decoding_outputs = self.decoder_tokenizer(p_output_texts,
+                                                    padding=PaddingStrategy.LONGEST,
+                                                    truncation=TruncationStrategy.LONGEST_FIRST,
+                                                    max_length=self.decoder_max_seq_length,
+                                                    return_tensors="pt")
+
+        mlm_tokenize_outputs = self.tokenizer(texts, padding=PaddingStrategy.LONGEST,
+                                              truncation=TruncationStrategy.LONGEST_FIRST, max_length=self.max_seq_length,
+                                              return_tensors="pt")
+        mlm_input_ids = mlm_tokenize_outputs["input_ids"]
+        mlm_attention_mask = mlm_tokenize_outputs["attention_mask"]
+
+        mlm_input_ids, mlm_labels = mask_tokens(self.tokenizer, mlm_input_ids, mlm_probability=self.mlm_probability)
+
+        inputs = {
+            "input_ids": input_ids,
+            "attention_mask": attention_mask,
+            "p_input_ids": p_input_ids,
+            "p_attention_mask": p_attention_mask,
+            "decoding_input_ids": decoding_outputs["input_ids"],
+            "decoding_attention_mask": decoding_outputs["attention_mask"],
+            "p_decoding_input_ids": p_decoding_outputs["input_ids"],
+            "p_decoding_attention_mask": p_decoding_outputs["attention_mask"],
+            "h_span_marks": h_span_marks,
+            "t_span_marks": t_span_marks,
+            "entity_pair_mask": entity_pair_mask,
+            "p_h_span_marks": p_h_span_marks,
+            "p_t_span_marks": p_t_span_marks,
+            "p_entity_pair_mask": p_entity_pair_mask,
+            "mlm_input_ids": mlm_input_ids,
+            "mlm_attention_mask": mlm_attention_mask,
+            "mlm_labels": mlm_labels,
+        }
+        if self.add_mc:
+            inputs["labels"] = torch.zeros(len(examples), dtype=torch.long)
         return inputs
