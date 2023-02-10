@@ -159,7 +159,7 @@ class GPT2ForConditionalGeneration(GPT2LMHeadModel, ABC):
         if z_hidden_states is not None:
             # inputs_embeds = self.transformer.wte(input_ids)
             inputs_embeds = torch.cat([z_hidden_states, inputs_embeds], dim=1)
-            attention_mask = torch.cat([attention_mask.new_zeros(batch_size, z_hidden_states.size(1)),
+            attention_mask = torch.cat([attention_mask.new_ones(batch_size, z_hidden_states.size(1)),  # FIXME: Fixed at 2023/02/08
                                         attention_mask], dim=1)
             assert attention_mask.size(1) == inputs_embeds.size(1), (attention_mask.size(), inputs_embeds.size())
 

@@ -1,3 +1,4 @@
+import json
 import os
 from typing import Dict, List, Any
 
@@ -5,7 +6,7 @@ import numpy as np
 from torch import distributed as dist
 
 from post_processors.dist_mixin import DistGatherMixin
-import json
+
 
 class NumpySaver(DistGatherMixin):
     def __init__(self):
@@ -105,4 +106,3 @@ class TaggingSaver(DistGatherMixin):
             json.dump(self.logits, open(output_file, "w"))
 
         return {}, self.logits
-

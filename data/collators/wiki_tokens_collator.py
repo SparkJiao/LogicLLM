@@ -106,7 +106,7 @@ class WikiPathTokensDatasetCollator:
                 if token_num:
                     h_span_marks[exp_id, sent_id] = h_span_marks[exp_id, sent_id] * 1.0 / token_num
                 else:
-                    entity_pair_mask[exp_id, sent_id] = 1
+                    entity_pair_mask[exp_id, sent_id] = 1  # FIXME: This should be carefully noted.
 
             if "rel_labels" in batch[exp_id]:
                 wo_noise_num = len([span for span in exp["h_spans"][0] if len(span) > 0])
@@ -606,38 +606,25 @@ def processing_examples_w_spans(examples, tokenizer: PreTrainedTokenizer):
             token_num = 0
 
             for span in sent_h_spans:
-                # tagging_labels[exp_id, span[0]: span[1]] = 1
                 h_span_marks[exp_id, sent_id, span[0]: span[1]] = 1
                 token_num += span[1] - span[0]
 
             if token_num:
                 h_span_marks[exp_id, sent_id] = h_span_marks[exp_id, sent_id] * 1.0 / token_num
-            else:
-                entity_pair_mask[exp_id, sent_id] = 1
-
-        # if "rel_labels" in batch[exp_id]:
-        #     wo_noise_num = len([span for span in exp["h_spans"][0] if len(span) > 0])
-        #     assert wo_noise_num == len(batch[exp_id]["rel_labels"]) - 1 or batch[exp_id]["rel_labels"] == [-1], (
-        #         exp["h_spans"][0], batch[exp_id]["rel_labels"])
+                entity_pair_mask[exp_id, sent_id] = 1  # FIXME: Fixed at 2023/02/08
 
         for sent_id, sent_t_spans in enumerate(exp["t_spans"][0]):
             token_num = 0
-            # assert len(sent_t_spans) >= 1, (sent_id, exp["t_spans"][0])
 
             for span in sent_t_spans:
-                # tagging_labels[exp_id, span[0]: span[1]] = 1
                 t_span_marks[exp_id, sent_id, span[0]: span[1]] = 1
                 token_num += span[1] - span[0]
 
             if token_num:
                 t_span_marks[exp_id, sent_id] = t_span_marks[exp_id, sent_id] * 1.0 / token_num
-            else:
                 entity_pair_mask[exp_id, sent_id] = 1
-
-        # for sent_id, sent_span in enumerate(exp["sentence_spans"][0]):
-        #     _sent_len = sent_span[1] - sent_span[0]
-        #     sent_token_index[exp_id, sent_id, :_sent_len] = torch.arange(sent_span[0], sent_span[1], dtype=torch.long)
-        #     sent_token_mask[exp_id, sent_id, :_sent_len] = 1
+            # else:
+            #     entity_pair_mask[exp_id, sent_id] = 1  # FIXME: Fixed at 2023/02/08
 
         # assert len(exp["t_spans"][0]) == len(exp["h_spans"][0]) == len(exp["sentence_spans"][0])
         return input_ids, attention_mask, output_texts, entity_mentions, h_span_marks, t_span_marks, entity_pair_mask
@@ -669,10 +656,11 @@ class WikiPathTokensDatasetCollatorContiguous:
         p_input_ids = p_input_ids[:, 0]
         p_attention_mask = p_attention_mask[:, 0]
         p_output_texts = [x[0] for x in p_output_texts]
+
+        output_texts = [x[0] for x in output_texts]
         if not self.add_mc:
             input_ids = input_ids[:, 0]
             attention_mask = attention_mask[:, 0]
-            output_texts = [x[0] for x in output_texts]
 
         decoding_outputs = self.decoder_tokenizer(output_texts,
                                                   padding=PaddingStrategy.LONGEST,

@@ -1196,14 +1196,18 @@ class RobertaGPTForReconstructionV2(RobertaForMultipleChoiceForPreTrain, ABC):
 
         decoder_outputs1 = self.gpt2(inputs_embeds=dec_inputs_embeds,
                                      attention_mask=dec_attention_mask,
-                                     labels=p_decoding_input_ids,
-                                     target_attention_mask=p_decoding_attention_mask,
+                                     # labels=p_decoding_input_ids,
+                                     # target_attention_mask=p_decoding_attention_mask,
+                                     labels=decoding_input_ids,
+                                     target_attention_mask=decoding_attention_mask,
                                      z_hidden_states=pz.unsqueeze(1),
                                      return_dict=True)
         decoder_outputs2 = self.gpt2(inputs_embeds=p_dec_inputs_embeds,
                                      attention_mask=p_dec_attention_mask,
-                                     labels=decoding_input_ids,
-                                     target_attention_mask=decoding_attention_mask,
+                                     # labels=decoding_input_ids,
+                                     # target_attention_mask=decoding_attention_mask,  # FIXME: Fixed at 2023/02/07 23:36
+                                     labels=p_decoding_input_ids,
+                                     target_attention_mask=p_decoding_attention_mask,
                                      z_hidden_states=z.unsqueeze(1),
                                      return_dict=True)
 
@@ -1232,9 +1236,9 @@ class RobertaGPTForReconstructionV2(RobertaForMultipleChoiceForPreTrain, ABC):
 
             if not self.training:
                 # masked_decoder_labels = decoder_labels.masked_fill(decoder_labels == self.decoder_config.eos_token_id, -1)
-                masked_decoder_labels = torch.cat([p_decoding_input_ids, decoding_input_ids], dim=1)
+                masked_decoder_labels = torch.cat([decoding_input_ids, p_decoding_input_ids], dim=1)
                 masked_decoder_labels = masked_decoder_labels.masked_fill(~torch.cat([
-                    p_decoding_attention_mask, decoding_attention_mask], dim=1).bool(), -1)
+                    decoding_attention_mask, p_decoding_attention_mask], dim=1).bool(), -1)
                 acc, true_label_num = layers.get_accuracy(reconstruct_logits, masked_decoder_labels)
                 self.eval_metrics.update("reconstruct_acc", val=acc, n=true_label_num)
                 self.eval_metrics.update("loss", val=loss.item(), n=true_label_num)
@@ -1251,6 +1255,194 @@ class RobertaGPTForReconstructionV2(RobertaForMultipleChoiceForPreTrain, ABC):
 
         return TaggingOutputClass(
             loss=loss,
+            logits=reconstruct_logits,
+            mlm_loss=mlm_loss,
+        )
+
+
+def averaged_entity_hidden(seq_hidden: Tensor, weights: Tensor):
+    return torch.einsum("bst,bth->bsh", weights, seq_hidden)
+
+
+def extract_entity_pair_hidden(seq_hidden: Tensor, h_span_marks: Tensor, t_span_marks: Tensor, linear: nn.Module = None,
+                               concat: str = "rel"):
+    bsz, sent_num, seq_len = h_span_marks.size()
+    h_hidden = averaged_entity_hidden(seq_hidden, h_span_marks)
+    t_hidden = averaged_entity_hidden(seq_hidden, t_span_marks)
+
+    if linear is not None:
+        h_hidden = linear(h_hidden)
+        t_hidden = linear(t_hidden)
+
+    if concat == "rel":
+        pair_hidden = torch.cat([h_hidden, t_hidden], dim=-1)
+    elif concat == "pair":
+        pair_hidden = torch.cat([h_hidden.unsqueeze(2), t_hidden.unsqueeze(2)], dim=2).reshape(bsz, sent_num * 2, -1)
+    else:
+        raise NotImplementedError
+
+    return pair_hidden
+
+
+class RobertaGPTForReconstructionMCQAV2(RobertaForMultipleChoiceForPreTrain, ABC):
+    def __init__(self, config: RobertaConfig,
+                 mlp_hidden_size: int = 768,
+                 mlm_alpha: float = 1.0,
+                 mlm_disabled: bool = False,
+                 decoder: GPT2LMHeadModel = None,
+                 decoder_config: GPT2Config = None):
+        super().__init__(config, mlp_hidden_size, mlm_alpha, mlm_disabled)
+
+        self.gpt2: GPT2LMHeadModel = decoder
+        self.decoder_config = decoder_config if decoder_config is not None else self.gpt2.config
+
+        self.decoder_proj = nn.Linear(config.hidden_size, self.decoder_config.n_embd)
+        self.entity_proj = nn.Linear(config.hidden_size, self.decoder_config.n_embd)
+        self._init_weights(self.decoder_proj)
+        self._init_weights(self.entity_proj)
+
+        self.init_metric("loss", "reconstruct_acc", "reconstruct_loss", "mlm_loss", "mlm_acc", "acc", "cls_loss")
+
+    @classmethod
+    def from_pretrained(cls, pretrained_model_name_or_path: Optional[Union[str, os.PathLike]], *model_args, **kwargs):
+        kai_full_state = kwargs.pop("kai_full_state", False)
+        if kai_full_state:
+            return super().from_pretrained(pretrained_model_name_or_path, *model_args, **kwargs)
+
+        decoder = kwargs.pop("decoder")
+        config = copy.deepcopy(decoder.config)
+
+        model = super().from_pretrained(pretrained_model_name_or_path, *model_args, **kwargs, decoder_config=config)
+
+        model.gpt2 = decoder
+        return model
+
+    def forward(
+            self,
+            input_ids: Tensor,
+            attention_mask: Tensor = None,
+            token_type_ids: Tensor = None,
+            labels: Tensor = None,
+            mlm_input_ids: Tensor = None,
+            mlm_attention_mask: Tensor = None,
+            mlm_labels: Tensor = None,
+            p_input_ids: Tensor = None,
+            p_attention_mask: Tensor = None,
+            decoding_input_ids: Tensor = None,
+            decoding_attention_mask: Tensor = None,
+            p_decoding_input_ids: Tensor = None,
+            p_decoding_attention_mask: Tensor = None,
+            h_span_marks: Tensor = None,
+            t_span_marks: Tensor = None,
+            entity_pair_mask: Tensor = None,
+            p_h_span_marks: Tensor = None,
+            p_t_span_marks: Tensor = None,
+            p_entity_pair_mask: Tensor = None,
+            output_attentions=None,
+            output_hidden_states=None,
+            return_dict=None,
+            **kwargs
+    ):
+        r"""
+        labels (:obj:`torch.LongTensor` of shape :obj:`(batch_size,)`, `optional`):
+            Labels for computing the multiple choice classification loss. Indices should be in ``[0, ...,
+            num_choices-1]`` where :obj:`num_choices` is the size of the second dimension of the input tensors. (See
+            :obj:`input_ids` above)
+        """
+        return_dict = return_dict if return_dict is not None else self.config.use_return_dict
+        batch_size, num_choices, seq_len = input_ids.size()
+
+        input_ids = self.fold_tensor(input_ids)
+        attention_mask = self.fold_tensor(attention_mask)
+        # token_type_ids = self.fold_tensor(token_type_ids)
+
+        seq_hidden, pooled_output = encode(input_ids, attention_mask, return_dict, self.roberta)
+
+        logits = self.cls(self.dropout(self.pooler(pooled_output)))
+        reshaped_logits = logits.view(-1, num_choices)
+
+        seq_hidden = seq_hidden.reshape(batch_size, num_choices, seq_len, -1)[:, 0]
+        pooled_output = pooled_output.reshape(batch_size, num_choices, -1)[:, 0]
+
+        p_seq_hidden, p_pooled_output = encode(p_input_ids, p_attention_mask, return_dict, self.roberta)
+
+        z = self.decoder_proj(pooled_output)
+        pz = self.decoder_proj(p_pooled_output)
+
+        dec_inputs_embeds = extract_entity_pair_hidden(seq_hidden, h_span_marks, t_span_marks, self.entity_proj, concat="pair")
+        dec_attention_mask = entity_pair_mask.unsqueeze(2).expand(-1, -1, 2).reshape(batch_size, -1)
+
+        p_dec_inputs_embeds = extract_entity_pair_hidden(p_seq_hidden, p_h_span_marks, p_t_span_marks, self.entity_proj, concat="pair")
+        p_dec_attention_mask = p_entity_pair_mask.unsqueeze(2).expand(-1, -1, 2).reshape(batch_size, -1)
+
+        decoder_outputs1 = self.gpt2(inputs_embeds=dec_inputs_embeds,
+                                     attention_mask=dec_attention_mask,
+                                     # labels=p_decoding_input_ids,
+                                     # target_attention_mask=p_decoding_attention_mask,
+                                     labels=decoding_input_ids,
+                                     target_attention_mask=decoding_attention_mask,
+                                     z_hidden_states=pz.unsqueeze(1),
+                                     return_dict=True)
+        decoder_outputs2 = self.gpt2(inputs_embeds=p_dec_inputs_embeds,
+                                     attention_mask=p_dec_attention_mask,
+                                     # labels=decoding_input_ids,
+                                     # target_attention_mask=decoding_attention_mask,
+                                     labels=p_decoding_input_ids,
+                                     target_attention_mask=p_decoding_attention_mask,
+                                     z_hidden_states=z.unsqueeze(1),
+                                     return_dict=True)
+
+        reconstruct_loss = (decoder_outputs1["loss"] + decoder_outputs2["loss"]) / 2.
+        reconstruct_logits = torch.cat([decoder_outputs1["logits"][:, :-1], decoder_outputs2["logits"][:, :-1]], dim=1)
+
+        loss = reconstruct_loss
+        mlm_loss = 0.
+        cls_loss = 0.
+        if labels is not None:
+            loss_fct = CrossEntropyLoss(ignore_index=-1)
+            cls_loss = loss_fct(reshaped_logits, labels)
+            loss = loss + cls_loss
+
+            if mlm_labels is not None and (self.mlm_disabled is False or self.training is False):
+                mlm_outputs = self.roberta(
+                    mlm_input_ids,
+                    attention_mask=mlm_attention_mask,
+                    return_dict=return_dict
+                )
+
+                mlm_scores = self.lm_head(mlm_outputs[0])
+                mlm_loss = self.mlm_alpha * loss_fct(mlm_scores.reshape(-1, self.vocab_size), mlm_labels.reshape(-1))
+                if not self.mlm_disabled:
+                    loss = loss + mlm_loss
+            else:
+                mlm_scores = None
+                mlm_loss = None
+
+            if not self.training:
+                acc, true_label_num = layers.get_accuracy(reshaped_logits, labels)
+                self.eval_metrics.update("acc", val=acc, n=true_label_num)
+                self.eval_metrics.update("loss", val=loss.item(), n=true_label_num)
+                self.eval_metrics.update("cls_loss", val=cls_loss.item(), n=true_label_num)
+
+                masked_decoder_labels = torch.cat([decoding_input_ids, p_decoding_input_ids], dim=1)
+                masked_decoder_labels = masked_decoder_labels.masked_fill(~torch.cat([
+                    decoding_attention_mask, p_decoding_attention_mask], dim=1).bool(), -1)
+                acc, true_label_num = layers.get_accuracy(reconstruct_logits, masked_decoder_labels)
+                self.eval_metrics.update("reconstruct_acc", val=acc, n=true_label_num)
+                self.eval_metrics.update("reconstruct_loss", val=reconstruct_loss.item(), n=true_label_num)
+
+                if mlm_labels is not None:
+                    acc, true_label_num = layers.get_accuracy(mlm_scores, mlm_labels)
+                    self.eval_metrics.update("mlm_acc", val=acc, n=true_label_num)
+                    self.eval_metrics.update("mlm_loss", val=mlm_loss.item(), n=true_label_num)
+
+        if not return_dict:
+            output = (reconstruct_logits,) + (mlm_loss, reconstruct_loss,)
+            return ((loss,) + output) if loss is not None else output
+
+        return TaggingOutputClass(
+            loss=loss,
+            cls_loss=cls_loss,
             logits=reconstruct_logits,
             mlm_loss=mlm_loss,
         )
