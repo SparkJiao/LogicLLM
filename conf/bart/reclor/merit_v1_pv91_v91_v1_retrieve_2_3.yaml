@@ -1,0 +1,178 @@
+hydra:
+  run:
+    dir: ./
+
+train_file: reclor_data/train.json
+dev_file: reclor_data/val.json
+test_file: reclor_data/test.json
+
+# Model
+model:
+  _target_: models.bart.BartForMultipleChoice.from_pretrained
+  num_labels: 1
+
+data_dir: experiments/roberta.large.wiki_erica_path_v9.1_v9.1.pair.struct.v3.0.1aug.seq512.w8.lamb.500steps.RTXA6K.fixed/index_encoding/test-checkpoint-500
+
+# Data loading
+read_tensor_train:
+  _target_: data.reclor_retriever.ReClorRetrieveDataset
+  read_func:
+    _target_: data.readers.ReClorReader
+  memory_path: wiki_erica_path/v9.1_fixed/distant_path_v9.1_fix_no_shuffle.train.0.pkl_roberta_True_3_0_512_0.4_5_1.0_1.0_0.0_8_path_v9.1.2
+  scores_path: ${data_dir}/reclor_train_wiki_key_dot_scores_faiss_5.bin
+  top_k: 3
+  memory_tokenizer: pretrained-models/roberta-large
+
+read_tensor_dev:
+  _target_: data.reclor_retriever.ReClorRetrieveDataset
+  read_func:
+    _target_: data.readers.ReClorReader
+  memory_path: wiki_erica_path/v9.1_fixed/distant_path_v9.1_fix_no_shuffle.train.0.pkl_roberta_True_3_0_512_0.4_5_1.0_1.0_0.0_8_path_v9.1.2
+  scores_path: ${data_dir}/reclor_val_wiki_key_dot_scores_faiss_5.bin
+  top_k: 5
+  memory_tokenizer: pretrained-models/roberta-large
+
+read_tensor_test:
+  _target_: data.reclor_retriever.ReClorRetrieveDataset
+  read_func:
+    _target_: data.readers.ReClorReader
+  memory_path: wiki_erica_path/v9.1_fixed/distant_path_v9.1_fix_no_shuffle.train.0.pkl_roberta_True_3_0_512_0.4_5_1.0_1.0_0.0_8_path_v9.1.2
+  scores_path: ${data_dir}/reclor_test_wiki_key_dot_scores_faiss_5.bin
+  top_k: 5
+  memory_tokenizer: pretrained-models/roberta-large
+
+extended_vocab:
+
+# Data collator
+collator:
+  _target_: data.reclor_retriever.ReClorRetrieveCollator
+  tokenizer: pretrained-models/bart-large
+  max_seq_length: 1024
+eval_collator_cfg:
+  _target_: data.reclor_retriever.ReClorRetrieveCollator
+  tokenizer: pretrained-models/bart-large
+  max_seq_length: 2048
+
+# Dataloader
+num_workers: 4
+prefetch_factor: 2
+
+# Wiki path pretrain v8.2
+model_name_or_path: experiments/bart.large.wiki_erica_path_v9.1_v9.1.baseline.v1.1.1aug.seq512.w4.adamw.500steps.NA100/checkpoint-500
+pretrain:
+
+output_dir: experiments/reclor.bart.merit-v1.pv91.v91.retrieve.v1.3.cp500.ww.PA100.v2.3.fixed.s${seed}
+
+do_train: True
+evaluate_during_training: True
+
+do_eval: True
+eval_sub_path:
+
+# Training hyper-parameters
+per_gpu_train_batch_size: 2
+per_gpu_eval_batch_size: 2
+learning_rate: 1e-5
+#learning_rate: 5e-6
+gradient_accumulation_steps: 2
+weight_decay: 0.01
+adam_epsilon: 1e-6
+adam_betas: "(0.9, 0.98)"
+#adam_betas: "(0.9, 0.999)"
+max_grad_norm: 0.0
+#max_grad_norm: 1.0
+num_train_epochs: 10
+max_steps: 0
+warmup_proportion: 0.1
+warmup_steps: 0
+
+# Optimizer
+optimizer:
+use_nvlamb:
+bit_training:
+
+logging_steps: 5
+save_steps: -1
+save_best: True
+eval_steps: 100
+ddp_eval: True
+no_cuda: False
+seed: 42
+local_rank: -1
+fp16: True
+fp16_opt_level: O1
+fp16_bfloat16: True
+
+# Prediction config
+prediction_cfg:
+  metric: "acc"
+  measure: 1
+  best_checkpoint:
+  best_result:
+eval_forward_fn:
+  _target_: general_util.evaluator.DiscriminatorForwardFn
+post_process:
+  _target_: post_processors.reclor.NumpySaver
+
+#dist_init:
+#  _target_: general_util.dist_utils.setup_slurm_distributed
+
+
+# fairscale.FullyShardedDP
+fairscale_config:
+  _target_: general_util.fsdp_utils.default_initialize
+  fp16: ${fp16}
+  reshard_after_forward: False
+  move_grads_to_cpu: False
+  move_params_to_cpu: False
+
+# Deepspeed config
+ds_cfg:
+  train_micro_batch_size_per_gpu: ${per_gpu_train_batch_size}
+  gradient_accumulation_steps: ${gradient_accumulation_steps}
+  optimizer:
+    type: AdamW
+    params:
+      lr: ${learning_rate}
+      betas: [0.9, 0.999]
+      eps: ${adam_epsilon}
+      weight_decay: ${weight_decay}
+  scheduler:
+    type: WarmupDecayLR
+    params:
+      total_num_steps:
+      warmup_max_lr: ${learning_rate}
+      warmup_num_steps:
+      warmup_type: linear
+  gradient_clipping: ${max_grad_norm}
+  fp16:
+    enabled: ${fp16}
+    initial_scale_power: 12
+  zero_optimization:
+    stage: 3
+#    offload_optimizer:
+#      device: cpu
+#      pin_memory: True
+#    offload_param:
+#      device: cpu
+#      pin_memory: True
+#  activation_checkpointing:
+#    partition_activations: True
+#    cpu_checkpointing: True
+#    contiguous_memory_optimization: False
+#    number_checkpoints: False
+#    synchronize_checkpoint_boundary: False
+#    profile: False
+  steps_per_print: 1024
+
+summary_helper:
+  _target_: general_util.tensorboard_helper.SummaryWriterHelper
+  batch_index_or_keys:
+  outputs_index_or_keys:
+
+# Temporary variables
+n_gpu:
+device:
+train_batch_size:
+eval_batch_size:
+world_size:

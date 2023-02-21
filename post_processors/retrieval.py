@@ -81,7 +81,7 @@ class MERItPairRetrieval(DistGatherMixin):
 
     def __call__(self, meta_data, batch_model_outputs: Dict[str, Any], ddp: bool = False):
         indices = meta_data["index"]
-        hidden_states = batch_model_outputs["retrieval_hidden_states"].detach().cpu()
+        hidden_states = batch_model_outputs["hidden_states"].detach().cpu()
 
         if ddp:
             obj = [indices, hidden_states]
@@ -97,12 +97,59 @@ class MERItPairRetrieval(DistGatherMixin):
         self.indices.extend(indices)
         self.hidden_states.append(hidden_states)
 
-    def get_result(self, output_dir: str):
-        output_file = os.path.join(output_dir, self.output_file_name)
+    def get_results(self, output_dir: str):
+        if dist.is_initialized():
+            output_file = os.path.join(output_dir, f"{self.output_file_name}.{dist.get_rank()}")
+        else:
+            output_file = os.path.join(output_dir, self.output_file_name)
 
         hidden_states = torch.cat(self.hidden_states, dim=0)
         torch.save({
             "hidden_states": hidden_states,
             "indices": self.indices,
         }, output_file)
-        return {}
+        return {}, []
+
+
+class ScoresSaver(DistGatherMixin):
+    def __init__(self, output_file_name: str, top_k: int = 2):
+        self.index2scores = collections.defaultdict(list)
+        self.output_file_name = output_file_name
+        self.top_k = top_k
+
+    def __call__(self, meta_data: Union[List[Dict[str, Any]], Dict[str, List]], batch_model_outputs: Dict[str, Any], ddp: bool = False):
+
+        logits = batch_model_outputs["logits"].detach().float().tolist()
+        index = meta_data["index"]
+
+        if ddp:
+            obj = [logits, index]
+            gather_res = self.gather_object(obj)
+            if dist.get_rank() == 0:
+                logits = []
+                index = []
+                for item in gather_res:
+                    logits.extend(item[0])
+                    index.extend(item[1])
+
+        # self.index.extend(index)
+        # self.predictions.extend(logits)
+        q_id_list = []
+        for idx, score in zip(index, logits):
+            q_id, k_id = idx.split("-")
+            self.index2scores[q_id].append((k_id, score))
+            q_id_list.append(q_id)
+
+        for q_id in q_id_list:
+            if len(self.index2scores[q_id]) > self.top_k:
+                self.index2scores[q_id] = sorted(self.index2scores[q_id], key=lambda x: x[1], reverse=True)[:self.top_k]
+
+    def get_results(self, output_dir: str):
+        if dist.is_initialized():
+            output_file = os.path.join(output_dir, f"{self.output_file_name}.{dist.get_rank()}")
+        else:
+            output_file = os.path.join(output_dir, self.output_file_name)
+
+        torch.save(self.index2scores, output_file)
+
+        return {}, []

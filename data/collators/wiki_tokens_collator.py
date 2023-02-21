@@ -1,10 +1,11 @@
 import collections
 import os.path
 import random
-from typing import Tuple, Optional
+from typing import Tuple, Optional, List, Dict
 from tqdm import tqdm
 from multiprocessing import Pool
 from functools import partial
+from transformers import RobertaTokenizer, BartTokenizer, RobertaTokenizerFast, BartTokenizerFast
 
 import torch
 from torch.utils.data import Dataset
@@ -39,7 +40,10 @@ def mask_tokens(
 
     probability_matrix.masked_fill_(special_tokens_mask, value=0.0)
     masked_indices = torch.bernoulli(probability_matrix).bool()
-    labels[~masked_indices] = -1  # We only compute loss on masked tokens
+    if any(isinstance(tokenizer, cls) for cls in [RobertaTokenizer, RobertaTokenizerFast]):
+        labels[~masked_indices] = -1  # We only compute loss on masked tokens
+    else:
+        labels[labels == tokenizer.pad_token_id] = -1
 
     # 80% of the time, we replace masked input tokens with tokenizer.mask_token ([MASK])
     indices_replaced = torch.bernoulli(torch.full(labels.shape, 0.8)).bool() & masked_indices
@@ -157,6 +161,9 @@ class WikiPathTokensDatasetCollator:
             "mlm_attention_mask": mlm_attention_mask,
             "mlm_labels": mlm_labels,
             "entity_pair_mask": entity_pair_mask.bool(),
+            "meta_data": {
+                "index": [b["index"] for b in batch]
+            }
         }
 
 
@@ -462,6 +469,46 @@ class WikiReconstructDataset(WikiPathDatasetV5):
         item["paired_example"] = pair_example
 
         return item
+
+
+class WikiReconstructDatasetV2:
+    def __init__(self, examples, raw_texts):
+        real_examples = []
+        fake_examples = []
+        for exp in examples:
+            if "h" in exp and "t" in exp:
+                fake_examples.append(exp)
+            else:
+                real_examples.append(exp)
+
+        print(len(real_examples))
+        print(len(fake_examples))
+        self.real_examples: List[Dict] = real_examples
+        self.fake_examples: List[Dict] = fake_examples
+
+        self.id2fake_example = collections.defaultdict(list)
+        for exp_id, exp in enumerate(fake_examples):
+            self.id2fake_example[exp["orig_id"]].append(exp_id)
+
+        self.raw_texts = raw_texts
+
+    def __len__(self):
+        return len(self.real_examples)
+
+    def __getitem__(self, index):
+        real_example = self.real_examples[index]
+        if real_example["orig_id"] not in self.id2fake_example:
+            pair_example = real_example
+        else:
+            fake_example_group = self.id2fake_example[real_example["orig_id"]]
+            pair_example = self.fake_examples[random.choice(fake_example_group)]
+
+        return {
+            "example": real_example,
+            "text": random.choice(self.raw_texts),
+            "index": index,
+            "paired_example": pair_example,
+        }
 
 
 class WikiPathTokensDatasetCollator:

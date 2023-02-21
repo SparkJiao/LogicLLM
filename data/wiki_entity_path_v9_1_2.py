@@ -14,7 +14,7 @@ from transformers import PreTrainedTokenizer
 
 from data.collators.wiki import WikiPathDatasetV6wPatternPair, WikiPathDatasetRelGenerateV1, WikiPathDatasetRelGenerateV3
 from data.collators.wiki_structure_pair import WikiPathDatasetV6wPair
-from data.collators.wiki_tokens_collator import WikiReconstructDataset
+from data.collators.wiki_tokens_collator import WikiReconstructDataset, WikiReconstructDatasetV2
 from data.data_utils import get_all_permutation, get_sep_tokens
 from general_util.logger import get_child_logger
 
@@ -1559,7 +1559,10 @@ def convert_examples_into_features_reconstruct(file_path: str, tokenizer: PreTra
         logger.info(f"Loading cached file from {cached_file_path}")
         all_examples, raw_texts = torch.load(cached_file_path)
 
-        dataset = WikiReconstructDataset(all_examples, raw_texts)
+        if add_cf_pair_data:
+            dataset = WikiReconstructDataset(all_examples, raw_texts)
+        else:
+            dataset = WikiReconstructDatasetV2(all_examples, raw_texts)
 
         return dataset
 
@@ -1588,7 +1591,9 @@ def convert_examples_into_features_reconstruct(file_path: str, tokenizer: PreTra
     logger.info(f"Saving processed features into {cached_file_path}.")
     torch.save((all_examples, raw_texts), cached_file_path)
 
-    return WikiReconstructDataset(all_examples, raw_texts)
+    if add_cf_pair_data:
+        return WikiReconstructDataset(all_examples, raw_texts)
+    return WikiReconstructDatasetV2(all_examples, raw_texts)
 
 
 def quick_load(file_path: str, tokenizer: PreTrainedTokenizer, id2rel_path_decode_id_file: str, rel_vocab: str,

@@ -1,0 +1,171 @@
+hydra:
+  run:
+    dir: ./
+
+train_file: wiki_erica_path/v9.1_fixed/distant_path_v9.1_fix_no_shuffle.train.0.pkl
+#train_file: wiki_erica_path/v9.1_fixed/distant_path_v9.1_fix_no_shuffle.dev.pkl
+dev_file: wiki_erica_path/v9.1_fixed/distant_path_v9.1_fix_no_shuffle.dev.pkl
+test_file: reclor_data/test.json
+
+rel_vocab: wiki_erica_path/v9.1/pattern_rel_id_kmeans_v21/rel_vocab_c1000.pt
+
+# Model
+model:
+  _target_: models.bart.BartForMultipleChoiceV2.from_pretrained
+  num_labels: 1
+#  rel_vocab: wiki_erica_path/v9.1/pattern_rel_id_kmeans_v21/rel_vocab_c1000.pt
+#  mlp_hidden_size: 2048
+#  mlm_alpha: 1.0
+#  rel_emb_weights: wiki_erica_path/v9.1/edge_rel_train_0_cluster_1000_s42.pt
+#  hidden_dropout_prob: 0.2
+#  attention_probs_dropout_prob: 0.2
+#  tagging_coff: 2.0
+#  rel_gen_coff: 0.0
+#  tagging_coff: 0.0
+#  rel_gen_coff: 0.0
+
+# Data loading
+read_tensor_train:
+  _target_: data.wiki_entity_path_v9_1_2.convert_examples_into_features
+  id2rel_path_decode_id_file: wiki_erica_path/v9.1/pattern_rel_id_kmeans_v21/pattern_decode_id.train.0.c1000.limit0.pkl
+  rel_vocab: ${rel_vocab}
+  max_neg_num: 3
+  aug_num: 1
+  max_seq_length: 512
+  shuffle_context: True
+  min_rep_num: 5
+  geo_p: 0.4
+  deduct_ratio: 1.0
+  context_ratio: 1.0
+  noise_sent_ratio: 0.0
+  num_workers: 128
+
+read_tensor_dev:
+  _target_: data.wiki_entity_path_v9_1_2.convert_examples_into_features
+  id2rel_path_decode_id_file: wiki_erica_path/v9.1/pattern_rel_id_kmeans_v21/pattern_decode_id.dev.shuffle.c1000.limit0.pkl
+  rel_vocab: ${rel_vocab}
+  max_neg_num: 3
+  aug_num: 1
+  max_seq_length: 512
+  shuffle_context: True
+  min_rep_num: 5
+  geo_p: 0.4
+  deduct_ratio: 1.0
+  context_ratio: 1.0
+  noise_sent_ratio: 0.0
+  num_workers: 48
+
+read_tensor:
+  _target_: data.mcqa.multiple_choice_get_tensor_index
+  read_func:
+    _target_: data.readers.ReClorReader
+  max_seq_length: 256
+
+extended_vocab:
+
+# Data collator
+#collator:
+#  _target_: data.collators.wiki_tokens_collator.WikiPathDatasetCollatorRelSeqGenV1
+#  max_seq_length: 512
+#  tokenizer: pretrained-models/bart-large
+#  mlm_probability: 0.15
+
+# Dataloader
+num_workers: 8
+prefetch_factor: 2
+
+do_preprocess: False
+
+# Wiki path pretrain v8.2
+model_name_or_path: pretrained-models/bart-large
+pretrain:
+
+output_dir: experiments/bart.large.wiki_erica_path_v9.1_v9.1.baseline.v2.0.1aug.seq512.w4.adamw.500steps.RTXA6K
+
+do_train: False
+evaluate_during_training: True
+
+do_eval: True
+eval_sub_path: checkpoint-100
+
+# Training hyper-parameters
+per_gpu_train_batch_size: 4
+per_gpu_eval_batch_size: 32
+learning_rate: 1e-4
+gradient_accumulation_steps: 256
+weight_decay: 0.01
+adam_epsilon: 1e-6
+adam_betas: "(0.9, 0.98)"
+max_grad_norm: 5.0
+num_train_epochs: 10
+max_steps: 1000
+warmup_proportion: 0.1
+warmup_steps: 0
+
+# Optimizer
+optimizer:
+use_nvlamb:
+bit_training:
+
+lr_scheduler: constant
+
+logging_steps: 1
+#save_best: True
+save_best: False
+save_steps: 100
+eval_steps: 100
+ddp_eval: True
+no_cuda: False
+seed: 42
+local_rank: -1
+fp16: True
+fp16_opt_level: O1
+fp16_bfloat16: True
+
+# Prediction config
+prediction_cfg:
+  metric: "acc"
+  measure: 1
+  best_checkpoint:
+  best_result:
+eval_forward_fn:
+  _target_: general_util.evaluator.DiscriminatorForwardFn
+post_process:
+  _target_: post_processors.reclor.NumpySaver
+predict_dir: ${output_dir}/reclor_val_zero_shot
+
+#dist_init:
+#  _target_: general_util.dist_utils.setup_slurm_distributed
+
+
+# fairscale.FullyShardedDP
+fairscale_config:
+#  _target_: general_util.fsdp_utils.recursive_initialize
+  _target_: general_util.fsdp_utils.default_initialize
+  fp16: ${fp16}
+  move_grads_to_cpu: False
+  move_params_to_cpu: False
+
+# Lightseq config
+with_lightseq: False
+
+
+summary_helper:
+  _target_: general_util.tensorboard_helper.SummaryWriterHelper
+  batch_index_or_keys:
+#    "train/pair_value_num": pair_value_num
+#    "train/pair_label_num": pair_label_num
+#    "train/dropped_op_cnt": dropped_op_cnt
+    "train/invalid_path": invalid_path
+  outputs_index_or_keys:
+    "train/mlm_loss": mlm_loss
+    "train/cls_loss": cls_loss
+#    "train/tagging_loss": tagging_loss
+#    "train/path_gen_loss": path_gen_loss
+
+# Temporary variables
+n_gpu:
+device:
+train_batch_size:
+eval_batch_size:
+world_size:

@@ -1132,12 +1132,20 @@ class RobertaGPTForReconstructionV2(RobertaForMultipleChoiceForPreTrain, ABC):
         # in order to observe if there is the catastrophic forgetting problem.
         self.mlm_disabled = mlm_disabled
 
+        self.roberta_copy = None
+
     @classmethod
     def from_pretrained(cls, pretrained_model_name_or_path: Optional[Union[str, os.PathLike]], *model_args, **kwargs):
         decoder = kwargs.pop("decoder")
         config = copy.deepcopy(decoder.config)
 
+        use_copy_encoder = kwargs.pop("use_copy_encoder", False)
+
         model = super().from_pretrained(pretrained_model_name_or_path, *model_args, **kwargs, decoder_config=config)
+
+        if use_copy_encoder:
+            model.roberta_copy = copy.deepcopy(model.roberta)
+            print(model.roberta_copy.__class__.__name__)
 
         model.gpt2 = decoder
         return model
@@ -1177,7 +1185,8 @@ class RobertaGPTForReconstructionV2(RobertaForMultipleChoiceForPreTrain, ABC):
         batch_size, seq_len = input_ids.size()
 
         seq_hidden, pooled_output = encode(input_ids, attention_mask, return_dict, self.roberta)
-        p_seq_hidden, p_pooled_output = encode(p_input_ids, p_attention_mask, return_dict, self.roberta)
+        p_seq_hidden, p_pooled_output = encode(p_input_ids, p_attention_mask, return_dict,
+                                               encoder=self.roberta_copy if self.roberta_copy is not None else self.roberta)
 
         z = self.decoder_proj(pooled_output)
         pz = self.decoder_proj(p_pooled_output)

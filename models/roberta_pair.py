@@ -229,6 +229,31 @@ class RobertaForMultipleChoicePreTrainPairV1(RobertaForMultipleChoiceForPreTrain
         return scores
 
 
+class RobertaForMultipleChoicePreTrainPairV1Eval(RobertaForMultipleChoicePreTrainPairV1, ABC):
+    def __init__(self, *args, query_encoder: bool = False, **kwargs, ):
+        super().__init__(*args, **kwargs)
+        self.query_encoder = query_encoder
+
+    def forward(self, input_ids: Tensor, attention_mask: Tensor = None, **kwargs):
+        if len(input_ids.size()) == 3:
+            input_ids = input_ids[:, 0]
+            attention_mask = attention_mask[:, 0]
+        outputs = self.roberta(input_ids, attention_mask=attention_mask, return_dict=True)
+        pooled_outputs = outputs[0][:, 0]
+
+        if self.dist_func == "mlp":
+            raise NotImplementedError()
+        elif self.dist_func == "dot":
+            if self.query_encoder:
+                pooled_outputs = self.q(pooled_outputs)
+            else:
+                pooled_outputs = self.k(pooled_outputs)
+        else:
+            raise NotImplementedError()
+
+        return {"hidden_states": pooled_outputs}
+
+
 class RobertaForMultipleChoicePreTrainPairV2(RobertaForMultipleChoicePreTrainPairV1, ABC):
     def __init__(self, config: RobertaConfig,
                  mlp_hidden_size: int = 768,

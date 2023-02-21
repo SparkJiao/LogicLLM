@@ -1,5 +1,7 @@
 from abc import ABC
 from typing import Optional, Union, Tuple, List
+import os
+import copy
 
 import torch
 from torch import nn
@@ -213,7 +215,7 @@ class RobertaVQVAEMultiple(RobertaPreTrainedModel, ABC, LogMixin):
     # _keys_to_ignore_on_load_unexpected = [r"pooler"]
 
     def __init__(self, config: RobertaConfig, seq2seq_path: str, quantizer: nn.Module, embedding_dim: int, input_type: str = "add",
-                 z_to_decoder: bool = False, z_add_top: bool = False, seq2seq_decoder_layer: int = 6, freeze_seq2seq_encoder: bool = False):
+                 freeze_seq2seq_encoder: bool = False, z_to_decoder: bool = False, seq2seq: BartForConditionalGeneration = None):
         super().__init__(config)
 
         self.freeze_seq2seq_encoder = freeze_seq2seq_encoder
@@ -245,15 +247,16 @@ class RobertaVQVAEMultiple(RobertaPreTrainedModel, ABC, LogMixin):
         self._init_weights(self.dense2)
 
         self.z_to_decoder = z_to_decoder
-        self.z_add_top = z_add_top
-        if z_to_decoder:
-            self.seq2seq: BartWithLatent = BartWithLatent.from_pretrained(seq2seq_path,
-                                                                          decoder_layers=seq2seq_decoder_layer,
-                                                                          z_add_top=z_add_top)
-        else:
-            self.seq2seq: BartForConditionalGeneration = BartForConditionalGeneration.from_pretrained(seq2seq_path,
-                                                                                                      decoder_layers=seq2seq_decoder_layer,
-                                                                                                      z_add_top=z_add_top)
+        # self.z_add_top = z_add_top
+        self.seq2seq = seq2seq
+        # if z_to_decoder:
+        #     self.seq2seq: BartWithLatent = BartWithLatent.from_pretrained(seq2seq_path,
+        #                                                                   decoder_layers=seq2seq_decoder_layer,
+        #                                                                   z_add_top=z_add_top)
+        # else:
+        #     self.seq2seq: BartForConditionalGeneration = BartForConditionalGeneration.from_pretrained(seq2seq_path,
+        #                                                                                               decoder_layers=seq2seq_decoder_layer,
+        #                                                                                               z_add_top=z_add_top)
 
         if self.freeze_seq2seq_encoder:
             layers.freeze_module(self.seq2seq.model.encoder)
@@ -286,6 +289,18 @@ class RobertaVQVAEMultiple(RobertaPreTrainedModel, ABC, LogMixin):
             self.dense1,
             self.dense2,
         ]
+
+    @classmethod
+    def from_pretrained(cls, pretrained_model_name_or_path: Optional[Union[str, os.PathLike]], *model_args, **kwargs):
+        kai_full_state = kwargs.pop("kai_full_state", False)
+        if kai_full_state:
+            return super().from_pretrained(pretrained_model_name_or_path, *model_args, **kwargs)
+
+        seq2seq = kwargs.pop("seq2seq")
+        model = super().from_pretrained(pretrained_model_name_or_path, *model_args, **kwargs)
+
+        model.seq2seq = seq2seq
+        return model
 
     def forward(
             self,
@@ -439,24 +454,24 @@ class BartWithLatent(BartForConditionalGeneration, ABC):
         logger.info(f"Latent variable added to output layer: {self.z_add_top}")
 
     def forward(
-        self,
-        input_ids: torch.LongTensor = None,
-        attention_mask: Optional[torch.Tensor] = None,
-        decoder_input_ids: Optional[torch.LongTensor] = None,
-        decoder_attention_mask: Optional[torch.LongTensor] = None,
-        head_mask: Optional[torch.Tensor] = None,
-        decoder_head_mask: Optional[torch.Tensor] = None,
-        cross_attn_head_mask: Optional[torch.Tensor] = None,
-        encoder_outputs: Optional[List[torch.FloatTensor]] = None,
-        past_key_values: Optional[List[torch.FloatTensor]] = None,
-        inputs_embeds: Optional[torch.FloatTensor] = None,
-        decoder_inputs_embeds: Optional[torch.FloatTensor] = None,
-        labels: Optional[torch.LongTensor] = None,
-        use_cache: Optional[bool] = None,
-        output_attentions: Optional[bool] = None,
-        output_hidden_states: Optional[bool] = None,
-        return_dict: Optional[bool] = None,
-        z: Optional[torch.FloatTensor] = None,
+            self,
+            input_ids: torch.LongTensor = None,
+            attention_mask: Optional[torch.Tensor] = None,
+            decoder_input_ids: Optional[torch.LongTensor] = None,
+            decoder_attention_mask: Optional[torch.LongTensor] = None,
+            head_mask: Optional[torch.Tensor] = None,
+            decoder_head_mask: Optional[torch.Tensor] = None,
+            cross_attn_head_mask: Optional[torch.Tensor] = None,
+            encoder_outputs: Optional[List[torch.FloatTensor]] = None,
+            past_key_values: Optional[List[torch.FloatTensor]] = None,
+            inputs_embeds: Optional[torch.FloatTensor] = None,
+            decoder_inputs_embeds: Optional[torch.FloatTensor] = None,
+            labels: Optional[torch.LongTensor] = None,
+            use_cache: Optional[bool] = None,
+            output_attentions: Optional[bool] = None,
+            output_hidden_states: Optional[bool] = None,
+            return_dict: Optional[bool] = None,
+            z: Optional[torch.FloatTensor] = None,
     ) -> Union[Tuple, Seq2SeqLMOutput]:
         r"""
         labels (`torch.LongTensor` of shape `(batch_size, sequence_length)`, *optional*):

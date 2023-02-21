@@ -20,6 +20,8 @@ from transformers.models.bart.modeling_bart import (
     shift_tokens_right,
     BartEncoder,
     BartDecoder,
+    BartClassificationHead,
+    Seq2SeqSequenceClassifierOutput,
 )
 from transformers.utils import ModelOutput
 
@@ -27,6 +29,7 @@ from general_util.logger import get_child_logger
 from general_util.mixin import LogMixin
 from modules import layers
 from dataclasses import dataclass
+from transformers.models.bart.tokenization_bart import BartTokenizer
 
 logger = get_child_logger("BART")
 
@@ -1052,3 +1055,335 @@ class BartModelCodebookEMABottleNeck(BartModel, ABC):
             commitment_loss=commitment_loss,
         )
 
+
+def fold_tensor(x: Tensor):
+    if x is None:
+        return x
+    return x.reshape(-1, x.size(-1))
+
+
+@dataclass
+class MultipleChoicePreTrainModelOutput(Seq2SeqSequenceClassifierOutput):
+    mlm_loss: torch.FloatTensor = None
+    mlm_acc: torch.FloatTensor = None
+    cls_loss: torch.FloatTensor = None
+    cls_acc: torch.FloatTensor = None
+    pair_loss: torch.FloatTensor = None
+    tagging_loss: torch.FloatTensor = None
+    path_gen_loss: torch.FloatTensor = None
+    path_gen_acc: torch.FloatTensor = None
+    ent_gen_loss: torch.FloatTensor = None
+    ent_gen_acc: torch.FloatTensor = None
+    rel_ctr_loss: torch.FloatTensor = None
+    local_ctr_loss: torch.FloatTensor = None
+    local_ctr_acc: torch.FloatTensor = None
+
+
+class BartForMultipleChoice(BartPretrainedModel, LogMixin, ABC):
+    def __init__(self, config: BartConfig, mlm_alpha: float = 1.0, mlm_disabled: bool = False, **kwargs):
+        super().__init__(config, **kwargs)
+        self.model = BartModel(config)
+        self.register_buffer("final_logits_bias", torch.zeros((1, self.model.shared.num_embeddings)))
+        self.lm_head = nn.Linear(config.d_model, self.model.shared.num_embeddings, bias=False)
+        self.classification_head = BartClassificationHead(
+            config.d_model,
+            config.d_model,
+            config.num_labels,
+            config.classifier_dropout,
+        )
+        self.post_init()
+        self.model._init_weights(self.classification_head.dense)
+        self.model._init_weights(self.classification_head.out_proj)
+
+        self.init_metric("loss", "acc", "mlm_loss", "mlm_acc", "cls_loss")
+        self.mlm_alpha = mlm_alpha
+        self.mlm_disabled = mlm_disabled
+
+    def forward(
+            self,
+            input_ids: torch.LongTensor = None,
+            attention_mask: Optional[torch.Tensor] = None,
+            decoder_input_ids: Optional[torch.LongTensor] = None,
+            decoder_attention_mask: Optional[torch.LongTensor] = None,
+            head_mask: Optional[torch.Tensor] = None,
+            decoder_head_mask: Optional[torch.Tensor] = None,
+            cross_attn_head_mask: Optional[torch.Tensor] = None,
+            encoder_outputs: Optional[List[torch.FloatTensor]] = None,
+            inputs_embeds: Optional[torch.FloatTensor] = None,
+            decoder_inputs_embeds: Optional[torch.FloatTensor] = None,
+            labels: Optional[torch.LongTensor] = None,
+            use_cache: Optional[bool] = None,
+            output_attentions: Optional[bool] = None,
+            output_hidden_states: Optional[bool] = None,
+            return_dict: Optional[bool] = None,
+            mlm_input_ids: Tensor = None,
+            mlm_attention_mask: Tensor = None,
+            mlm_labels: Tensor = None,
+            **kwargs,
+    ) -> Union[Tuple, Seq2SeqSequenceClassifierOutput]:
+        r"""
+        labels (`torch.LongTensor` of shape `(batch_size,)`, *optional*):
+            Labels for computing the sequence classification/regression loss. Indices should be in `[0, ...,
+            config.num_labels - 1]`. If `config.num_labels > 1` a classification loss is computed (Cross-Entropy).
+        """
+        return_dict = return_dict if return_dict is not None else self.config.use_return_dict
+        num_choices = input_ids.shape[1]
+
+        if labels is not None:
+            use_cache = False
+
+        if input_ids is None and inputs_embeds is not None:
+            raise NotImplementedError(
+                f"Passing input embeddings is currently not supported for {self.__class__.__name__}"
+            )
+
+        input_ids = fold_tensor(input_ids)
+        attention_mask = fold_tensor(attention_mask)
+        decoder_input_ids = fold_tensor(decoder_input_ids)
+
+        if decoder_input_ids is not None:
+            eos_mask = decoder_input_ids.eq(self.config.eos_token_id)
+        else:
+            eos_mask = input_ids.eq(self.config.eos_token_id)
+
+        if decoder_input_ids is not None:
+            decoder_input_ids = shift_tokens_right(decoder_input_ids, self.config.pad_token_id, self.config.decoder_start_token_id)
+
+        outputs = self.model(
+            input_ids,
+            attention_mask=attention_mask,
+            decoder_input_ids=decoder_input_ids,
+            decoder_attention_mask=decoder_attention_mask,
+            head_mask=head_mask,
+            decoder_head_mask=decoder_head_mask,
+            cross_attn_head_mask=cross_attn_head_mask,
+            encoder_outputs=encoder_outputs,
+            inputs_embeds=inputs_embeds,
+            decoder_inputs_embeds=decoder_inputs_embeds,
+            use_cache=use_cache,
+            output_attentions=output_attentions,
+            output_hidden_states=output_hidden_states,
+            return_dict=return_dict,
+        )
+        hidden_states = outputs[0]  # last hidden state
+
+        if len(torch.unique_consecutive(eos_mask.sum(1))) > 1:
+            raise ValueError("All examples must have the same number of <eos> tokens.")
+        sentence_representation = hidden_states[eos_mask, :].view(hidden_states.size(0), -1, hidden_states.size(-1))[:, -1, :]
+        logits = self.classification_head(sentence_representation)
+        reshaped_logits = logits.view(-1, num_choices)
+
+        loss = 0.
+        mlm_loss = 0.
+        cls_loss = 0.
+        if labels is not None:
+            loss_fct = CrossEntropyLoss(ignore_index=-1)
+            cls_loss = loss_fct(reshaped_logits, labels)
+            loss = loss + cls_loss
+
+            if mlm_labels is not None and (self.mlm_disabled is False or self.training is False):
+                if mlm_attention_mask is None:
+                    mlm_attention_mask = attention_mask.reshape(reshaped_logits.size(0), num_choices, -1)[:, 0]
+
+                mlm_outputs = self.model(
+                    mlm_input_ids,
+                    attention_mask=mlm_attention_mask,
+                    return_dict=return_dict
+                )
+
+                mlm_scores = self.lm_head(mlm_outputs[0]) + self.final_logits_bias
+                mlm_loss = self.mlm_alpha * loss_fct(mlm_scores.reshape(-1, self.config.vocab_size), mlm_labels.reshape(-1))
+                if not self.mlm_disabled:
+                    loss = loss + mlm_loss
+            else:
+                mlm_scores = None
+                mlm_loss = None
+
+            if not self.training:
+                acc, true_label_num = layers.get_accuracy(reshaped_logits, labels)
+                self.eval_metrics.update("acc", val=acc, n=true_label_num)
+                self.eval_metrics.update("loss", val=loss.item(), n=true_label_num)
+                self.eval_metrics.update("cls_loss", val=cls_loss.item(), n=true_label_num)
+
+                if mlm_labels is not None:
+                    acc, true_label_num = layers.get_accuracy(mlm_scores, mlm_labels)
+                    self.eval_metrics.update("mlm_acc", val=acc, n=true_label_num)
+                    self.eval_metrics.update("mlm_loss", val=mlm_loss.item(), n=true_label_num)
+
+        if not return_dict:
+            output = (reshaped_logits,) + outputs[2:] + (mlm_loss, cls_loss,)
+            return ((loss,) + output) if loss is not None else output
+
+        return MultipleChoicePreTrainModelOutput(
+            loss=loss,
+            logits=reshaped_logits,
+            decoder_hidden_states=outputs.decoder_hidden_states,
+            decoder_attentions=outputs.decoder_attentions,
+            cross_attentions=outputs.cross_attentions,
+            encoder_last_hidden_state=outputs.encoder_last_hidden_state,
+            encoder_hidden_states=outputs.encoder_hidden_states,
+            encoder_attentions=outputs.encoder_attentions,
+            mlm_loss=mlm_loss,
+            cls_loss=cls_loss,
+        )
+
+
+class BartForMultipleChoiceV2(BartPretrainedModel, LogMixin, ABC):
+    def __init__(self, config: BartConfig, mlm_alpha: float = 1.0, mlm_disabled: bool = False, **kwargs):
+        super().__init__(config, **kwargs)
+        self.model = BartModel(config)
+        self.register_buffer("final_logits_bias", torch.zeros((1, self.model.shared.num_embeddings)))
+        self.lm_head = nn.Linear(config.d_model, self.model.shared.num_embeddings, bias=False)
+        self.classification_head = BartClassificationHead(
+            config.d_model,
+            config.d_model,
+            config.num_labels,
+            config.classifier_dropout,
+        )
+        self.post_init()
+        self.model._init_weights(self.classification_head.dense)
+        self.model._init_weights(self.classification_head.out_proj)
+
+        self.init_metric("loss", "acc", "mlm_loss", "mlm_acc", "cls_loss")
+        self.mlm_alpha = mlm_alpha
+        self.mlm_disabled = mlm_disabled
+
+    def forward(
+            self,
+            input_ids: torch.LongTensor = None,
+            attention_mask: Optional[torch.Tensor] = None,
+            decoder_input_ids: Optional[torch.LongTensor] = None,
+            decoder_attention_mask: Optional[torch.LongTensor] = None,
+            head_mask: Optional[torch.Tensor] = None,
+            decoder_head_mask: Optional[torch.Tensor] = None,
+            cross_attn_head_mask: Optional[torch.Tensor] = None,
+            encoder_outputs: Optional[List[torch.FloatTensor]] = None,
+            inputs_embeds: Optional[torch.FloatTensor] = None,
+            decoder_inputs_embeds: Optional[torch.FloatTensor] = None,
+            labels: Optional[torch.LongTensor] = None,
+            use_cache: Optional[bool] = None,
+            output_attentions: Optional[bool] = None,
+            output_hidden_states: Optional[bool] = None,
+            return_dict: Optional[bool] = None,
+            mlm_input_ids: Tensor = None,
+            mlm_attention_mask: Tensor = None,
+            mlm_labels: Tensor = None,
+            **kwargs,
+    ) -> Union[Tuple, Seq2SeqSequenceClassifierOutput]:
+        r"""
+        labels (`torch.LongTensor` of shape `(batch_size,)`, *optional*):
+            Labels for computing the sequence classification/regression loss. Indices should be in `[0, ...,
+            config.num_labels - 1]`. If `config.num_labels > 1` a classification loss is computed (Cross-Entropy).
+        """
+        return_dict = return_dict if return_dict is not None else self.config.use_return_dict
+        bsz = input_ids.shape[0]
+        num_choices = input_ids.shape[1]
+
+        if labels is not None:
+            use_cache = False
+
+        if input_ids is None and inputs_embeds is not None:
+            raise NotImplementedError(
+                f"Passing input embeddings is currently not supported for {self.__class__.__name__}"
+            )
+
+        input_ids = fold_tensor(input_ids)
+        attention_mask = fold_tensor(attention_mask)
+        decoder_input_ids = fold_tensor(decoder_input_ids)
+
+        if decoder_input_ids is not None:
+            eos_mask = decoder_input_ids.eq(self.config.eos_token_id)
+        else:
+            eos_mask = input_ids.eq(self.config.eos_token_id)
+
+        lm_labels = input_ids.clone()
+        lm_labels_mask = lm_labels.eq(self.config.pad_token_id)
+        lm_labels[lm_labels_mask] = -100
+        if decoder_input_ids is not None:
+            lm_labels = decoder_input_ids.clone()
+            lm_labels_mask = lm_labels.eq(self.config.pad_token_id)
+            lm_labels[lm_labels_mask] = -100
+
+            decoder_input_ids = shift_tokens_right(decoder_input_ids, self.config.pad_token_id, self.config.decoder_start_token_id)
+
+        outputs = self.model(
+            input_ids,
+            attention_mask=attention_mask,
+            decoder_input_ids=decoder_input_ids,
+            decoder_attention_mask=decoder_attention_mask,
+            head_mask=head_mask,
+            decoder_head_mask=decoder_head_mask,
+            cross_attn_head_mask=cross_attn_head_mask,
+            encoder_outputs=encoder_outputs,
+            inputs_embeds=inputs_embeds,
+            decoder_inputs_embeds=decoder_inputs_embeds,
+            use_cache=use_cache,
+            output_attentions=output_attentions,
+            output_hidden_states=output_hidden_states,
+            return_dict=return_dict,
+        )
+        hidden_states = outputs[0]  # last hidden state
+
+        if len(torch.unique_consecutive(eos_mask.sum(1))) > 1:
+            raise ValueError("All examples must have the same number of <eos> tokens.")
+        # sentence_representation = hidden_states[eos_mask, :].view(hidden_states.size(0), -1, hidden_states.size(-1))[:, -1, :]
+        # logits = self.classification_head(sentence_representation)
+        lm_logits = self.lm_head(hidden_states) + self.final_logits_bias
+        lm_ppl = CrossEntropyLoss(reduction='none')(lm_logits.reshape(-1, self.config.vocab_size), lm_labels.reshape(-1))
+        lm_ppl = lm_ppl.reshape(bsz, num_choices, -1)
+        lm_ppl = lm_ppl.sum(dim=2) / (~lm_labels_mask).to(lm_ppl.dtype).reshape(bsz, num_choices, -1).sum(dim=2)
+        reshaped_logits = lm_ppl.contiguous()
+
+        loss = 0.
+        mlm_loss = 0.
+        cls_loss = 0.
+        if labels is not None:
+            loss_fct = CrossEntropyLoss(ignore_index=-1)
+            cls_loss = loss_fct(reshaped_logits, labels)
+            loss = loss + cls_loss
+
+            if mlm_labels is not None and (self.mlm_disabled is False or self.training is False):
+                if mlm_attention_mask is None:
+                    mlm_attention_mask = attention_mask.reshape(reshaped_logits.size(0), num_choices, -1)[:, 0]
+
+                mlm_outputs = self.model(
+                    mlm_input_ids,
+                    attention_mask=mlm_attention_mask,
+                    return_dict=return_dict
+                )
+
+                mlm_scores = self.lm_head(mlm_outputs[0]) + self.final_logits_bias
+                mlm_loss = self.mlm_alpha * loss_fct(mlm_scores.reshape(-1, self.config.vocab_size), mlm_labels.reshape(-1))
+                if not self.mlm_disabled:
+                    loss = loss + mlm_loss
+            else:
+                mlm_scores = None
+                mlm_loss = None
+
+            if not self.training:
+                acc, true_label_num = layers.get_accuracy(reshaped_logits, labels)
+                self.eval_metrics.update("acc", val=acc, n=true_label_num)
+                self.eval_metrics.update("loss", val=loss.item(), n=true_label_num)
+                self.eval_metrics.update("cls_loss", val=cls_loss.item(), n=true_label_num)
+
+                if mlm_labels is not None:
+                    acc, true_label_num = layers.get_accuracy(mlm_scores, mlm_labels)
+                    self.eval_metrics.update("mlm_acc", val=acc, n=true_label_num)
+                    self.eval_metrics.update("mlm_loss", val=mlm_loss.item(), n=true_label_num)
+
+        if not return_dict:
+            output = (reshaped_logits,) + outputs[2:] + (mlm_loss, cls_loss,)
+            return ((loss,) + output) if loss is not None else output
+
+        return MultipleChoicePreTrainModelOutput(
+            loss=loss,
+            logits=reshaped_logits,
+            decoder_hidden_states=outputs.decoder_hidden_states,
+            decoder_attentions=outputs.decoder_attentions,
+            cross_attentions=outputs.cross_attentions,
+            encoder_last_hidden_state=outputs.encoder_last_hidden_state,
+            encoder_hidden_states=outputs.encoder_hidden_states,
+            encoder_attentions=outputs.encoder_attentions,
+            mlm_loss=mlm_loss,
+            cls_loss=cls_loss,
+        )

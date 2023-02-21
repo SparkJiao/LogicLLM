@@ -3,15 +3,17 @@ import os
 from typing import Dict, List, Any
 
 import numpy as np
+import torch
 from torch import distributed as dist
 
 from post_processors.dist_mixin import DistGatherMixin
 
 
 class NumpySaver(DistGatherMixin):
-    def __init__(self):
+    def __init__(self, save_copy: bool = False):
         self.predictions = []
         self.index = []
+        self.save_copy = save_copy
 
     def __call__(self, meta_data: List[Dict[str, Any]], batch_model_outputs: Dict[str, Any], ddp: bool = False):
 
@@ -25,7 +27,10 @@ class NumpySaver(DistGatherMixin):
             if isinstance(meta_data, list):
                 index = [meta['index'].item() for meta in meta_data]
             elif isinstance(meta_data, dict):
-                index = meta_data["index"].tolist()
+                if isinstance(meta_data["index"], torch.Tensor):
+                    index = meta_data["index"].tolist()
+                else:
+                    index = meta_data["index"]
             else:
                 raise RuntimeError()
             obj = [pred, index]
@@ -56,6 +61,17 @@ class NumpySaver(DistGatherMixin):
             np.save(output_file, np.array(predictions))
         else:
             np.save(output_file, np.array(self.predictions))
+
+        if self.save_copy:
+            if dist.is_initialized():
+                output_file = os.path.join(output_dir, f"eval_predictions_copy_rank{dist.get_rank()}.bin")
+            else:
+                output_file = os.path.join(output_dir, "eval_predictions_copy.bin")
+
+            torch.save({
+                "index": self.index,
+                "predictions": self.predictions
+            }, output_file)
 
         return {}, self.predictions
 

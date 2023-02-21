@@ -198,9 +198,9 @@ def truncate_tokens(tokens, max_seq_length, tokenizer: PreTrainedTokenizer):
 
 
 class WikiPathDatasetPartialPair(WikiPathTokensDatasetCollator):
-    def __init__(self, max_seq_length: int, tokenizer: str, mlm_probability: float = 0.15,
-                 max_neg_num: int = 2, ):
-        super().__init__(max_seq_length, tokenizer, mlm_probability)
+    def __init__(self, max_seq_length: int, tokenizer: str, mlm_probability: float = 0.15, max_neg_num: int = 2):
+        # super().__init__(max_seq_length, tokenizer, mlm_probability)
+        super().__init__(max_seq_length, tokenizer, decoder_tokenizer=tokenizer, mlm_probability=mlm_probability)
         self.max_neg_num = max_neg_num
 
     def __call__(self, batch):

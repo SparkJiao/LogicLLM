@@ -1170,13 +1170,14 @@ class WikiPathSentenceConditionCollator:
 
 class WikiSentenceMultipleConditionCollator:
     def __init__(self, enc_tokenizer: str, dec_tokenizer: str, max_seq_length: int, reverse: bool = False, remove_path: bool = False,
-                 entity_pair_dropout: float = 0.0):
+                 entity_pair_dropout: float = 0.0, single_mode: bool = False):
         self.enc_tokenizer: PreTrainedTokenizer = AutoTokenizer.from_pretrained(enc_tokenizer)
         self.dec_tokenizer: PreTrainedTokenizer = AutoTokenizer.from_pretrained(dec_tokenizer)
         self.max_seq_length = max_seq_length
         self.reverse = reverse
         self.remove_path = remove_path
         self.entity_pair_dropout = entity_pair_dropout
+        self.single_mode = single_mode
 
     def __call__(self, batch):
         seq_len = max(map(lambda x: len(x["tokens"]), batch))
@@ -1213,7 +1214,11 @@ class WikiSentenceMultipleConditionCollator:
                     triplets.append(f"{ent1[0]['mention']} {self.dec_tokenizer.mask_token} {ent2[0]['mention']}")
                     b_rel_indices.append((ent_id_1, ent_id_1 + 1 + ent_id_2))
 
-            if self.entity_pair_dropout:
+            if self.single_mode:
+                _kept_idx = random.choice(list(range(len(triplets))))
+                triplets = [triplets[_kept_idx]]
+                b_rel_indices = [b_rel_indices[_kept_idx]]
+            elif self.entity_pair_dropout:
                 _remove_num = int(round(len(triplets) * self.entity_pair_dropout))
                 _kept_num = len(triplets) - _remove_num
                 if _kept_num >= 1:

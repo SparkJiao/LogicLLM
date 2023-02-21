@@ -202,6 +202,117 @@ def multiple_choice_get_tensor_index(read_func, file_path: str, tokenizer: PreTr
     return DictTensorDataset(data, meta_data)
 
 
+def multiple_choice_get_ctx_tensor_index(read_func, file_path: str, tokenizer: PreTrainedTokenizer, max_seq_length: int,
+                                         prefix_token_num: int = 0):
+    tokenizer_name = tokenizer_get_name(tokenizer)
+
+    file_suffix = f"{tokenizer_name}_{max_seq_length}_{read_func.__class__.__name__}" \
+                  f"{'_prefix{}'.format(str(prefix_token_num)) if prefix_token_num > 0 else ''}_mc_ctx"
+    cached_file_path = f"{file_path}_{file_suffix}"
+    if os.path.exists(cached_file_path):
+        logger.info(f"Loading cached file from {cached_file_path}.")
+        tensors, meta_data = torch.load(cached_file_path)
+        return DictTensorDataset(tensors, meta_data)
+
+    all_context, all_question, all_option_list, all_label = read_func(file_path)
+
+    max_option_num = max(map(len, all_option_list))
+    logger.info(f"Max option num: {max_option_num}")
+
+    tokenizer_outputs = tokenizer(all_context,
+                                  text_pair=all_question,
+                                  max_length=max_seq_length,
+                                  padding=PaddingStrategy.LONGEST,
+                                  truncation=TruncationStrategy.LONGEST_FIRST,
+                                  return_tensors=TensorType.PYTORCH)
+    max_seq_length = min(max_seq_length, tokenizer_outputs["input_ids"].size(-1))
+
+    data_num = len(all_context)
+
+    input_ids = tokenizer_outputs['input_ids'].reshape(data_num, max_seq_length)
+    attention_mask = tokenizer_outputs['attention_mask'].reshape(data_num, max_seq_length)
+
+    labels = torch.tensor(all_label, dtype=torch.long).reshape(data_num)
+    if 'token_type_ids' in tokenizer_outputs:
+        token_type_ids = tokenizer_outputs['token_type_ids'].reshape(data_num, max_seq_length)
+    else:
+        token_type_ids = None
+
+    logger.info(f"Sequence length: {input_ids.size(1)}")
+
+    data = {
+        "input_ids": input_ids,
+        "attention_mask": attention_mask,
+        "labels": labels
+    }
+    if "token_type_ids" in tokenizer_outputs:
+        data["token_type_ids"] = token_type_ids
+
+    logger.info(f"Saving processed tensors into {cached_file_path}.")
+    meta_data = {"index": torch.arange(input_ids.size(0))}
+    torch.save((data, meta_data), cached_file_path)
+
+    return DictTensorDataset(data, meta_data)
+
+
+def multiple_choice_ctx2option_index(read_func, file_path: str, tokenizer: PreTrainedTokenizer, max_seq_length: int):
+    tokenizer_name = tokenizer_get_name(tokenizer)
+
+    file_suffix = f"{tokenizer_name}_{max_seq_length}_{read_func.__class__.__name__}_mc_ctx2op_s2s"
+    cached_file_path = f"{file_path}_{file_suffix}"
+    if os.path.exists(cached_file_path):
+        logger.info(f"Loading cached tensors from {cached_file_path}")
+        data, meta_data = torch.load(cached_file_path)
+        return DictTensorDataset(data, meta_data)
+
+    all_context, all_question, all_option_list, all_label = read_func(file_path)
+
+    max_option_num = max(map(len, all_option_list))
+    logger.info(f"Max option num: {max_option_num}")
+    context = []
+    queries = []
+    options = []
+    c_q_op_mask = []
+    for c, q, op_ls, label in zip(all_context, all_question, all_option_list, all_label):
+        c_q_op_mask.extend([1] * len(op_ls))
+
+        if len(op_ls) < max_option_num:
+            op_num = len(op_ls)
+            op_ls.extend([' '] * (max_option_num - op_num))
+            c_q_op_mask.extend([0] * (max_option_num - op_num))
+        assert len(op_ls) == max_option_num
+
+        context.extend([c] * len(op_ls))
+        queries.extend([q] * len(op_ls))
+        options.extend(op_ls)
+        assert len(context) == len(queries) == len(options), (len(context), len(queries), len(options))
+
+    tokenizer_outputs = tokenizer(context,
+                                  text_pair=queries,
+                                  text_target=options,
+                                  max_length=max_seq_length,
+                                  padding=PaddingStrategy.LONGEST,
+                                  truncation=TruncationStrategy.LONGEST_FIRST,
+                                  return_tensors=TensorType.PYTORCH)
+    max_seq_length = min(max_seq_length, tokenizer_outputs["input_ids"].size(-1))
+    data_num = len(all_context)
+
+    labels = torch.tensor(all_label, dtype=torch.long).reshape(data_num)
+    tokenizer_outputs["decoder_input_ids"] = tokenizer_outputs.pop("labels").reshape(data_num, max_option_num, -1)
+    tokenizer_outputs["labels"] = labels
+
+    tokenizer_outputs["input_ids"] = tokenizer["input_ids"].reshape(data_num, max_option_num, max_seq_length)
+    tokenizer_outputs["attention_mask"] = tokenizer["attention_mask"].reshape(data_num, max_option_num, max_seq_length)
+
+    meta_data = {"index": torch.arange(data_num)}
+    tokenizer_outputs["meta_data"] = meta_data
+
+    logger.info(f"Saving processed tensors into {cached_file_path}.")
+    torch.save(tokenizer_outputs, cached_file_path)
+
+    return DictTensorDataset(tokenizer_outputs, meta_data)
+
+
 def _parse_span_position(span: str, text: str) -> List[int]:
     span_ls = []
     s = text.find(span)
