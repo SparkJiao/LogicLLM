@@ -12,7 +12,8 @@ from torch.distributions.geometric import Geometric
 from tqdm import tqdm
 from transformers import PreTrainedTokenizer
 
-from data.collators.wiki import WikiPathDatasetV6wPatternPair, WikiPathDatasetRelGenerateV1, WikiPathDatasetRelGenerateV3
+from data.collators.wiki import WikiPathDatasetV6wPatternPair, WikiPathDatasetRelGenerateV1, WikiPathDatasetRelGenerateV3, \
+    WikiPathDatasetV6wPatternPairsKMeans
 from data.collators.wiki_structure_pair import WikiPathDatasetV6wPair
 from data.collators.wiki_tokens_collator import WikiReconstructDataset, WikiReconstructDatasetV2
 from data.data_utils import get_all_permutation, get_sep_tokens
@@ -1782,57 +1783,58 @@ def convert_examples_into_features_pair_all(file_path: str, tokenizer: PreTraine
                                   add_hard_negative=add_hard_negative, max_neg_num=pair_max_neg_num, add_negative=add_negative)
 
 
-# def convert_examples_into_features_v3_ent_local_pair(file_path: str, tokenizer: PreTrainedTokenizer, id2rel_path_decode_id_file: str,
-#                                                      shuffle_context: bool = False, max_neg_num: int = 3, aug_num: int = 10,
-#                                                      max_seq_length: int = 512, geo_p: float = 0.5, min_rep_num: int = 1,
-#                                                      deduct_ratio: float = 1.0, context_ratio: float = 1.0, noise_sent_ratio: float = 0.5,
-#                                                      remove_deduct: bool = False, remove_context: bool = False,
-#                                                      max_neg_samples_num: int = 8, num_workers=48,
-#                                                      rel_path_set_file: str = None,
-#                                                      code_drop_threshold: int = 0,
-#                                                      ):
-#     tokenizer_name = tokenizer.__class__.__name__
-#     tokenizer_name = tokenizer_name.replace('TokenizerFast', '')
-#     tokenizer_name = tokenizer_name.replace('Tokenizer', '').lower()
-#
-#     file_suffix = f"{tokenizer_name}_{shuffle_context}_{max_neg_num}_{aug_num}_" \
-#                   f"{max_seq_length}_{geo_p}_{min_rep_num}_" \
-#                   f"{deduct_ratio}_{context_ratio}_{noise_sent_ratio}_{max_neg_samples_num}_" \
-#                   f"{'' if not remove_context else 'no-ctx-ex_'}{'' if not remove_deduct else 'no-duc-ex_'}path_v9.1_split_vqvae_v3_ent"
-#
-#     cached_file_path = f"{file_path}_{file_suffix}"
-#     if os.path.exists(cached_file_path):
-#         logger.info(f"Loading cached file from {cached_file_path}")
-#         all_examples, raw_texts = torch.load(cached_file_path)
-#         dataset = WikiPathDatasetPatternPairKMeansLocal(all_examples, raw_texts, rel_path_set_file, id2rel_path_decode_id_file,
-#                                                         code_drop_threshold)
-#         return dataset
-#
-#     examples, context_examples, raw_texts = read_examples(file_path, shuffle_context=shuffle_context, max_neg_num=max_neg_num,
-#                                                           aug_num=aug_num, geo_p=geo_p, min_rep_num=min_rep_num,
-#                                                           deduct_ratio=deduct_ratio, context_ratio=context_ratio,
-#                                                           noise_sent_ratio=noise_sent_ratio,
-#                                                           remove_deduct=remove_deduct, remove_context=remove_context,
-#                                                           max_neg_samples_num=max_neg_samples_num,
-#                                                           num_workers=num_workers)
-#     with Pool(num_workers, initializer=length_filter_init, initargs=(tokenizer,)) as p:
-#         _annotate = partial(length_filter_w_sentence_spans_only_pos, max_seq_length=max_seq_length)
-#         results = list(tqdm(
-#             p.imap(_annotate, examples + context_examples, chunksize=32),
-#             total=(len(examples) + len(context_examples)),
-#             desc="filtering examples by length",
-#         ))
-#     all_examples = []
-#     for flag, exp in results:
-#         if flag:
-#             all_examples.append(exp)
-#
-#     # Save
-#     logger.info(f"Saving processed features into {cached_file_path}.")
-#     torch.save((all_examples, raw_texts), cached_file_path)
-#
-#     return WikiPathDatasetPatternPairKMeansLocal(all_examples, raw_texts, rel_path_set_file, id2rel_path_decode_id_file,
-#                                                  code_drop_threshold)
+def convert_examples_into_features_kmeans_pair(file_path: str, tokenizer: PreTrainedTokenizer, rel_path_set_file: str,
+                                               shuffle_context: bool = False, max_neg_num: int = 3, aug_num: int = 10,
+                                               max_seq_length: int = 512, geo_p: float = 0.5, min_rep_num: int = 1,
+                                               deduct_ratio: float = 1.0, context_ratio: float = 1.0, noise_sent_ratio: float = 0.5,
+                                               remove_deduct: bool = False, remove_context: bool = False,
+                                               max_neg_samples_num: int = 8, num_workers=48,
+                                               code_drop_threshold: int = 0,
+                                               add_cf_pair_data: bool = True):
+    tokenizer_name = tokenizer.__class__.__name__
+    tokenizer_name = tokenizer_name.replace('TokenizerFast', '')
+    tokenizer_name = tokenizer_name.replace('Tokenizer', '').lower()
+
+    file_suffix = f"{tokenizer_name}_{shuffle_context}_{max_neg_num}_{aug_num}_" \
+                  f"{max_seq_length}_{geo_p}_{min_rep_num}_" \
+                  f"{deduct_ratio}_{context_ratio}_{noise_sent_ratio}_{max_neg_samples_num}_" \
+                  f"{'' if not remove_context else 'no-ctx-ex_'}{'' if not remove_deduct else 'no-duc-ex_'}path_v9.1.2"
+
+    cached_file_path = f"{file_path}_{file_suffix}"
+    if os.path.exists(cached_file_path):
+        logger.info(f"Loading cached file from {cached_file_path}")
+        all_examples, raw_texts = torch.load(cached_file_path)
+
+        dataset = WikiPathDatasetV6wPatternPairsKMeans(all_examples, raw_texts, rel_path_set_file)
+
+        return dataset
+
+    examples, context_examples, raw_texts = read_examples(file_path, shuffle_context=shuffle_context, max_neg_num=max_neg_num,
+                                                          aug_num=aug_num, geo_p=geo_p, min_rep_num=min_rep_num,
+                                                          deduct_ratio=deduct_ratio, context_ratio=context_ratio,
+                                                          noise_sent_ratio=noise_sent_ratio,
+                                                          remove_deduct=remove_deduct, remove_context=remove_context,
+                                                          max_neg_samples_num=max_neg_samples_num,
+                                                          num_workers=num_workers)
+
+    all_examples = examples + context_examples
+    with Pool(num_workers, initializer=length_filter_init, initargs=(tokenizer,)) as p:
+        _annotate = partial(length_filter_w_sentence_h_t_spans, max_seq_length=max_seq_length)
+        results = list(tqdm(
+            p.imap(_annotate, all_examples, chunksize=32),
+            total=len(all_examples),
+            desc="filtering examples by length",
+        ))
+    all_examples = []
+    for flag, exp in results:
+        if flag:
+            all_examples.append(exp)
+
+    # Save
+    logger.info(f"Saving processed features into {cached_file_path}.")
+    torch.save((all_examples, raw_texts), cached_file_path)
+
+    return WikiPathDatasetV6wPatternPairsKMeans(all_examples, raw_texts, rel_path_set_file)
 
 
 def _quick_loading(file_path: str, pattern_pair_file: str, **kwargs):

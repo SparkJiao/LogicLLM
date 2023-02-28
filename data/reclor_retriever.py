@@ -46,43 +46,24 @@ def process_single_sorting(score_list, top_k):
     return idx, sorted(score_list, key=lambda x: x[1], reverse=True)[:top_k]
 
 
-def load_scores(scores_path: str, top_k: int, num_workers: int = 64):
-    # predictions = torch.load(scores_path)
-    # index = predictions["index"]
-    # scores = predictions["predictions"]
-    # logger.info(f"Loading scores and sorting")
+def load_scores(scores_path: str, top_k: int, id_as_key: bool = True):
     ranking_scores = torch.load(scores_path)
 
     q2k_scores = {}
-    # for idx, pair_score in tqdm(zip(index, scores), total=len(index)):
-    #     q_id, k_id = idx.split("-")
-    #     q_id = int(q_id)
-    #     k_id = int(k_id)
-    #     q2k_scores[q_id].append((k_id, pair_score))
     for q_id, scores in tqdm(ranking_scores.items()):
         if isinstance(q_id, torch.Tensor):
             q_id = q_id.item()
-        q2k_scores[q_id] = [int(k_id) for k_id, _ in scores][:top_k]
-
-    # with Pool(num_workers) as p:
-    #     _annotate = functools.partial(process_single_sorting, top_k=top_k)
-    #     _results = list(tqdm(
-    #         p.imap(_annotate, list(q2k_scores.items())),
-    #         total=len(q2k_scores),
-    #         desc="Sorting"
-    #     ))
-    #     for q_id, scores in tqdm(_results, total=len(_results)):
-    #         q2k_scores[q_id] = scores
-
-    # for q_id in tqdm(q2k_scores, total=len(q2k_scores)):
-    #     q2k_scores[q_id] = sorted(q2k_scores[q_id], key=lambda x: x[1], reverse=True)[:top_k]
+        if id_as_key:
+            q2k_scores[q_id] = [int(k_id) for k_id, _ in scores][:top_k]
+        else:
+            q2k_scores[q_id] = [text for text, _ in scores][:top_k]
 
     return q2k_scores
 
 
 class ReClorRetrieveDataset(Dataset):
     def __init__(self, file_path: str, tokenizer: PreTrainedTokenizer, read_func, memory_path: str, scores_path: str,
-                 top_k: int = 2, memory_tokenizer: str = None, num_workers: int = 64):
+                 top_k: int = 2, memory_tokenizer: str = None, id_as_key: bool = True):
         super().__init__()
         if memory_tokenizer is not None:
             tokenizer = AutoTokenizer.from_pretrained(memory_tokenizer)
@@ -100,7 +81,7 @@ class ReClorRetrieveDataset(Dataset):
                 = torch.load(cached_file_path)
         else:
             memory = load_memory(memory_path, tokenizer)
-            q2k_scores = load_scores(scores_path, top_k, num_workers=num_workers)
+            q2k_scores = load_scores(scores_path, top_k, id_as_key=id_as_key)
 
             all_context, all_question, all_option_list, all_label = read_func(file_path)
 
@@ -121,7 +102,11 @@ class ReClorRetrieveDataset(Dataset):
         q = self.all_context[index]
         op_list = self.all_option_list[index]
         label = self.all_label[index]
-        demons = [self.memory[i] for i in self.q2k_scores[index]]
+        if isinstance(self.q2k_scores[index][0], int):
+            demons = [self.memory[i] for i in self.q2k_scores[index]]
+        else:
+            demons = self.q2k_scores[index]
+        assert isinstance(demons[0], str), demons
         return {
             "context": ctx,
             "question": q,

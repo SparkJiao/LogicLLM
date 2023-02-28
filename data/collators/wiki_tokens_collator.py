@@ -511,7 +511,7 @@ class WikiReconstructDatasetV2:
         }
 
 
-class WikiPathTokensDatasetCollator:
+class WikiPathTokensReconstructPairCollator:
     def __init__(self, max_seq_length: int, tokenizer: str, decoder_tokenizer: str,
                  decoder_max_seq_length: int = 1024, mlm_probability: float = 0.15):
         self.max_seq_length = max_seq_length
@@ -574,7 +574,7 @@ class WikiPathTokensDatasetCollator:
         return inputs
 
 
-class WikiPathTokensDatasetCollatorMC(WikiPathTokensDatasetCollator):
+class WikiPathTokensDatasetCollatorMC(WikiPathTokensReconstructPairCollator):
     def __call__(self, batch):
         inputs = super().__call__(batch)
 
@@ -695,10 +695,10 @@ class WikiPathTokensDatasetCollatorContiguous:
         texts = [b["text"] for b in batch]
 
         input_ids, attention_mask, output_texts, _, h_span_marks, t_span_marks, \
-            entity_pair_mask = processing_examples_w_spans(examples, self.tokenizer)
+        entity_pair_mask = processing_examples_w_spans(examples, self.tokenizer)
 
         p_input_ids, p_attention_mask, p_output_texts, _, p_h_span_marks, p_t_span_marks, \
-            p_entity_pair_mask = processing_examples_w_spans(paired_examples, self.tokenizer)
+        p_entity_pair_mask = processing_examples_w_spans(paired_examples, self.tokenizer)
 
         p_input_ids = p_input_ids[:, 0]
         p_attention_mask = p_attention_mask[:, 0]
@@ -749,4 +749,51 @@ class WikiPathTokensDatasetCollatorContiguous:
         }
         if self.add_mc:
             inputs["labels"] = torch.zeros(len(examples), dtype=torch.long)
+        return inputs
+
+
+# ====================== Seq2seq structure-based generation
+
+def process_multiple_choice_input_only(examples, tokenizer: PreTrainedTokenizer):
+    option_num = len(examples[0]["tokens"])
+    max_seq_length = 0
+    for exp in examples:
+        for op_id, op in enumerate(exp["tokens"]):
+            if isinstance(op, str):
+                assert op_id > 0
+                exp["tokens"][op_id] = tokenizer.tokenize(op)
+            max_seq_length = max(max_seq_length, len(exp["tokens"][op_id]))
+
+    # max_seq_length = max(map(lambda x: max(map(len, x["tokens"])), examples))
+    # assert max_seq_length <= self.max_seq_length, max_seq_length
+    input_ids = torch.zeros(len(examples), option_num, max_seq_length, dtype=torch.long).fill_(tokenizer.pad_token_id)
+    attention_mask = torch.zeros(len(examples), option_num, max_seq_length, dtype=torch.long)
+    for exp_id, exp in enumerate(examples):
+        for op_id, op_tokens in enumerate(exp["tokens"]):
+            input_ids[exp_id, op_id, :len(op_tokens)] = torch.tensor(tokenizer.convert_tokens_to_ids(op_tokens), dtype=torch.long)
+            attention_mask[exp_id, op_id, :len(op_tokens)] = 1
+
+    return input_ids, attention_mask
+
+
+class WikiPathTokensCollatorStruct2SeqCollator(WikiPathTokensDatasetCollator):
+    def __call__(self, batch):
+        inputs = super().__call__(batch)
+
+        # pair_q_batch = [{"example": b["pair_q"], "text": b["text"], "index": b["index"]} for b in batch]
+        # pair_k_batch = [{"example": b["pair_k"], "text": b["text"], "index": b["index"]} for b in batch]
+        #
+        # q_inputs = super().__call__(pair_q_batch)
+        # k_inputs = super().__call__(pair_k_batch)
+        pair_q_examples = [b["pair_q"] for b in batch]
+        pair_k_examples = [b["pair_k"] for b in batch]
+        q_inputs = process_multiple_choice_input_only(pair_q_examples, self.tokenizer)
+        k_inputs = process_multiple_choice_input_only(pair_k_examples, self.tokenizer)
+
+        inputs.update({
+            "q_input_ids": q_inputs[0],
+            "q_attention_mask": q_inputs[1],
+            "k_input_ids": k_inputs[0],
+            "k_attention_mask": k_inputs[1],
+        })
         return inputs
