@@ -188,6 +188,10 @@ def initialize_lr_scheduler(cfg: DictConfig, optimizer, num_warmup_steps: int, n
             from transformers import get_constant_schedule_with_warmup
 
             lr_scheduler = get_constant_schedule_with_warmup(optimizer, num_warmup_steps)
+        elif cfg.lr_scheduler == "poly":
+            from transformers import get_polynomial_decay_schedule_with_warmup
+
+            lr_scheduler = get_polynomial_decay_schedule_with_warmup(optimizer, num_warmup_steps, num_training_steps)
         else:
             raise NotImplementedError()
     else:

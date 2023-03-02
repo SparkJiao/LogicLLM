@@ -1210,7 +1210,10 @@ def obtain_entity_spans(spans: List[str], entity_replacement: List[Dict], h_ent_
 
 def obtain_sentence_spans_w_ent_spans(sentence_tokens_a, sentence_h_spans_a, sentence_t_spans_a,
                                       sentence_tokens_b, sentence_h_spans_b, sentence_t_spans_b):
-    tokens = [_tokenizer.cls_token]
+    if _tokenizer.cls_token:
+        tokens = [_tokenizer.cls_token]
+    else:
+        tokens = []
     sentence_spans = []
     sentence_h_spans = []
     sentence_t_spans = []
@@ -1245,7 +1248,10 @@ def obtain_sentence_spans_w_ent_spans(sentence_tokens_a, sentence_h_spans_a, sen
 
         offset = end
 
-    tokens.append(_tokenizer.sep_token)
+    if _tokenizer.sep_token:
+        tokens.append(_tokenizer.sep_token)
+    else:
+        tokens.append(_tokenizer.eos_token)
 
     return tokens, sentence_spans, sentence_h_spans, sentence_t_spans
 

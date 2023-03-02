@@ -2,6 +2,12 @@ import torch
 from torch import Tensor
 
 
+def fold_tensor(x: Tensor):
+    if x is None:
+        return x
+    return x.reshape(-1, x.size(-1))
+
+
 def extract_sent_tokens(source: Tensor, sentence_index: Tensor, sent_token_mask: Tensor, sentence_ids: Tensor, sentence_ids_mask: Tensor):
     """
     :param source: [batch, seq_len]

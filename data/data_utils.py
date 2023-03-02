@@ -20,7 +20,9 @@ def tokenizer_get_name(_tokenizer: PreTrainedTokenizer):
 
 
 def get_sep_tokens(_tokenizer: PreTrainedTokenizer):
-    return [_tokenizer.sep_token] * (_tokenizer.max_len_single_sentence - _tokenizer.max_len_sentences_pair)
+    if _tokenizer.sep_token:
+        return [_tokenizer.sep_token] * (_tokenizer.max_len_single_sentence - _tokenizer.max_len_sentences_pair)
+    return []
 
 
 # FIXED: This method may find a span within a single word.

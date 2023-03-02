@@ -140,15 +140,7 @@ class WikiPathTokensDatasetCollator:
 
         tagging_labels[input_ids[:, 0] == self.tokenizer.pad_token_id] = -1
 
-        mlm_tokenize_outputs = self.tokenizer(texts, padding=PaddingStrategy.LONGEST,
-                                              truncation=TruncationStrategy.LONGEST_FIRST, max_length=self.max_seq_length,
-                                              return_tensors="pt")
-        mlm_input_ids = mlm_tokenize_outputs["input_ids"]
-        mlm_attention_mask = mlm_tokenize_outputs["attention_mask"]
-
-        mlm_input_ids, mlm_labels = mask_tokens(self.tokenizer, mlm_input_ids, mlm_probability=self.mlm_probability)
-
-        return {
+        res = {
             "input_ids": input_ids,
             "attention_mask": attention_mask,
             "labels": torch.zeros(len(examples), dtype=torch.long),
@@ -157,14 +149,28 @@ class WikiPathTokensDatasetCollator:
             "t_span_marks": t_span_marks,
             "sent_token_index": sent_token_index,
             "sent_token_mask": sent_token_mask,
-            "mlm_input_ids": mlm_input_ids,
-            "mlm_attention_mask": mlm_attention_mask,
-            "mlm_labels": mlm_labels,
             "entity_pair_mask": entity_pair_mask.bool(),
             "meta_data": {
                 "index": [b["index"] for b in batch]
             }
         }
+
+        if self.mlm_probability:
+            mlm_tokenize_outputs = self.tokenizer(texts, padding=PaddingStrategy.LONGEST,
+                                                  truncation=TruncationStrategy.LONGEST_FIRST, max_length=self.max_seq_length,
+                                                  return_tensors="pt")
+            mlm_input_ids = mlm_tokenize_outputs["input_ids"]
+            mlm_attention_mask = mlm_tokenize_outputs["attention_mask"]
+
+            mlm_input_ids, mlm_labels = mask_tokens(self.tokenizer, mlm_input_ids, mlm_probability=self.mlm_probability)
+
+            res.update({
+                "mlm_input_ids": mlm_input_ids,
+                "mlm_attention_mask": mlm_attention_mask,
+                "mlm_labels": mlm_labels,
+            })
+
+        return res
 
 
 def transform_rel_label_to_tensor(rel_labels):
@@ -780,11 +786,6 @@ class WikiPathTokensCollatorStruct2SeqCollator(WikiPathTokensDatasetCollator):
     def __call__(self, batch):
         inputs = super().__call__(batch)
 
-        # pair_q_batch = [{"example": b["pair_q"], "text": b["text"], "index": b["index"]} for b in batch]
-        # pair_k_batch = [{"example": b["pair_k"], "text": b["text"], "index": b["index"]} for b in batch]
-        #
-        # q_inputs = super().__call__(pair_q_batch)
-        # k_inputs = super().__call__(pair_k_batch)
         pair_q_examples = [b["pair_q"] for b in batch]
         pair_k_examples = [b["pair_k"] for b in batch]
         q_inputs = process_multiple_choice_input_only(pair_q_examples, self.tokenizer)
