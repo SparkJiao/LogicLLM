@@ -110,11 +110,11 @@ def multiple_choice_get_tensor(read_func, file_path: str, tokenizer: PreTrainedT
 
 
 def multiple_choice_get_tensor_index(read_func, file_path: str, tokenizer: PreTrainedTokenizer, max_seq_length: int,
-                                     prefix_token_num: int = 0):
+                                     prefix_token_num: int = 0, add_prompt: bool = False):
     tokenizer_name = tokenizer_get_name(tokenizer)
 
     file_suffix = f"{tokenizer_name}_{max_seq_length}_{read_func.__class__.__name__}" \
-                  f"{'_prefix{}'.format(str(prefix_token_num)) if prefix_token_num > 0 else ''}_mc"
+                  f"{'_prefix{}'.format(str(prefix_token_num)) if prefix_token_num > 0 else ''}_mc{'' if not add_prompt else '_prompt'}"
     cached_file_path = f"{file_path}_{file_suffix}"
     if os.path.exists(cached_file_path):
         logger.info(f"Loading cached file from {cached_file_path}.")
@@ -159,6 +159,8 @@ def multiple_choice_get_tensor_index(read_func, file_path: str, tokenizer: PreTr
             c_q_op_mask.extend([0] * (max_option_num - op_num))
         assert len(op_ls) == max_option_num
 
+        if add_prompt:
+            c = "Answer the following question with the given passage:\n\n" + c
         context.extend([c] * len(op_ls))
 
         q_op.extend(list(map(lambda x: _prefix + q + ' '.join(get_sep_tokens(tokenizer)) + x, op_ls)))

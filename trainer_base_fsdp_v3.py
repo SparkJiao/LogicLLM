@@ -319,7 +319,10 @@ def main(cfg: DictConfig):
         else:
             # For model parallel (of mT5)
             logger.info(f"Model Parallel initialization.")
-            model.parallelize(hydra.utils.call(cfg.get_device_map))
+            if getattr(cfg, "get_device_map", None):
+                model.parallelize(hydra.utils.call(cfg.get_device_map))
+            else:
+                model.parallelize()
 
     # logger.info("Training/evaluation parameters %s", OmegaConf.to_yaml(cfg))
     if cfg.local_rank in [-1, 0] and cfg.do_train:
@@ -364,10 +367,10 @@ def main(cfg: DictConfig):
             checkpoints = [cfg.prediction_cfg.best_checkpoint]
             logging.getLogger("transformers.modeling_utils").setLevel(logging.WARN)  # Reduce logging
         elif cfg.eval_sub_path:
-            checkpoints = list(
+            checkpoints = list(sorted(list(set(
                 os.path.dirname(c) for c in
-                sorted(glob.glob(cfg.output_dir + f"/{cfg.eval_sub_path}/" + "pytorch_model.bin", recursive=True))
-            )
+                glob.glob(cfg.output_dir + f"/{cfg.eval_sub_path}/" + "pytorch_model*.bin", recursive=True)
+            ))))
             logging.getLogger("transformers.modeling_utils").setLevel(logging.WARN)  # Reduce logging
         logger.info(" the following checkpoints: %s", checkpoints)
         for checkpoint in checkpoints:
@@ -383,7 +386,10 @@ def main(cfg: DictConfig):
                 model.to(cfg.device)
             else:
                 # For model parallel (of mT5)
-                model.parallelize(hydra.utils.call(cfg.get_device_map))
+                if getattr(cfg, "get_device_map", None):
+                    model.parallelize(hydra.utils.call(cfg.get_device_map))
+                else:
+                    model.parallelize()
 
             if cfg.test_file:
                 prefix = f'test' + (f'-{prefix}' if prefix != "" else "")

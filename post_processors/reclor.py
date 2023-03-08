@@ -1,6 +1,7 @@
 import json
 import os
-from typing import Dict, List, Any
+import re
+from typing import Dict, List, Any, Union
 
 import numpy as np
 import torch
@@ -122,3 +123,65 @@ class TaggingSaver(DistGatherMixin):
             json.dump(self.logits, open(output_file, "w"))
 
         return {}, self.logits
+
+
+def answer_clean(pred_seq: str):
+    pred = re.findall(r'A|B|C|D|E', pred_seq)
+    if len(pred) == 0:
+        return ""
+    return pred[0]
+
+
+class GeneratorPredictor(DistGatherMixin):
+    def __init__(self):
+        self.predictions = []
+
+    def __call__(self, meta_data: Union[List[Dict[str, Any]], Dict[str, Any]], batch_model_outputs, ddp: bool = False):
+        labels = meta_data["label"]
+        prompt_index = meta_data["prompt_index"]
+        index = meta_data["index"].tolist()
+        inputs = meta_data["input"]
+
+        pred_seq = batch_model_outputs["generated_seq"]
+        assert len(labels) == len(prompt_index) == len(index) == len(inputs), (len(labels), len(prompt_index), len(index), len(inputs))
+        if len(pred_seq) == len(labels):
+            pass
+        elif len(pred_seq) % len(labels) == 0:
+            pass
+        else:
+            raise ValueError((len(pred_seq), len(labels)))
+
+        predictions = [
+            {
+                "label": label,
+                "index": idx,
+                "prompt_index": prompt_idx,
+                "output": res,
+                "cleaned_output": answer_clean(res),
+                "input": src,
+            } for label, idx, prompt_idx, res, src in zip(labels, index, prompt_index, pred_seq, inputs)
+        ]
+
+        if ddp:
+            gather_res = self.gather_object(predictions)
+            if dist.get_rank() == 0:
+                tmp = []
+                for item in gather_res:
+                    tmp.extend(item)
+                predictions = tmp
+
+        self.predictions.extend(predictions)
+
+    def get_results(self, output_dir: str):
+        if dist.is_initialized():
+            output_file = os.path.join(output_dir, f"decode_results_rank{dist.get_rank()}.json")
+        else:
+            output_file = os.path.join(output_dir, "decode_results.json")
+
+        json.dump(self.predictions, open(output_file, "w"))
+
+        correct = 0
+        for pred in self.predictions:
+            if pred["label"] == pred["cleaned_output"]:
+                correct += 1
+        return {"acc": correct / len(self.predictions)}, self.predictions

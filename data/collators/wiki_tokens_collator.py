@@ -782,6 +782,48 @@ def process_multiple_choice_input_only(examples, tokenizer: PreTrainedTokenizer)
     return input_ids, attention_mask
 
 
+def process_multiple_choice_input_w_option_span(examples, tokenizer: PreTrainedTokenizer):
+    option_num = len(examples[0]["tokens"])
+    max_seq_length = 0
+    for exp in examples:
+        for op_id, op in enumerate(exp["tokens"]):
+            if isinstance(op, str):
+                assert op_id > 0
+                exp["tokens"][op_id] = tokenizer.tokenize(op)
+            max_seq_length = max(max_seq_length, len(exp["tokens"][op_id]))
+
+    # max_seq_length = max(map(lambda x: max(map(len, x["tokens"])), examples))
+    # assert max_seq_length <= self.max_seq_length, max_seq_length
+    input_ids = torch.zeros(len(examples), option_num, max_seq_length, dtype=torch.long).fill_(tokenizer.pad_token_id)
+    attention_mask = torch.zeros(len(examples), option_num, max_seq_length, dtype=torch.long)
+    for exp_id, exp in enumerate(examples):
+        for op_id, op_tokens in enumerate(exp["tokens"]):
+            input_ids[exp_id, op_id, :len(op_tokens)] = torch.tensor(tokenizer.convert_tokens_to_ids(op_tokens), dtype=torch.long)
+            attention_mask[exp_id, op_id, :len(op_tokens)] = 1
+
+    option_labels = torch.zeros(len(examples), max_seq_length, dtype=torch.long).fill_(-1)
+    for exp_id, exp in enumerate(examples):
+        sent_span = exp["sentence_spans"][0][-1]
+        option_labels[exp_id, sent_span[0]:] = input_ids[exp_id, 0, sent_span[0]:].clone()
+
+    return input_ids, attention_mask, option_labels
+
+
+def process_context2option_inputs(examples, tokenizer: PreTrainedTokenizer, max_seq_length: int, input_prefix: str = ""):
+    contexts = []
+    options = []
+    for exp_id, exp in enumerate(examples):
+        sent_span = exp["sentence_spans"][0][-1]
+        ctx_token_ids = tokenizer.convert_tokens_to_ids(exp["tokens"][0][:sent_span[0]])
+        opt_token_ids = tokenizer.convert_tokens_to_ids(exp["tokens"][0][sent_span[0]:sent_span[1]])
+        contexts.append(input_prefix + tokenizer.decode(ctx_token_ids, skip_special_tokens=True))
+        options.append(tokenizer.decode(opt_token_ids, skip_special_tokens=True))
+
+    model_inputs = tokenizer(contexts, text_target=options, padding="longest", truncation=True,
+                             return_tensors="pt", max_length=max_seq_length)
+    return model_inputs
+
+
 class WikiPathTokensCollatorStruct2SeqCollator(WikiPathTokensDatasetCollator):
     def __call__(self, batch):
         inputs = super().__call__(batch)
@@ -796,5 +838,46 @@ class WikiPathTokensCollatorStruct2SeqCollator(WikiPathTokensDatasetCollator):
             "q_attention_mask": q_inputs[1],
             "k_input_ids": k_inputs[0],
             "k_attention_mask": k_inputs[1],
+        })
+        return inputs
+
+
+class WikiPathTokensCollatorStruct2SeqV2Collator(WikiPathTokensDatasetCollator):
+    def __call__(self, batch):
+        inputs = super().__call__(batch)
+
+        pair_q_examples = [b["pair_q"] for b in batch]
+        pair_k_examples = [b["pair_k"] for b in batch]
+        q_inputs = process_multiple_choice_input_w_option_span(pair_q_examples, self.tokenizer)
+        k_inputs = process_multiple_choice_input_w_option_span(pair_k_examples, self.tokenizer)
+
+        inputs.update({
+            "q_input_ids": q_inputs[0],
+            "q_attention_mask": q_inputs[1],
+            "q_option_labels": q_inputs[2],
+            "k_input_ids": k_inputs[0],
+            "k_attention_mask": k_inputs[1],
+            "k_option_labels": k_inputs[2],
+        })
+        return inputs
+
+
+class WikiPathTokensCollatorSeq2SeqCollator(WikiPathTokensDatasetCollator):
+    def __init__(self, max_seq_length: int, tokenizer: str, instruct: str = ""):
+        super().__init__(max_seq_length, tokenizer, 0.0)
+        self.instruct = instruct
+
+    def __call__(self, batch):
+        examples = [b["example"] for b in batch]
+        seq2seq_inputs = process_context2option_inputs(examples, self.tokenizer, self.max_seq_length, input_prefix=self.instruct)
+
+        inputs = super().__call__(batch)
+
+        seq2seq_labels = seq2seq_inputs["labels"]
+        seq2seq_labels.masked_fill_(seq2seq_labels == self.tokenizer.pad_token_id, -100)
+        inputs.update({
+            "mlm_input_ids": seq2seq_inputs["input_ids"],
+            "mlm_attention_mask": seq2seq_inputs["attention_mask"],
+            "mlm_labels": seq2seq_labels,
         })
         return inputs

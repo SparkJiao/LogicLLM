@@ -429,7 +429,8 @@ class T5ForMultipleChoiceAndSeq2Seq(T5ForConditionalGeneration, LogMixin, ABC):
                 )
 
                 mlm_scores = mlm_outputs.logits
-                mlm_loss = self.mlm_alpha * mlm_outputs.loss
+                mlm_loss = mlm_outputs.loss
+                loss = loss + mlm_loss
             else:
                 mlm_scores = None
                 mlm_loss = None

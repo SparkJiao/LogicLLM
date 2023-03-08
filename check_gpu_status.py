@@ -13,6 +13,8 @@ command = {
     "nvi8": 'srun -p RTXA6Kq -w node08 nvidia-smi',
     "nvi9": 'srun -p RTXA6Kq -w node09 nvidia-smi',
     "nvi10": 'srun -p RTXA6Kq -w node10 nvidia-smi',
+    "nvi11": 'srun -p RTXA6Kq -w node11 nvidia-smi',
+    "nvi12": 'srun -p PA100q -w node12 nvidia-smi',
 }
 
 if __name__ == '__main__':

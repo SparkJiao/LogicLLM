@@ -39,7 +39,7 @@ from general_util.dist_utils import vanilla_torch_dist
 from general_util.evaluator import evaluate_fn as evaluate
 from general_util.logger import setting_logger
 from general_util.training_utils import batch_to_device, unwrap_model, set_seed, note_best_checkpoint, initialize_optimizer, \
-    load_and_cache_examples, if_cancel_sync
+    load_and_cache_examples, if_cancel_sync, initialize_lr_scheduler
 
 logger: logging.Logger
 
@@ -161,7 +161,7 @@ def train(cfg, model, tokenizer, continue_from_global_step=0):
     if cfg.local_rank != -1:
         model = hydra.utils.instantiate(cfg.fairscale_config, model=model, device=cfg.device)
         optimizer = initialize_optimizer(cfg, model=model)
-        scheduler = get_linear_schedule_with_warmup(optimizer, num_warmup_steps=num_warmup_steps, num_training_steps=t_total)
+        scheduler = initialize_lr_scheduler(cfg, optimizer, num_warmup_steps, t_total)
 
     logger.info(optimizer)
 
@@ -350,7 +350,10 @@ def main(cfg: DictConfig):
         else:
             # For model parallel (of mT5)
             logger.info(f"Model Parallel initialization.")
-            model.parallelize(hydra.utils.call(cfg.get_device_map))
+            if getattr(cfg, "get_device_map", None):
+                model.parallelize(hydra.utils.call(cfg.get_device_map))
+            else:
+                model.parallelize()
 
     # logger.info("Training/evaluation parameters %s", OmegaConf.to_yaml(cfg))
     if cfg.local_rank in [-1, 0] and cfg.do_train:
