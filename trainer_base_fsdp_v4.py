@@ -303,7 +303,7 @@ def main(cfg: DictConfig):
 
     # Set seed
     set_seed(cfg)
-    torch.cuda.synchronize()
+
     # Load pre-trained model and tokenizer
     if cfg.local_rank not in [-1, 0]:
         dist.barrier()  # Make sure only the first process in distributed training will download model & vocab
@@ -324,6 +324,7 @@ def main(cfg: DictConfig):
     except Exception as e:
         logger.warning(e)
         model = hydra.utils.call(cfg.model)
+    torch.compile(model)
 
     if cfg.local_rank == 0:
         dist.barrier()  # Make sure only the first process in distributed training will download model & vocab
