@@ -1,10 +1,11 @@
-import json
-from tqdm import tqdm
-from data.readers import ReClorReader
 import random
 from typing import List
+
+import torch
 from torch.utils.data import Dataset, default_collate
 from transformers import PreTrainedTokenizer, AutoTokenizer
+from general_util.tokenization_utils import expand_special_tokenizer
+
 
 _default_instruct = "Answer the following question with the given context:"
 
@@ -70,9 +71,76 @@ class ReClorGenerativeDataset(Dataset):
         }
 
 
+class ReClorSeq2SeqMCQADataset(Dataset):
+    def __init__(self, file_path: str, tokenizer: PreTrainedTokenizer, read_func):
+        super().__init__()
+        all_context, all_question, all_option_list, all_label = read_func(file_path)
+        self.contexts = all_context
+        self.questions = all_question
+        self.option_list = all_option_list
+        self.labels = all_label
+
+    def __len__(self):
+        return len(self.contexts)
+
+    def __getitem__(self, index):
+        return {
+            "index": index,
+            "context": self.contexts[index],
+            "question": self.questions[index],
+            "options": self.option_list[index],
+            "label": self.labels[index],
+        }
+
+
+class ReClorSeq2SeqMCQACollator:
+    def __init__(self, tokenizer: str, max_seq_length: int, decoder_only: bool = False):
+        self.tokenizer: PreTrainedTokenizer = AutoTokenizer.from_pretrained(tokenizer, use_fast=False)
+        expand_special_tokenizer(self.tokenizer)
+        self.max_seq_length = max_seq_length
+        self.decoder_only = decoder_only
+
+    def __call__(self, batch):
+        inputs_a = []
+        inputs_b = []
+        batch_size = len(batch)
+        labels = []
+        indices = []
+        for b in batch:
+            op_num = len(b["options"])
+            inputs_a.extend([b["context"] + b["question"]] * op_num)
+            if self.decoder_only:
+                inputs_b.extend(list(map(lambda x: b["context"] + b["question"] + x, b["options"])))
+            else:
+                inputs_b.extend(b["options"])
+            labels.append(b["label"])
+            indices.append(b["index"])
+
+        op_num = len(inputs_a) // batch_size
+
+        model_inputs = self.tokenizer(inputs_a, text_target=inputs_b,
+                                      padding="longest", truncation=True, max_length=self.max_seq_length, return_tensors="pt")
+        if self.decoder_only:
+            input_lens = model_inputs["input_ids"].ne(self.tokenizer.pad_token_id).sum(dim=1)
+            model_inputs = self.tokenizer(inputs_b, padding="longest", truncation=True, max_length=self.max_seq_length,
+                                          return_tensors="pt")
+            model_inputs["input_lens"] = input_lens
+
+        model_inputs["input_ids"] = model_inputs["input_ids"].reshape(batch_size, op_num, -1)
+        model_inputs["attention_mask"] = model_inputs["attention_mask"].reshape(batch_size, op_num, -1)
+
+        if not self.decoder_only:
+            model_inputs["decoder_input_ids"] = model_inputs["labels"].reshape(batch_size, op_num, -1)
+
+        model_inputs["labels"] = torch.tensor(labels, dtype=torch.long)
+        model_inputs["meta_data"] = {"index": indices}
+        return model_inputs
+
+
 class ReClorGenerativeCollator:
     def __init__(self, tokenizer: str, max_seq_length: int):
         self.tokenizer: PreTrainedTokenizer = AutoTokenizer.from_pretrained(tokenizer, use_fast=False)
+        expand_special_tokenizer(self.tokenizer)
         self.max_seq_length = max_seq_length
 
     def __call__(self, batch):

@@ -125,16 +125,19 @@ class TaggingSaver(DistGatherMixin):
         return {}, self.logits
 
 
-def answer_clean(pred_seq: str):
+def answer_clean(pred_seq: str, reverse: bool = False):
     pred = re.findall(r'A|B|C|D|E', pred_seq)
     if len(pred) == 0:
         return ""
+    if reverse:
+        return pred[-1]
     return pred[0]
 
 
 class GeneratorPredictor(DistGatherMixin):
-    def __init__(self):
+    def __init__(self, reverse: bool = False):
         self.predictions = []
+        self.reverse = reverse
 
     def __call__(self, meta_data: Union[List[Dict[str, Any]], Dict[str, Any]], batch_model_outputs, ddp: bool = False):
         labels = meta_data["label"]
@@ -157,7 +160,7 @@ class GeneratorPredictor(DistGatherMixin):
                 "index": idx,
                 "prompt_index": prompt_idx,
                 "output": res,
-                "cleaned_output": answer_clean(res),
+                "cleaned_output": answer_clean(res, self.reverse),
                 "input": src,
             } for label, idx, prompt_idx, res, src in zip(labels, index, prompt_index, pred_seq, inputs)
         ]

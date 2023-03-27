@@ -2,11 +2,8 @@ from abc import ABC
 from typing import Optional, Tuple, Union, Dict
 
 import torch
-from nltk import word_tokenize
-from nltk.translate.bleu_score import sentence_bleu
 from torch import Tensor
 from torch.nn import CrossEntropyLoss
-from transformers.generation_logits_process import LogitsProcessor, LogitsProcessorList
 from transformers.models.bart.modeling_bart import BartClassificationHead
 from transformers.models.t5.modeling_t5 import (
     T5Config,
@@ -21,6 +18,12 @@ from general_util.logger import get_child_logger
 from general_util.mixin import LogMixin
 from modules import layers
 from modules.layers import fold_tensor
+
+try:
+    from nltk import word_tokenize
+    from nltk.translate.bleu_score import sentence_bleu
+except:
+    pass
 
 logger = get_child_logger("T5")
 
@@ -42,106 +45,11 @@ class MultipleChoicePreTrainModelOutput(Seq2SeqLMOutput):
     local_ctr_acc: torch.FloatTensor = None
 
 
-class T5LayerFF(torch.nn.Module):
-    def __init__(self, config: T5Config):
-        super().__init__()
-        if config.is_gated_act:
-            self.DenseReluDense = T5DenseGatedActDense(config)
-        else:
-            self.DenseReluDense = T5DenseActDense(config)
-
-        self.layer_norm = T5LayerNorm(config.d_model, eps=config.layer_norm_epsilon)
-        self.dropout = torch.nn.Dropout(config.dropout_rate)
-
-    def _forward(self, hidden_states):
-        forwarded_states = self.layer_norm(hidden_states)
-        forwarded_states = self.DenseReluDense(forwarded_states)
-        hidden_states = hidden_states + self.dropout(forwarded_states)
-        return hidden_states
-
-    def forward(self, hidden_states):
-        # many t5/mt5 models are trained in bfloat16 and don't do well under mixed precision (fp16).
-        # It appears that it's enough to disable autocast for this FF layer to avoid inf/nan
-        # problems for the whole model
-        # if torch.is_autocast_enabled():
-        with torch.cuda.amp.autocast(enabled=False):
-            hidden_states = hidden_states.to(torch.float32)
-            return self._forward(hidden_states)
-        # else:
-        #     return self._forward(hidden_states)
-
-
 class T5ForSeq2Seq(T5ForConditionalGeneration, LogMixin, ABC):
-
-    def __init__(self, config: T5Config, tokenizer: str, fp16_compatible: bool = False,
-                 logits_processor: LogitsProcessor = None):
+    def __init__(self, config: T5Config):
         super().__init__(config)
         self.config = config
-
-        # if fp16_compatible:  # This doesn't work on RTX 6000.
-        #     for block_id, block in enumerate(self.encoder.block):
-        #         assert isinstance(block.layer[-1], transformers.models.t5.modeling_t5.T5LayerFF)
-        #         self.encoder.block[block_id].layer[-1] = T5LayerFF(config)
-        #
-        #     for block_id, block in enumerate(self.decoder.block):
-        #         assert isinstance(block.layer[-1], transformers.models.t5.modeling_t5.T5LayerFF)
-        #         self.decoder.block[block_id].layer[-1] = T5LayerFF(config)
-        # if fp16_compatible:
-        #     self.lm_scale_modifier = torch.nn.Parameter(torch.ones(config.d_model))
-        #     self.fix_t5_fp16()
-        # else:
-        #     self.lm_scale_modifier = 1
-
-        self.init_metric("loss", "acc", "bleu")
-
-        self.logits_processor = logits_processor
-        if self.logits_processor is not None:
-            self.logits_processor = LogitsProcessorList([self.logits_processor])
-
-        self.tokenizer = T5Tokenizer.from_pretrained(tokenizer, use_fast=False)
-
-        self.generating = False
-
-    # def fix_t5_fp16(self):
-    #     emb_scaling = 1 / 32.0
-    #     att_v_scaling = 1 / 4.0
-    #     att_o_scaling = 1 / 8.0
-    #     ff_wi_scaling = 1 / 4.0
-    #     ff_wo_scaling = 1 / 1.0
-    #     ff_ln_scaling = 1 / 2.0
-    #
-    #     assert att_v_scaling * att_o_scaling == emb_scaling
-    #     assert ff_wi_scaling * ff_wi_scaling * ff_wo_scaling * ff_ln_scaling == emb_scaling
-    #
-    #     with torch.no_grad():
-    #         self.shared.weight *= emb_scaling
-    #         for unit in self.encoder.block:
-    #             unit.layer[0].SelfAttention.v.weight *= att_v_scaling
-    #             unit.layer[0].SelfAttention.o.weight *= att_o_scaling
-    #             unit.layer[1].DenseReluDense.wi_0.weight *= ff_wi_scaling
-    #             unit.layer[1].DenseReluDense.wi_1.weight *= ff_wi_scaling
-    #             unit.layer[1].DenseReluDense.wo.weight *= ff_wo_scaling
-    #             unit.layer[1].layer_norm.weight *= ff_ln_scaling
-    #         for unit in self.decoder.block:
-    #             unit.layer[0].SelfAttention.v.weight *= att_v_scaling
-    #             unit.layer[0].SelfAttention.o.weight *= att_o_scaling
-    #             unit.layer[1].EncDecAttention.v.weight *= att_v_scaling
-    #             unit.layer[1].EncDecAttention.o.weight *= att_o_scaling
-    #             unit.layer[2].DenseReluDense.wi_0.weight *= ff_wi_scaling
-    #             unit.layer[2].DenseReluDense.wi_1.weight *= ff_wi_scaling
-    #             unit.layer[2].DenseReluDense.wo.weight *= ff_wo_scaling
-    #             unit.layer[2].layer_norm.weight *= ff_ln_scaling
-    #         self.lm_scale_modifier /= emb_scaling
-
-    def generate(self, *model_args, **model_kwargs):
-        self.generating = True
-        model_kwargs.pop("labels", None)
-        if self.logits_processor is not None:
-            res = super().generate(*model_args, **model_kwargs, logits_processor=self.logits_processor)
-        else:
-            res = super().generate(*model_args, **model_kwargs)
-        self.generating = False
-        return res
+        self.init_metric("loss", "acc")
 
     def forward(
             self,
@@ -262,7 +170,6 @@ class T5ForSeq2Seq(T5ForConditionalGeneration, LogMixin, ABC):
             # See https://github.com/tensorflow/mesh/blob/fa19d69eafc9a482aff0b59ddd96b025c0cb207d/mesh_tensorflow/transformer/transformer.py#L586
             sequence_output = sequence_output * (self.model_dim ** -0.5)
 
-        # lm_logits = self.lm_head(sequence_output * self.lm_scale_modifier)
         lm_logits = self.lm_head(sequence_output)
 
         loss = None
@@ -275,23 +182,6 @@ class T5ForSeq2Seq(T5ForConditionalGeneration, LogMixin, ABC):
             #  Add z_loss https://github.com/tensorflow/mesh/blob/fa19d69eafc9a482aff0b59ddd96b025c0cb207d/mesh_tensorflow/layers.py#L666
 
             if not self.training:
-                # Generate sentences for BLEU evaluation
-                max_output_length = labels.size(1)
-                # Greedy decoding.
-                eval_gen_sentences = self.generate(input_ids=input_ids, attention_mask=attention_mask, max_length=max_output_length,
-                                                   num_beams=1, do_sample=False)
-                eval_gen_sentences = self.tokenizer.batch_decode(eval_gen_sentences, skip_special_tokens=True)
-                target = self.tokenizer.batch_decode(labels.masked_fill(label_padding_mask, self.config.pad_token_id),
-                                                     skip_special_tokens=True)
-                # bleu = sum(
-                #     [sentence_bleu([tgt.split()], gen_sentence.split()) for tgt, gen_sentence in zip(target, eval_gen_sentences)]
-                # ) / labels.size(0)
-                bleu = sum(
-                    [sentence_bleu([word_tokenize(tgt)], word_tokenize(gen_sentence))
-                     for tgt, gen_sentence in zip(target, eval_gen_sentences)]
-                ) / labels.size(0)  # FIXED: the value should be the averaged one.
-                self.eval_metrics.update("bleu", bleu, n=labels.size(0))
-
                 acc, true_label_num = layers.get_accuracy(lm_logits, labels)
                 self.eval_metrics.update("acc", acc, n=true_label_num)
                 self.eval_metrics.update("loss", loss.item(), n=true_label_num)
@@ -313,6 +203,38 @@ class T5ForSeq2Seq(T5ForConditionalGeneration, LogMixin, ABC):
         )
 
 
+class T5ForSeq2SeqFlan(T5ForSeq2Seq, LogMixin, ABC):
+    def forward(
+            self,
+            input_ids: Optional[torch.LongTensor] = None,
+            attention_mask: Optional[torch.FloatTensor] = None,
+            decoder_input_ids: Optional[torch.LongTensor] = None,
+            labels: Optional[torch.LongTensor] = None,
+            flan_input_ids: Optional[torch.LongTensor] = None,
+            flan_attention_mask: Optional[torch.FloatTensor] = None,
+            flan_labels: Optional[torch.LongTensor] = None,
+            return_dict: Optional[bool] = None,
+            **kwargs
+    ) -> Union[Dict[str, Tensor], T5Stack]:
+        return_dict = return_dict if return_dict is not None else self.config.use_return_dict
+
+        outputs1 = super().forward(input_ids=input_ids,
+                                   attention_mask=attention_mask,
+                                   labels=labels,
+                                   return_dict=return_dict)
+        outputs2 = super().forward(input_ids=flan_input_ids,
+                                   attention_mask=flan_attention_mask,
+                                   labels=flan_labels,
+                                   return_dict=return_dict)
+        loss = outputs1.loss + outputs2.loss
+
+        return Seq2SeqLMOutput(
+            loss=loss,
+            logits=outputs1.logits,
+        )
+
+
+
 """
 To solve NCCL error:
 https://www.cnblogs.com/marsggbo/p/16556963.html
@@ -323,7 +245,7 @@ https://github.com/Lightning-AI/lightning/issues/4420
 
 
 class T5ForMultipleChoiceAndSeq2Seq(T5ForConditionalGeneration, LogMixin, ABC):
-    def __init__(self, config: T5Config, ):
+    def __init__(self, config: T5Config, add_lm_loss: bool = False):
         super().__init__(config)
         self.num_labels = getattr(config, "num_labels", 1)
         self.classification_head = BartClassificationHead(
@@ -332,6 +254,250 @@ class T5ForMultipleChoiceAndSeq2Seq(T5ForConditionalGeneration, LogMixin, ABC):
             self.num_labels,
             config.dropout_rate,
         )
+
+        # Initialize weights and apply final processing
+        self.post_init()
+
+        # Model parallel
+        self.model_parallel = False
+        self.device_map = None
+        self.add_lm_loss = add_lm_loss
+        metrics = ["loss", "acc", "mlm_loss", "mlm_acc", "cls_loss"]
+        self.init_metric(*metrics)
+
+    def forward(
+            self,
+            input_ids: Optional[torch.LongTensor] = None,
+            attention_mask: Optional[torch.FloatTensor] = None,
+            decoder_input_ids: Optional[torch.LongTensor] = None,
+            decoder_attention_mask: Optional[torch.BoolTensor] = None,
+            head_mask: Optional[torch.FloatTensor] = None,
+            decoder_head_mask: Optional[torch.FloatTensor] = None,
+            cross_attn_head_mask: Optional[torch.Tensor] = None,
+            encoder_outputs: Optional[Tuple[Tuple[torch.Tensor]]] = None,
+            past_key_values: Optional[Tuple[Tuple[torch.Tensor]]] = None,
+            inputs_embeds: Optional[torch.FloatTensor] = None,
+            decoder_inputs_embeds: Optional[torch.FloatTensor] = None,
+            labels: Optional[torch.LongTensor] = None,
+            use_cache: Optional[bool] = None,
+            output_attentions: Optional[bool] = None,
+            output_hidden_states: Optional[bool] = None,
+            return_dict: Optional[bool] = None,
+            # mlm_input_ids: Tensor = None,
+            # mlm_attention_mask: Tensor = None,
+            # mlm_labels: Tensor = None,
+            **kwargs,
+    ) -> Union[Tuple[torch.FloatTensor], Seq2SeqLMOutput]:
+        r"""
+        labels (`torch.LongTensor` of shape `(batch_size,)`, *optional*):
+            Labels for computing the sequence classification/regression loss. Indices should be in `[-100, 0, ...,
+            config.vocab_size - 1]`. All labels set to `-100` are ignored (masked), the loss is only computed for
+            labels in `[0, ..., config.vocab_size]`
+
+        Returns:
+        ```"""
+        use_cache = use_cache if use_cache is not None else self.config.use_cache
+        return_dict = return_dict if return_dict is not None else self.config.use_return_dict
+        num_choices = input_ids.shape[1]
+        batch_size = input_ids.shape[0]
+
+        input_ids = fold_tensor(input_ids)
+        attention_mask = fold_tensor(attention_mask)
+        decoder_input_ids = fold_tensor(decoder_input_ids)
+
+        if decoder_input_ids is not None:
+            eos_mask = decoder_input_ids.eq(self.config.eos_token_id)
+        else:
+            eos_mask = input_ids.eq(self.config.eos_token_id)
+
+        if decoder_input_ids is not None:
+            shift_decoder_input_ids = self._shift_right(decoder_input_ids)
+        else:
+            decoder_input_ids = input_ids.clone()
+            shift_decoder_input_ids = self._shift_right(input_ids)
+
+        outputs = super().forward(input_ids=input_ids,
+                                  attention_mask=attention_mask,
+                                  decoder_input_ids=shift_decoder_input_ids,
+                                  return_dict=return_dict,
+                                  output_hidden_states=True)
+
+        assert len(outputs.decoder_hidden_states)
+        sequence_output = outputs.decoder_hidden_states[-1]
+        lm_logits = outputs.logits
+
+        # Set device for model parallelism
+        if self.model_parallel:
+            torch.cuda.set_device(self.encoder.first_device)
+            self.classification_head = self.classification_head.to(self.encoder.first_device)
+            sequence_output = sequence_output.to(self.classification_head.dense.weight.device)
+
+        sentence_representation = sequence_output[eos_mask, :].view(sequence_output.size(0), -1, sequence_output.size(-1))[:, -1, :]
+        logits = self.classification_head(sentence_representation)
+        reshaped_logits = logits.view(-1, num_choices)
+
+        loss = 0.
+        lm_loss = 0.
+        cls_loss = 0.
+        if labels is not None:
+            loss_fct = CrossEntropyLoss(ignore_index=-1)
+            cls_loss = loss_fct(reshaped_logits, labels)
+            loss = loss + cls_loss
+
+            # if mlm_labels is not None:
+            #     mlm_outputs = super().forward(
+            #         input_ids=mlm_input_ids,
+            #         attention_mask=mlm_attention_mask,
+            #         labels=mlm_labels,
+            #         return_dict=return_dict
+            #     )
+            #
+            #     mlm_scores = mlm_outputs.logits
+            #     mlm_loss = mlm_outputs.loss
+            #     loss = loss + mlm_loss
+            # else:
+            #     mlm_scores = None
+            #     mlm_loss = None
+            lm_labels = None
+            if self.add_lm_loss:
+                # label_mask = decoder_input_ids.eq(self.config.pad_token_id)
+                # decoder_input_ids[label_mask] = -1
+                choice_index = labels + torch.arange(batch_size, device=decoder_input_ids.device) * num_choices
+                lm_labels = decoder_input_ids[choice_index]
+                lm_mask = lm_labels.eq(self.config.pad_token_id)
+                lm_labels[lm_mask] = -1
+                lm_logits = lm_logits[choice_index]
+
+                lm_loss = loss_fct(lm_logits.view(-1, lm_logits.size(-1)), lm_labels.reshape(-1))
+                loss = loss + lm_loss
+
+            if not self.training:
+                acc, true_label_num = layers.get_accuracy(reshaped_logits, labels)
+                self.eval_metrics.update("acc", val=acc, n=true_label_num)
+                self.eval_metrics.update("loss", val=loss.item(), n=true_label_num)
+                self.eval_metrics.update("cls_loss", val=cls_loss.item(), n=true_label_num)
+
+                if self.add_lm_loss:
+                    acc, true_label_num = layers.get_accuracy(lm_logits, lm_labels)
+                    self.eval_metrics.update("mlm_acc", val=acc, n=true_label_num)
+                    self.eval_metrics.update("mlm_loss", val=lm_loss.item(), n=true_label_num)
+
+        return MultipleChoicePreTrainModelOutput(
+            loss=loss,
+            logits=reshaped_logits,
+            mlm_loss=lm_loss,
+            cls_loss=cls_loss,
+        )
+
+
+class T5ForMultipleChoiceAndSeq2SeqLM(T5ForConditionalGeneration, LogMixin, ABC):
+    def __init__(self, config: T5Config, add_lm_loss: bool = False):
+        super().__init__(config)
+
+        # Initialize weights and apply final processing
+        self.post_init()
+
+        # Model parallel
+        self.model_parallel = False
+        self.device_map = None
+
+        metrics = ["loss", "acc", "cls_loss"]
+        self.add_lm_loss = add_lm_loss
+        if add_lm_loss:
+            metrics.append("mlm_loss")
+        self.init_metric(*metrics)
+
+    def forward(
+            self,
+            input_ids: Optional[torch.LongTensor] = None,
+            attention_mask: Optional[torch.FloatTensor] = None,
+            decoder_input_ids: Optional[torch.LongTensor] = None,
+            decoder_attention_mask: Optional[torch.BoolTensor] = None,
+            head_mask: Optional[torch.FloatTensor] = None,
+            decoder_head_mask: Optional[torch.FloatTensor] = None,
+            cross_attn_head_mask: Optional[torch.Tensor] = None,
+            encoder_outputs: Optional[Tuple[Tuple[torch.Tensor]]] = None,
+            past_key_values: Optional[Tuple[Tuple[torch.Tensor]]] = None,
+            inputs_embeds: Optional[torch.FloatTensor] = None,
+            decoder_inputs_embeds: Optional[torch.FloatTensor] = None,
+            labels: Optional[torch.LongTensor] = None,
+            use_cache: Optional[bool] = None,
+            output_attentions: Optional[bool] = None,
+            output_hidden_states: Optional[bool] = None,
+            return_dict: Optional[bool] = None,
+            **kwargs,
+    ) -> Union[Tuple[torch.FloatTensor], Seq2SeqLMOutput]:
+        r"""
+        labels (`torch.LongTensor` of shape `(batch_size,)`, *optional*):
+            Labels for computing the sequence classification/regression loss. Indices should be in `[-100, 0, ...,
+            config.vocab_size - 1]`. All labels set to `-100` are ignored (masked), the loss is only computed for
+            labels in `[0, ..., config.vocab_size]`
+
+        Returns:
+        ```"""
+        use_cache = use_cache if use_cache is not None else self.config.use_cache
+        return_dict = return_dict if return_dict is not None else self.config.use_return_dict
+        num_choices = input_ids.shape[1]
+        batch_size = input_ids.shape[0]
+
+        input_ids = fold_tensor(input_ids)
+        attention_mask = fold_tensor(attention_mask)
+        decoder_input_ids = fold_tensor(decoder_input_ids)
+
+        if decoder_input_ids is not None:
+            shift_decoder_input_ids = self._shift_right(decoder_input_ids)
+        else:
+            decoder_input_ids = input_ids.clone()
+            shift_decoder_input_ids = self._shift_right(decoder_input_ids)
+
+        outputs = super().forward(input_ids=input_ids,
+                                  attention_mask=attention_mask,
+                                  decoder_input_ids=shift_decoder_input_ids,
+                                  return_dict=return_dict,
+                                  output_hidden_states=True)
+
+        lm_logits = outputs.logits.reshape(-1, outputs.logits.size(-1))
+
+        label_mask = decoder_input_ids.eq(self.config.pad_token_id)
+        decoder_input_ids[label_mask] = -1
+
+        lm_ppl = CrossEntropyLoss(ignore_index=-1, reduction="none")(lm_logits, decoder_input_ids.reshape(-1))
+        lm_ppl = lm_ppl.reshape(batch_size, num_choices, -1)
+        lm_ppl = lm_ppl.sum(-1) / (~label_mask).to(torch.float).reshape(batch_size, num_choices, -1).sum(dim=-1)
+        reshaped_logits = -lm_ppl.contiguous()
+
+        loss = 0.
+        cls_loss = 0.
+        lm_loss = None
+        if labels is not None:
+            loss_fct = CrossEntropyLoss(ignore_index=-1)
+            cls_loss = loss_fct(reshaped_logits, labels)
+            loss = loss + cls_loss
+
+            if self.add_lm_loss:
+                lm_loss = torch.gather(lm_ppl, 1, labels.unsqueeze(-1)).squeeze(-1).mean()
+                loss = loss + lm_loss
+
+            if not self.training:
+                acc, true_label_num = layers.get_accuracy(reshaped_logits, labels)
+                self.eval_metrics.update("acc", val=acc, n=true_label_num)
+                self.eval_metrics.update("loss", val=loss.item(), n=true_label_num)
+                self.eval_metrics.update("cls_loss", val=cls_loss.item(), n=true_label_num)
+
+                if self.add_lm_loss:
+                    self.eval_metrics.update("mlm_loss", val=lm_loss, n=1)
+
+        return MultipleChoicePreTrainModelOutput(
+            loss=loss,
+            logits=reshaped_logits,
+            cls_loss=cls_loss,
+            mlm_loss=lm_loss,
+        )
+
+
+class T5ForMCQAAndFLAN(T5ForMultipleChoiceAndSeq2Seq, LogMixin, ABC):
+    def __init__(self, config: T5Config):
+        super().__init__(config, add_lm_loss=False)
 
         # Initialize weights and apply final processing
         self.post_init()
@@ -361,9 +527,9 @@ class T5ForMultipleChoiceAndSeq2Seq(T5ForConditionalGeneration, LogMixin, ABC):
             output_attentions: Optional[bool] = None,
             output_hidden_states: Optional[bool] = None,
             return_dict: Optional[bool] = None,
-            mlm_input_ids: Tensor = None,
-            mlm_attention_mask: Tensor = None,
-            mlm_labels: Tensor = None,
+            flan_input_ids: Tensor = None,
+            flan_attention_mask: Tensor = None,
+            flan_labels: Tensor = None,
             **kwargs,
     ) -> Union[Tuple[torch.FloatTensor], Seq2SeqLMOutput]:
         r"""
@@ -376,64 +542,27 @@ class T5ForMultipleChoiceAndSeq2Seq(T5ForConditionalGeneration, LogMixin, ABC):
         ```"""
         use_cache = use_cache if use_cache is not None else self.config.use_cache
         return_dict = return_dict if return_dict is not None else self.config.use_return_dict
-        num_choices = input_ids.shape[1]
-
-        input_ids = fold_tensor(input_ids)
-        attention_mask = fold_tensor(attention_mask)
-        decoder_input_ids = fold_tensor(decoder_input_ids)
-
-        if decoder_input_ids is not None:
-            eos_mask = decoder_input_ids.eq(self.config.eos_token_id)
-        else:
-            eos_mask = input_ids.eq(self.config.eos_token_id)
-
-        if decoder_input_ids is not None:
-            decoder_input_ids = self._shift_right(decoder_input_ids)
-        else:
-            decoder_input_ids = self._shift_right(input_ids)
+        batch_size = input_ids.shape[0]
 
         outputs = super().forward(input_ids=input_ids,
                                   attention_mask=attention_mask,
                                   decoder_input_ids=decoder_input_ids,
-                                  return_dict=return_dict,
-                                  output_hidden_states=True)
+                                  return_dict=return_dict)
+        reshaped_logits = outputs.logits
 
-        assert len(outputs.decoder_hidden_states)
-        sequence_output = outputs.decoder_hidden_states[-1]
-        lm_logits = outputs.logits
-
-        # Set device for model parallelism
-        if self.model_parallel:
-            torch.cuda.set_device(self.encoder.first_device)
-            self.classification_head = self.classification_head.to(self.encoder.first_device)
-            sequence_output = sequence_output.to(self.classification_head.dense.weight.device)
-
-        sentence_representation = sequence_output[eos_mask, :].view(sequence_output.size(0), -1, sequence_output.size(-1))[:, -1, :]
-        logits = self.classification_head(sentence_representation)
-        reshaped_logits = logits.view(-1, num_choices)
+        masked_flan_labels = flan_labels.masked_fill(flan_labels == self.config.pad_token_id, -100)
+        flan_outputs = T5ForConditionalGeneration.forward(self, input_ids=flan_input_ids,
+                                                          attention_mask=flan_attention_mask,
+                                                          labels=masked_flan_labels, return_dict=return_dict)
+        flan_logits = flan_outputs.logits
+        flan_loss = flan_outputs.loss
 
         loss = 0.
-        mlm_loss = 0.
         cls_loss = 0.
         if labels is not None:
             loss_fct = CrossEntropyLoss(ignore_index=-1)
             cls_loss = loss_fct(reshaped_logits, labels)
-            loss = loss + cls_loss
-
-            if mlm_labels is not None:
-                mlm_outputs = super().forward(
-                    input_ids=mlm_input_ids,
-                    attention_mask=mlm_attention_mask,
-                    labels=mlm_labels,
-                    return_dict=return_dict
-                )
-
-                mlm_scores = mlm_outputs.logits
-                mlm_loss = mlm_outputs.loss
-                loss = loss + mlm_loss
-            else:
-                mlm_scores = None
-                mlm_loss = None
+            loss = loss + (cls_loss + flan_loss) / 2
 
             if not self.training:
                 acc, true_label_num = layers.get_accuracy(reshaped_logits, labels)
@@ -441,14 +570,14 @@ class T5ForMultipleChoiceAndSeq2Seq(T5ForConditionalGeneration, LogMixin, ABC):
                 self.eval_metrics.update("loss", val=loss.item(), n=true_label_num)
                 self.eval_metrics.update("cls_loss", val=cls_loss.item(), n=true_label_num)
 
-                if mlm_labels is not None:
-                    acc, true_label_num = layers.get_accuracy(mlm_scores, mlm_labels)
+                if self.add_lm_loss:
+                    acc, true_label_num = layers.get_accuracy(flan_logits, masked_flan_labels, pad_id=-100)
                     self.eval_metrics.update("mlm_acc", val=acc, n=true_label_num)
-                    self.eval_metrics.update("mlm_loss", val=mlm_loss.item(), n=true_label_num)
+                    self.eval_metrics.update("mlm_loss", val=flan_loss.item(), n=true_label_num)
 
         return MultipleChoicePreTrainModelOutput(
             loss=loss,
             logits=reshaped_logits,
-            mlm_loss=mlm_loss,
+            mlm_loss=flan_loss,
             cls_loss=cls_loss,
         )

@@ -49,7 +49,9 @@ def replace_entity(sentence: str, entity: str, replacement: str):
 def multiple_choice_get_tensor(read_func, file_path: str, tokenizer: PreTrainedTokenizer, max_seq_length: int, prefix_token_num: int = 0):
     tokenizer_name = tokenizer_get_name(tokenizer)
 
-    file_suffix = f"{tokenizer_name}_{max_seq_length}_{read_func.__class__.__name__}" \
+    read_func_name = getattr(read_func, "base_name", read_func.__class__.__name__)
+
+    file_suffix = f"{tokenizer_name}_{max_seq_length}_{read_func_name}" \
                   f"{'_prefix{}'.format(str(prefix_token_num)) if prefix_token_num > 0 else ''}_mc"
     cached_file_path = f"{file_path}_{file_suffix}"
     if os.path.exists(cached_file_path):
@@ -113,7 +115,9 @@ def multiple_choice_get_tensor_index(read_func, file_path: str, tokenizer: PreTr
                                      prefix_token_num: int = 0, add_prompt: bool = False):
     tokenizer_name = tokenizer_get_name(tokenizer)
 
-    file_suffix = f"{tokenizer_name}_{max_seq_length}_{read_func.__class__.__name__}" \
+    read_func_name = getattr(read_func, "base_name", read_func.__class__.__name__)
+
+    file_suffix = f"{tokenizer_name}_{max_seq_length}_{read_func_name}" \
                   f"{'_prefix{}'.format(str(prefix_token_num)) if prefix_token_num > 0 else ''}_mc{'' if not add_prompt else '_prompt'}"
     cached_file_path = f"{file_path}_{file_suffix}"
     if os.path.exists(cached_file_path):

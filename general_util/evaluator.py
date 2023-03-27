@@ -439,6 +439,20 @@ class DiscriminatorForwardFn:
         return outputs, pred.tolist()
 
 
+class AutoRegressiveDiscriminatorForwardFn:
+    def __init__(self, cfg: DictConfig, model: torch.nn.Module, tokenizer: PreTrainedTokenizer):
+        self.cfg = cfg
+        self.model = model
+        self.tokenizer = tokenizer
+
+    def __call__(self, batch):
+        outputs = self.model(**batch)
+        probs = outputs["loss"].softmax(dim=-1).detach().float().cpu()
+
+        _, pred = probs.max(dim=-1)
+        return outputs, pred.tolist()
+
+
 class GeneratorForwardFn:
     def __init__(self, cfg: DictConfig, model: torch.nn.Module, tokenizer: PreTrainedTokenizer):
         self.cfg = cfg

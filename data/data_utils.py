@@ -1,6 +1,5 @@
 import copy
 from typing import List, Set, Union, Dict, Tuple
-from nltk import word_tokenize
 
 from transformers import PreTrainedTokenizer
 from transformers import RobertaTokenizer, RobertaTokenizerFast, AlbertTokenizer, AlbertTokenizerFast, DebertaTokenizer, \
@@ -8,6 +7,11 @@ from transformers import RobertaTokenizer, RobertaTokenizerFast, AlbertTokenizer
 from transformers.models.bert.tokenization_bert import whitespace_tokenize
 
 from general_util.logger import get_child_logger
+
+try:
+    from nltk import word_tokenize
+except:
+    pass
 
 logger = get_child_logger(__name__)
 

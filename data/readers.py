@@ -279,6 +279,50 @@ class ReClorReader:
         return all_context, all_question, all_option_list, all_label
 
 
+class ReClorLogicExpReader:
+    base_name = "reclor_logic"
+
+    def __init__(self, logic_expression_file, remove_underline: bool = False):
+        logic_expressions = json.load(open(logic_expression_file))
+        self.logic_expressions = {int(item[0]): item[1] for item in logic_expressions}
+        self.remove_underline = remove_underline
+        if remove_underline:
+            self.base_name += "_r"
+
+    def __call__(self, file):
+        data = json.load(open(file, 'r'))
+        cnt = 0
+
+        all_context = []
+        all_question = []
+        all_option_list = []
+        all_label = []
+        for sample_id, sample in enumerate(data):
+            context = sample["context"]
+            question = sample["question"]
+            answers = sample["answers"]
+            if sample_id in self.logic_expressions:
+                exp = self.logic_expressions[sample_id]
+                if self.remove_underline:
+                    exp = [item.replace("_", " ") for item in exp]
+
+                context = context + "<logics>" + exp[0]
+                answers = [ans + "<logics>" + exp[1 + ans_id] for ans_id, ans in enumerate(answers)]
+                cnt += 1
+
+            all_context.append(context)
+            all_question.append(question)
+            if "label" not in sample:
+                all_label.append(-1)
+            else:
+                all_label.append(sample["label"])
+            all_option_list.append(answers)
+
+        logger.info(f"Enabled logical expressions samples: {cnt}")
+
+        return all_context, all_question, all_option_list, all_label
+
+
 class ReClorExampleReader:
     def __init__(self, retrieval_results: str, corpus_file: str, top_k: int):
         retrieval_results = json.load(open(retrieval_results))

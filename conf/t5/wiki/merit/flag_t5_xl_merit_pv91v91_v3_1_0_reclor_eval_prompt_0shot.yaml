@@ -23,11 +23,10 @@ read_tensor:
     random_sampling: False
     read_func:
       _target_: data.readers.ReClorReader
-#    instruct: "Answer the following question with the given context by reasoning step-by-step."
     instruct: "Answer the following question with the given context through logical reasoning:"
   read_func:
     _target_: data.readers.ReClorReader
-#  suffix: ""
+
 
 extended_vocab:
 
@@ -35,7 +34,7 @@ extended_vocab:
 collator:
   _target_: data.reclor_prompt.ReClorGenerativeCollator
   tokenizer: ${model_name_or_path}
-  max_seq_length: 2048
+  max_seq_length: 1024
 
 # Dataloader
 num_workers: 4
@@ -45,16 +44,16 @@ prefetch_factor: 2
 model_name_or_path: pretrained-models/google/flan-t5-xl
 pretrain:
 
-output_dir: ${model_name_or_path}
+output_dir: experiments/flan-t5.xlarge.wiki_erica_path_v9.1_v9.1.v3.1.1aug.seq512.w8.adamw.500steps.NA100
 
 do_train: False
 evaluate_during_training: True
 
 do_eval: True
-eval_sub_path:
+eval_sub_path: checkpoint-*
 
 # Training hyper-parameters
-per_gpu_train_batch_size: 2
+per_gpu_train_batch_size: 8
 per_gpu_eval_batch_size: 1
 learning_rate: 1e-5
 #learning_rate: 5e-6
@@ -101,7 +100,7 @@ num_return_sequences: 1
 output_scores: False
 post_process:
   _target_: post_processors.reclor.GeneratorPredictor
-predict_dir: ${output_dir}/reclor_val_prompt_${read_tensor.prompt_generator.shot}shot.v1.1
+predict_dir: ${output_dir}/reclor_val_prompt_${read_tensor.prompt_generator.shot}shot.v1.0
 
 #dist_init:
 #  _target_: general_util.dist_utils.setup_slurm_distributed

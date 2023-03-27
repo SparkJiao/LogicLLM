@@ -5,37 +5,26 @@ hydra:
 train_file: reclor_data/train.json
 dev_file: reclor_data/val.json
 #test_file: reclor_data/test.json
-test_file: reclor_data/val.json
+test_file:
 
 # Model
 model:
-  _target_: transformers.models.t5.modeling_t5.T5ForConditionalGeneration.from_pretrained
-#  num_labels: 1
+  _target_: models.t5.T5ForMultipleChoiceAndSeq2SeqLM.from_pretrained
 
 
 # Data loading
 read_tensor:
-  _target_: data.reclor_prompt.ReClorGenerativeDataset
-  prompt_generator:
-    _target_: data.reclor_prompt.ReClorExemplarGenerator
-    file_path: ${train_file}
-    shot: 0
-    random_sampling: False
-    read_func:
-      _target_: data.readers.ReClorReader
-#    instruct: "Answer the following question with the given context by reasoning step-by-step."
-    instruct: "Answer the following question with the given context through logical reasoning:"
+  _target_: data.reclor_prompt.ReClorSeq2SeqMCQADataset
   read_func:
     _target_: data.readers.ReClorReader
-#  suffix: ""
 
 extended_vocab:
 
 # Data collator
 collator:
-  _target_: data.reclor_prompt.ReClorGenerativeCollator
-  tokenizer: ${model_name_or_path}
-  max_seq_length: 2048
+  _target_: data.reclor_prompt.ReClorSeq2SeqMCQACollator
+  tokenizer: pretrained-models/google/flan-t5-xl
+  max_seq_length: 256
 
 # Dataloader
 num_workers: 4
@@ -45,20 +34,20 @@ prefetch_factor: 2
 model_name_or_path: pretrained-models/google/flan-t5-xl
 pretrain:
 
-output_dir: ${model_name_or_path}
+output_dir: experiments/flan-t5.xlarge.wiki_erica_path_v9.1_v9.1.v2.0.1aug.seq512.w7.adafactor.500steps.NA100
 
 do_train: False
 evaluate_during_training: True
 
 do_eval: True
-eval_sub_path:
+eval_sub_path: checkpoint-*
 
 # Training hyper-parameters
-per_gpu_train_batch_size: 2
-per_gpu_eval_batch_size: 1
-learning_rate: 1e-5
+per_gpu_train_batch_size: 1
+per_gpu_eval_batch_size: 12
+learning_rate: 2e-5
 #learning_rate: 5e-6
-gradient_accumulation_steps: 2
+gradient_accumulation_steps: 8
 weight_decay: 0.01
 adam_epsilon: 1e-6
 adam_betas: "(0.9, 0.98)"
@@ -94,14 +83,10 @@ prediction_cfg:
   best_checkpoint:
   best_result:
 eval_forward_fn:
-  _target_: general_util.evaluator.GeneratorForwardFn
-max_output_length: 64
-num_beams: 1
-num_return_sequences: 1
-output_scores: False
+  _target_: general_util.evaluator.DiscriminatorForwardFn
 post_process:
-  _target_: post_processors.reclor.GeneratorPredictor
-predict_dir: ${output_dir}/reclor_val_prompt_${read_tensor.prompt_generator.shot}shot.v1.1
+  _target_: post_processors.reclor.NumpySaver
+predict_dir: ${output_dir}/reclor_val_lm.v1.0
 
 #dist_init:
 #  _target_: general_util.dist_utils.setup_slurm_distributed

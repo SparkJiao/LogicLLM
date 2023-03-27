@@ -2,6 +2,7 @@ import glob
 import random
 from typing import Dict, List
 import os
+from torch.utils.data import ConcatDataset
 
 import hydra
 import numpy as np
@@ -21,6 +22,12 @@ def set_seed(args):
     torch.manual_seed(args.seed)
     if args.n_gpu > 0:
         torch.cuda.manual_seed_all(args.seed)
+
+
+def set_seed_int(seed):
+    random.seed(seed)
+    np.random.seed(seed)
+    torch.manual_seed(seed)
 
 
 def to_list(tensor):
@@ -55,6 +62,16 @@ def batch_to_device(batch: Dict[str, torch.Tensor], device):
     return batch_on_device
 
 
+def initialize_dataset(cfg: DictConfig, file_path: str, tokenizer: PreTrainedTokenizer):
+    if "_target_" in cfg:
+        return hydra.utils.call(cfg, file_path=file_path, tokenizer=tokenizer)
+    else:
+        datasets = [initialize_dataset(cfg[key], file_path, tokenizer) for key in cfg.keys()]
+        assert len(datasets)
+        datasets = ConcatDataset(datasets)
+        return datasets
+
+
 def load_and_cache_examples(cfg, tokenizer: PreTrainedTokenizer, _split="train", _file: str = None):
     if_barrier = False
 
@@ -81,9 +98,9 @@ def load_and_cache_examples(cfg, tokenizer: PreTrainedTokenizer, _split="train",
 
     sub_config = f"read_tensor_{_split}"
     if sub_config in cfg:
-        dataset = hydra.utils.call(cfg[sub_config], file_path=input_file, tokenizer=tokenizer)
+        dataset = initialize_dataset(cfg[sub_config], file_path=input_file, tokenizer=tokenizer)
     else:
-        dataset = hydra.utils.call(cfg.read_tensor, file_path=input_file, tokenizer=tokenizer)
+        dataset = initialize_dataset(cfg.read_tensor, file_path=input_file, tokenizer=tokenizer)
 
     if if_barrier and cfg.local_rank == 0:
         dist.barrier()  # Make sure only the first process in distributed training process the dataset, and the others will use the cache
