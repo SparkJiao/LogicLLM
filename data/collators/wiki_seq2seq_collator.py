@@ -49,7 +49,7 @@ class WikiSeq2SeqCollator:
         examples = [b["example"] for b in batch]
         inputs_a, inputs_b = [], []
         for exp in examples:
-            res = construct_seq2seq(exp)
+            res = construct_seq2seq(exp, generative_mode=self.generative_mode)
             assert len(res[0]) == len(res[1])
             if not self.causal_lm:
                 inputs_a.extend(res[0])
@@ -64,10 +64,10 @@ class WikiSeq2SeqCollator:
         if not self.causal_lm:
             model_inputs = self.tokenizer(inputs_a, text_target=inputs_b, padding="longest", truncation=True, return_tensors="pt",
                                           max_length=self.max_seq_length)
-            if op_num > 1:
+            if not self.generative_mode:
                 model_inputs["decoder_input_ids"] = model_inputs["labels"].reshape(batch_size, op_num, -1)
-            else:
-                model_inputs["decoder_input_ids"] = model_inputs["labels"]
+            # else:
+            #     model_inputs["decoder_input_ids"] = model_inputs["labels"]
         else:
             tmp = self.tokenizer(inputs_a, padding="longest", truncation=True, return_tensors="pt", max_length=self.max_seq_length)
             # logger.info(tmp["input_ids"][0])
@@ -83,11 +83,11 @@ class WikiSeq2SeqCollator:
             #     assert full_input_lens[i] > input_lens[i], (full_input_lens[i], input_lens[i])
             model_inputs["input_lens"] = input_lens
 
-        if op_num > 1:
+        if not self.generative_mode:
             model_inputs["input_ids"] = model_inputs["input_ids"].reshape(batch_size, op_num, -1)
             model_inputs["attention_mask"] = model_inputs["attention_mask"].reshape(batch_size, op_num, -1)
+            model_inputs["labels"] = torch.zeros(len(examples), dtype=torch.long)
 
-        model_inputs["labels"] = torch.zeros(len(examples), dtype=torch.long)
         return model_inputs
 
 

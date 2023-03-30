@@ -105,7 +105,11 @@ def train(cfg, train_dataset, model, tokenizer, continue_from_global_step=0):
     """ Train the model """
     if cfg.local_rank in [-1, 0]:
         _dir_splits = cfg.output_dir.split('/')
-        _log_dir = '/'.join([_dir_splits[0], 'runs'] + _dir_splits[1:])
+        if len(_dir_splits) == 2:
+            _sub_dir = _dir_splits[1].split('.')[0]
+            _log_dir = '/'.join([_dir_splits[0], 'runs', _sub_dir] + _dir_splits[1:])
+        else:
+            _log_dir = '/'.join([_dir_splits[0], 'runs'] + _dir_splits[1:])
         tb_writer = SummaryWriter(log_dir=_log_dir)
         tb_helper = hydra.utils.instantiate(cfg.summary_helper,
                                             writer=tb_writer) if "summary_helper" in cfg and cfg.summary_helper else None
@@ -158,9 +162,9 @@ def train(cfg, train_dataset, model, tokenizer, continue_from_global_step=0):
     if cfg.local_rank != -1:
         model = hydra.utils.instantiate(cfg.fairscale_config, model=model, device=cfg.device)
         optimizer = initialize_optimizer(cfg, model=model)
-        # scheduler = get_linear_schedule_with_warmup(optimizer, num_warmup_steps=num_warmup_steps, num_training_steps=t_total)
         scheduler = initialize_lr_scheduler(cfg, optimizer, num_warmup_steps, t_total)
 
+    torch.compile(model, mode="max-autotune")
     logger.info(optimizer)
 
     # Train!
@@ -324,7 +328,7 @@ def main(cfg: DictConfig):
     except Exception as e:
         logger.warning(e)
         model = hydra.utils.call(cfg.model)
-    torch.compile(model)
+    # torch.compile(model, mode="max-autotune")
 
     if cfg.local_rank == 0:
         dist.barrier()  # Make sure only the first process in distributed training will download model & vocab
