@@ -411,6 +411,9 @@ def main(cfg: DictConfig):
                 else:
                     model.parallelize()
 
+            tokenizer = AutoTokenizer.from_pretrained(checkpoint)
+            cfg.model_name_or_path = checkpoint
+
             if cfg.test_file:
                 prefix = f'test' + (f'-{prefix}' if prefix != "" else "")
                 split = "test"

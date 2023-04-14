@@ -1,6 +1,6 @@
 # coding=utf-8
 #
-# Copyright 2022 Nanyang Technological University, Fangkai Jiao
+# Copyright 2023 Nanyang Technological University Fangkai Jiao
 #
 # Part of this code is based on the source code of Transformers
 # (arXiv:1910.03771)
@@ -26,12 +26,12 @@ from typing import Dict, Union
 import deepspeed
 import hydra
 import torch
+import wandb
 from deepspeed.utils.zero_to_fp32 import get_fp32_state_dict_from_zero_checkpoint
 from omegaconf import DictConfig, OmegaConf
 from torch import distributed as dist
 from torch.utils.data import (DataLoader, RandomSampler)
 from torch.utils.data.distributed import DistributedSampler
-from torch.utils.tensorboard import SummaryWriter
 from tqdm import tqdm, trange
 from transformers import (AutoTokenizer, PreTrainedTokenizer)
 
@@ -60,7 +60,7 @@ def worker_init_fn(worker_id):
 
 
 def save_model(model: Union[deepspeed.DeepSpeedEngine, deepspeed.PipelineEngine],
-               cfg: DictConfig, output_dir: str, tokenizer: PreTrainedTokenizer = None):
+               cfg: DictConfig, output_dir: str, tokenizer: PreTrainedTokenizer = None, state_dict: Dict = None):
     unwrapped_model = unwrap_model(model)
     model.save_checkpoint(output_dir)
 
@@ -74,6 +74,9 @@ def save_model(model: Union[deepspeed.DeepSpeedEngine, deepspeed.PipelineEngine]
         state_dict = unwrapped_model.state_dict()
 
     if cfg.local_rank in [-1, 0]:
+        # output_file = os.path.join(output_dir, "pytorch_model.bin")
+        # print(f"Saving fp32 state dict to {output_file}")
+        # torch.save(state_dict, output_file)
         unwrapped_model.save_pretrained(output_dir, state_dict=state_dict)
 
         if tokenizer is not None:
@@ -89,40 +92,49 @@ def forward_step(model, inputs: Dict[str, torch.Tensor]):
         loss = outputs[0]
     else:
         loss = outputs["loss"]
-
     model.backward(loss)
     model.step()
 
     return loss.item(), outputs
 
 
-def train(cfg, train_dataset, model, tokenizer, continue_from_global_step=0):
+def train(cfg, model, tokenizer, continue_from_global_step=0):
     """ Train the model """
     if cfg.local_rank in [-1, 0]:
-        _dir_splits = cfg.output_dir.split('/')
-        if len(_dir_splits) == 2:
-            _sub_dir = _dir_splits[1].split('.')[0]
-            _log_dir = '/'.join([_dir_splits[0], 'runs', _sub_dir] + _dir_splits[1:])
-        else:
-            _log_dir = '/'.join([_dir_splits[0], 'runs'] + _dir_splits[1:])
-        tb_writer = SummaryWriter(log_dir=_log_dir)
-        tb_helper = hydra.utils.instantiate(cfg.summary_helper,
-                                            writer=tb_writer) if "summary_helper" in cfg and cfg.summary_helper else None
+        tb_helper = hydra.utils.instantiate(cfg.summary_helper) if "summary_helper" in cfg and cfg.summary_helper else None
     else:
-        tb_writer = None
         tb_helper = None
 
-    cfg.train_batch_size = cfg.per_gpu_train_batch_size * max(1, cfg.n_gpu)
-    train_sampler = RandomSampler(train_dataset) if cfg.local_rank == -1 else DistributedSampler(train_dataset)
-    train_collator = hydra.utils.instantiate(cfg.collator) if "collator" in cfg and cfg.collator else None
-    train_dataloader = DataLoader(dataset=train_dataset,
-                                  sampler=train_sampler,
-                                  batch_size=cfg.train_batch_size,
-                                  collate_fn=train_collator,
-                                  num_workers=cfg.num_workers,
-                                  pin_memory=True,
-                                  prefetch_factor=cfg.prefetch_factor,
-                                  worker_init_fn=worker_init_fn)
+    cfg.train_batch_size = cfg.per_gpu_train_batch_size
+
+    if "_target_" in cfg.train_file:
+        files = hydra.utils.instantiate(cfg.train_file)
+    elif os.path.exists(cfg.train_file):
+        files = [cfg.train_file]
+    else:
+        files = list(glob.glob(cfg.train_file))
+    logger.info(files)
+
+    if getattr(cfg, "total_dataset_len", -1) > 0:
+        total_dataset_len = cfg.total_dataset_len
+    else:
+        total_dataset_len = 0
+        for _file in tqdm(files, total=len(files)):
+            sub_train_dataset = load_and_cache_examples(cfg, tokenizer, _split="train", _file=_file)
+            _train_sampler = RandomSampler(sub_train_dataset) if cfg.local_rank == -1 else DistributedSampler(sub_train_dataset)
+            _train_collator = hydra.utils.instantiate(cfg.collator) if "collator" in cfg and cfg.collator else None
+            _train_dataloader = DataLoader(dataset=sub_train_dataset,
+                                           sampler=_train_sampler,
+                                           batch_size=cfg.train_batch_size,
+                                           collate_fn=_train_collator,
+                                           num_workers=cfg.num_workers,
+                                           pin_memory=True,
+                                           prefetch_factor=cfg.prefetch_factor)
+            total_dataset_len += len(_train_dataloader)
+            del _train_dataloader
+            del _train_collator
+            del _train_sampler
+            del sub_train_dataset
 
     if "extended_vocab" in cfg and cfg.extended_vocab:
         logger.info(f"Extended extra vocab size: {cfg.extended_vocab}")
@@ -130,9 +142,9 @@ def train(cfg, train_dataset, model, tokenizer, continue_from_global_step=0):
 
     if cfg.max_steps > 0:
         t_total = cfg.max_steps
-        cfg.num_train_epochs = cfg.max_steps // (len(train_dataloader) // cfg.gradient_accumulation_steps) + 1
+        cfg.num_train_epochs = cfg.max_steps // (total_dataset_len // cfg.gradient_accumulation_steps) + 1
     else:
-        t_total = len(train_dataloader) // cfg.gradient_accumulation_steps * cfg.num_train_epochs
+        t_total = total_dataset_len // cfg.gradient_accumulation_steps * cfg.num_train_epochs
 
     num_warmup_steps = int(t_total * cfg.warmup_proportion) if cfg.warmup_proportion else cfg.warmup_steps
 
@@ -141,15 +153,22 @@ def train(cfg, train_dataset, model, tokenizer, continue_from_global_step=0):
     ds_config.scheduler.params.warmup_num_steps = num_warmup_steps
     ds_config = OmegaConf.to_container(ds_config, resolve=True)
 
+    # no_decay = ['bias', 'LayerNorm.weight', 'layer_norm.weight']
+    # optimizer_grouped_parameters = [
+    #     {'params': [p for n, p in model.named_parameters() if not any(nd in n for nd in no_decay)],
+    #      'weight_decay': cfg.weight_decay},
+    #     {'params': [p for n, p in model.named_parameters() if any(nd in n for nd in no_decay)],
+    #      'weight_decay': 0.0}
+    # ]
+
     model, optimizer, _, scheduler = deepspeed.initialize(model=model,
                                                           model_parameters=model.parameters(),
                                                           config=ds_config)
-    torch.compile(model, mode="max-autotune")
     logger.info(optimizer.optimizer)
 
     # Train!
     logger.info("***** Running training *****")
-    logger.info("  Num examples = %d", len(train_dataset))
+    logger.info("  Num examples = %d", total_dataset_len)
     logger.info("  Num Epochs = %d", cfg.num_train_epochs)
     logger.info("  Instantaneous batch size per GPU = %d", cfg.per_gpu_train_batch_size)
     logger.info("  Total train batch size (w. parallel, distributed & accumulation) = %d",
@@ -169,71 +188,93 @@ def train(cfg, train_dataset, model, tokenizer, continue_from_global_step=0):
     set_seed(cfg)  # Added here for reproducibility (even between python 2 and 3)
 
     for epoch in train_iterator:
-        epoch_iterator = tqdm(train_dataloader, desc="Iteration", disable=cfg.local_rank not in [-1, 0], dynamic_ncols=True)
-        if cfg.local_rank != -1:
-            train_dataloader.sampler.set_epoch(epoch)
+        for _file in files:
+            sub_train_dataset = load_and_cache_examples(cfg, tokenizer, _split="train", _file=_file)
+            sub_train_sampler = RandomSampler(sub_train_dataset) if cfg.local_rank == -1 else DistributedSampler(sub_train_dataset)
+            sub_train_collator = hydra.utils.instantiate(cfg.collator) if "collator" in cfg and cfg.collator else None
+            sub_train_dataloader = DataLoader(dataset=sub_train_dataset,
+                                              sampler=sub_train_sampler,
+                                              batch_size=cfg.train_batch_size,
+                                              collate_fn=sub_train_collator,
+                                              num_workers=cfg.num_workers,
+                                              pin_memory=True,
+                                              prefetch_factor=cfg.prefetch_factor,
+                                              worker_init_fn=worker_init_fn)
 
-        for step, batch in enumerate(epoch_iterator):
-            # If training is continued from a checkpoint, fast forward
-            # to the state of that checkpoint.
-            if global_step < continue_from_global_step:
+            epoch_iterator = tqdm(sub_train_dataloader, desc="Iteration", disable=cfg.local_rank not in [-1, 0], dynamic_ncols=True)
+            if cfg.local_rank != -1:
+                sub_train_dataloader.sampler.set_epoch(epoch)
+
+            for step, batch in enumerate(epoch_iterator):
+                # If training is continued from a checkpoint, fast forward
+                # to the state of that checkpoint.
+                if global_step < continue_from_global_step:
+                    if (step + 1) % cfg.gradient_accumulation_steps == 0:
+                        # scheduler.step()  # Update learning rate schedule  # Done by `load_checkpoint` of DS.
+                        global_step += 1
+                    continue
+
+                model.train()
+                batch = batch_to_device(batch, cfg.device)
+
+                loss, outputs = forward_step(model, batch)
+                loss /= cfg.gradient_accumulation_steps
+
+                tr_loss += loss
                 if (step + 1) % cfg.gradient_accumulation_steps == 0:
-                    scheduler.step()  # Update learning rate schedule
                     global_step += 1
-                continue
 
-            model.train()
-            batch = batch_to_device(batch, cfg.device)
+                    # Log metrics
+                    log_metrics = {}
+                    if cfg.local_rank in [-1, 0] and cfg.logging_steps > 0 and global_step % cfg.logging_steps == 0:
+                        log_metrics['lr'] = scheduler.get_lr()[0]
+                        log_metrics['loss'] = (tr_loss - logging_loss) / cfg.logging_steps
+                        logging_loss = tr_loss
 
-            loss, outputs = forward_step(model, batch)
-            loss /= cfg.gradient_accumulation_steps
+                        if tb_helper:
+                            log_metrics.update(tb_helper(last_batch=batch, last_outputs=outputs))
 
-            tr_loss += loss
-            if (step + 1) % cfg.gradient_accumulation_steps == 0:
-                global_step += 1
+                    # Save model checkpoint
+                    if cfg.save_steps > 0 and global_step % cfg.save_steps == 0:
+                        output_dir = os.path.join(cfg.output_dir, 'checkpoint-{}'.format(global_step))
+                        if cfg.local_rank in [-1, 0] and not os.path.exists(output_dir):
+                            os.makedirs(output_dir)
+                        save_model(model, cfg, output_dir, tokenizer)
 
-                # Log metrics
-                if cfg.local_rank in [-1, 0] and cfg.logging_steps > 0 and global_step % cfg.logging_steps == 0:
-                    tb_writer.add_scalar('lr', scheduler.get_lr()[0], global_step)
-                    tb_writer.add_scalar('loss', (tr_loss - logging_loss) / cfg.logging_steps, global_step)
-                    logging_loss = tr_loss
+                    # Evaluation
+                    if cfg.evaluate_during_training and cfg.eval_steps > 0 and global_step % cfg.eval_steps == 0:
+                        # state_dict = get_state_dict(model, cfg)
 
-                    if tb_helper:
-                        tb_helper(step=global_step, last_batch=batch, last_outputs=outputs)
+                        if cfg.ddp_eval or cfg.local_rank in [-1, 0]:
+                            results = evaluate(cfg, model, tokenizer, prefix=str(global_step), _split="dev")
 
-                # Save model checkpoint
-                if cfg.save_steps > 0 and global_step % cfg.save_steps == 0:
-                    output_dir = os.path.join(cfg.output_dir, 'checkpoint-{}'.format(global_step))
-                    if cfg.local_rank in [-1, 0] and not os.path.exists(output_dir):
-                        os.makedirs(output_dir)
-                    save_model(model, cfg, output_dir, tokenizer)
+                            if cfg.local_rank in [-1, 0]:
+                                for key, value in results.items():
+                                    log_metrics[f"eval/{key}"] = value
 
-                # Evaluation
-                if cfg.evaluate_during_training and cfg.eval_steps > 0 and global_step % cfg.eval_steps == 0:
-                    # state_dict = get_state_dict(model, cfg)
+                                sub_path = os.path.join(cfg.output_dir, 'checkpoint-{}'.format(global_step))
+                                flag = note_best_checkpoint(cfg, results, sub_path)
+                                if cfg.save_best and flag:
+                                    # save_model(model, cfg, cfg.output_dir, tokenizer, state_dict)
+                                    # del state_dict
+                                    save_model(model, cfg, cfg.output_dir, tokenizer)
 
-                    if cfg.ddp_eval or cfg.local_rank in [-1, 0]:
-                        results = evaluate(cfg, model, tokenizer, prefix=str(global_step), _split="dev")
+                    if len(log_metrics) > 0 and cfg.local_rank in [-1, 0]:
+                        wandb.log(log_metrics)
 
-                        if cfg.local_rank in [-1, 0]:
-                            for key, value in results.items():
-                                tb_writer.add_scalar(f"eval/{key}", value, global_step)
+                    del batch
+                    del log_metrics
 
-                            sub_path = os.path.join(cfg.output_dir, 'checkpoint-{}'.format(global_step))
-                            flag = note_best_checkpoint(cfg, results, sub_path)
-                            if cfg.save_best and flag:
-                                save_model(model, cfg, cfg.output_dir, tokenizer)
+                if 0 < cfg.max_steps < global_step:
+                    epoch_iterator.close()
+                    break
 
             if 0 < cfg.max_steps < global_step:
-                epoch_iterator.close()
+                train_iterator.close()
                 break
 
         if 0 < cfg.max_steps < global_step:
-            train_iterator.close()
             break
-
-    if cfg.local_rank in [-1, 0]:
-        tb_writer.close()
 
     return global_step, tr_loss / global_step
 
@@ -246,7 +287,6 @@ def main(cfg: DictConfig):
     else:  # Initializes the distributed backend which will take care of synchronizing nodes/GPUs
         torch.cuda.set_device(cfg.local_rank)
         device = str(torch.device("cuda", cfg.local_rank))
-        # dist.init_process_group(backend='nccl')
         deepspeed.init_distributed()
         cfg.n_gpu = 1
         cfg.world_size = dist.get_world_size()
@@ -285,11 +325,23 @@ def main(cfg: DictConfig):
     if cfg.local_rank == 0:
         dist.barrier()  # Make sure only the first process in distributed training will download model & vocab
 
+    # TODO: model parallel.
+    # if cfg.local_rank == -1:  # For FullyShardedDDP, place the model on cpu first.
+    #     model.to(cfg.device)
+
     # logger.info("Training/evaluation parameters %s", OmegaConf.to_yaml(cfg))
     if cfg.local_rank in [-1, 0] and cfg.do_train:
         if not os.path.exists(cfg.output_dir):
             os.makedirs(cfg.output_dir)
         OmegaConf.save(cfg, os.path.join(cfg.output_dir, "training_config.yaml"))
+
+        wandb.init(
+            project="LLaMA-BiFLAN",
+            name=cfg.exp_name,
+            notes=cfg.exp_notes,
+            config=OmegaConf.to_container(cfg, resolve=True)
+        )
+        wandb.define_metric(cfg.prediction_cfg.metric, summary=("max" if cfg.prediction_cfg.measure > 0 else "min"))
 
     # Training
     if cfg.do_train:
@@ -299,8 +351,7 @@ def main(cfg: DictConfig):
             logger.info("Resuming training from the latest checkpoint: %s", checkpoint)
             continue_from_global_step = int(checkpoint.split('-')[-1])
 
-        train_dataset = load_and_cache_examples(cfg, tokenizer, _split="train")
-        global_step, tr_loss = train(cfg, train_dataset, model, tokenizer, continue_from_global_step)
+        global_step, tr_loss = train(cfg, model, tokenizer, continue_from_global_step)
         logger.info(" global_step = %s, average loss = %s", global_step, tr_loss)
 
     # Test
@@ -363,6 +414,5 @@ if __name__ == "__main__":
         else:
             hydra_formatted_args.append(arg)
     sys.argv = hydra_formatted_args
-    print(hydra_formatted_args)
-
+    print(sys.argv)
     main()

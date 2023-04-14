@@ -50,8 +50,8 @@ class AverageMeter(object):
         self.count = value['count'] if 'count' in value else 0
 
     def gather(self, device):
-        tensor_list = [torch.zeros(2, device=device) for _ in range(dist.get_world_size())]
-        tensor = torch.tensor([self.sum, self.count], device=device)
+        tensor_list = [torch.zeros(2, device=device, dtype=torch.float32) for _ in range(dist.get_world_size())]
+        tensor = torch.tensor([self.sum, self.count], device=device, dtype=torch.float32)
         dist.all_gather(tensor_list, tensor)
 
         all_tensor = torch.stack(tensor_list, dim=0)

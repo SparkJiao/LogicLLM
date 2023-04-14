@@ -56,7 +56,7 @@ class WikiSeq2SeqCollator:
                 inputs_b.extend(res[1])
             else:
                 inputs_a.extend(res[0])
-                inputs_b.extend([x + " " + y for x, y in zip(res[0], res[1])])
+                inputs_b.extend([x + " " + y + self.tokenizer.eos_token for x, y in zip(res[0], res[1])])
 
         batch_size = len(batch)
         op_num = len(inputs_a) // batch_size
@@ -81,6 +81,9 @@ class WikiSeq2SeqCollator:
             # full_input_lens = model_inputs["input_ids"].ne(self.tokenizer.pad_token_id).to(torch.long).sum(dim=-1)
             # for i in range(input_lens.size(0)):
             #     assert full_input_lens[i] > input_lens[i], (full_input_lens[i], input_lens[i])
+            new_input_lens = model_inputs["input_ids"].ne(self.tokenizer.pad_token_id).sum(dim=1)
+            input_lens = input_lens - input_lens.eq(new_input_lens).to(input_lens.dtype) * (input_lens // 2)
+            input_lens = input_lens.to(torch.long)
             model_inputs["input_lens"] = input_lens
 
         if not self.generative_mode:
@@ -144,7 +147,7 @@ class WikiSeq2SeqInstructCollator:
             res = construct_instruct_seq2seq(exp, self.instruct, self.suffix)
             inputs_a.append(res[0])
             if self.decoder_only:
-                inputs_b.append(res[0] + " " + res[1])
+                inputs_b.append(res[0] + " " + res[1] + self.tokenizer.eos_token)
             else:
                 inputs_b.append(res[1])
 

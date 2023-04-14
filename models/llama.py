@@ -26,6 +26,8 @@ LORA_TARGET_MODULES = [
     "v_proj",
 ]
 
+PAD_TOKEN_ID = 32000
+
 
 @dataclass
 class MultipleChoicePreTrainModelOutput(SequenceClassifierOutputWithPast):
@@ -47,32 +49,47 @@ class MultipleChoicePreTrainModelOutput(SequenceClassifierOutputWithPast):
 class LlamaPreTrainedModelPeftMixin(LlamaPreTrainedModel, ABC):
     @classmethod
     def from_pretrained(cls, pretrained_model_name_or_path: Optional[Union[str, os.PathLike]], *model_args, **kwargs):
+        if "vocab_size" in kwargs and "pad_token_id" in kwargs:
+            # Hack here to avoid embedding weight size mismatch during loading pre-trained weights.
+            vocab_size = kwargs.pop("vocab_size")
+            pad_token_id = kwargs.pop("pad_token_id")
+        else:
+            vocab_size = None
+            pad_token_id = None
+
         use_peft = kwargs.pop("use_peft", False)
         if not use_peft:
-            return super().from_pretrained(pretrained_model_name_or_path, *model_args, **kwargs)
+            model = super().from_pretrained(pretrained_model_name_or_path, *model_args, **kwargs)
+        else:
+            lora_config = kwargs.pop("lora_config", None)
+            if lora_config is None:
+                lora_config = LoraConfig(task_type=TaskType.SEQ_CLS, inference_mode=False, r=8, lora_alpha=32, lora_dropout=0.1)
 
-        lora_config = kwargs.pop("lora_config", None)
-        if lora_config is None:
-            lora_config = LoraConfig(task_type=TaskType.SEQ_CLS, inference_mode=False, r=8, lora_alpha=32, lora_dropout=0.1)
+            logger.info(f"LORA Config: {lora_config}")
+            logger.info(lora_config.target_modules.__class__)
+            if isinstance(lora_config.target_modules, omegaconf.listconfig.ListConfig):
+                lora_config.target_modules = list(lora_config.target_modules)
+            logger.info(lora_config.target_modules.__class__)
 
-        logger.info(f"LORA Config: {lora_config}")
-        logger.info(lora_config.target_modules.__class__)
-        if isinstance(lora_config.target_modules, omegaconf.listconfig.ListConfig):
-            lora_config.target_modules = list(lora_config.target_modules)
-        logger.info(lora_config.target_modules.__class__)
+            model = super().from_pretrained(pretrained_model_name_or_path, *model_args, **kwargs)
 
-        model = super().from_pretrained(pretrained_model_name_or_path, *model_args, **kwargs)
+            load_in_8bit = kwargs.pop("load_in_8bit", False)
+            if load_in_8bit:
+                model = prepare_model_for_int8_training(model, use_gradient_checkpointing=False)
+            model = get_peft_model(model, lora_config)
 
-        load_in_8bit = kwargs.pop("load_in_8bit", False)
-        if load_in_8bit:
-            model = prepare_model_for_int8_training(model, use_gradient_checkpointing=False)
-        model = get_peft_model(model, lora_config)
+            if hasattr(model, "get_cls_head"):
+                for param in model.get_cls_head().parameters():
+                    param.requires_grad = True
 
-        if hasattr(model, "get_cls_head"):
-            for param in model.get_cls_head().parameters():
-                param.requires_grad = True
+            model.print_trainable_parameters()
 
-        model.print_trainable_parameters()
+        if vocab_size is not None and pad_token_id is not None:
+            assert vocab_size == model.config.vocab_size + 1, "Currently, only hack here to add pad token id is supported. "
+            model.resize_token_embeddings(vocab_size)
+            model.config.pad_token_id = pad_token_id
+
+        logger.info(f"Config pad token id after loading pre-trained weights: {model.config.pad_token_id}")
 
         return model
 
@@ -93,7 +110,10 @@ class LlamaForMultipleChoiceCLS(LlamaPreTrainedModelPeftMixin, LogMixin, ABC):
         self.num_labels = config.num_labels
         self.model = LlamaModel(config)
         self.score = nn.Linear(config.hidden_size, self.num_labels, bias=False)
-        self.config.pad_token_id = self.config.eos_token_id
+        # self.config.pad_token_id = self.config.eos_token_id
+        # self.config.pad_token_id = self.config.vocab_size
+        # self.config.pad_token_id = PAD_TOKEN_ID
+        logger.info(f"Config pad token id: {self.config.pad_token_id}")
 
         # Initialize weights and apply final processing
         self.post_init()
@@ -188,7 +208,10 @@ class LlamaForMultipleChoiceCausalLM(LlamaPreTrainedModelPeftMixin, LogMixin, AB
         self.model = LlamaModel(config)
 
         self.lm_head = nn.Linear(config.hidden_size, config.vocab_size, bias=False)
-        self.config.pad_token_id = self.config.eos_token_id
+        # self.config.pad_token_id = self.config.eos_token_id
+        # self.config.pad_token_id = self.config.vocab_size
+        # self.config.pad_token_id = PAD_TOKEN_ID
+        logger.info(f"Config pad token id: {self.config.pad_token_id}")
 
         # Initialize weights and apply final processing
         self.post_init()
@@ -424,7 +447,7 @@ class LlamaForConditionalGeneration(LlamaPreTrainedModelPeftMixin, LogMixin, ABC
         self.model = LlamaModel(config)
 
         self.lm_head = nn.Linear(config.hidden_size, config.vocab_size, bias=False)
-        self.config.pad_token_id = self.config.eos_token_id
+        # logger.info(f"Config pad token id: {self.config.pad_token_id}")
 
         # Initialize weights and apply final processing
         self.post_init()
@@ -506,6 +529,10 @@ class LlamaForConditionalGeneration(LlamaPreTrainedModelPeftMixin, LogMixin, ABC
         loss_fct = nn.CrossEntropyLoss(ignore_index=-1)
         lm_loss = loss_fct(shifted_logits.view(-1, logits.size(-1)), shifted_lm_labels.view(-1))
         loss = lm_loss
+        if torch.isnan(lm_loss):
+            print(lm_labels)
+            print(input_lens)
+            print("========================")
 
         if not self.training:
             acc, true_label_num = get_accuracy(shifted_logits, shifted_lm_labels)
@@ -544,3 +571,43 @@ class LlamaForConditionalGeneration(LlamaPreTrainedModelPeftMixin, LogMixin, ABC
         for layer_past in past_key_values:
             reordered_past += (tuple(past_state.index_select(0, beam_idx) for past_state in layer_past),)
         return reordered_past
+
+
+class LlamaForConditionalGenerationFlan(LlamaForConditionalGeneration, LogMixin, ABC):
+    def forward(
+            self,
+            input_ids: torch.LongTensor = None,
+            attention_mask: Optional[torch.Tensor] = None,
+            input_lens: Optional[torch.Tensor] = None,
+            past_key_values: Optional[List[torch.FloatTensor]] = None,
+            inputs_embeds: Optional[torch.FloatTensor] = None,
+            labels: Optional[torch.LongTensor] = None,
+            flan_input_ids: Optional[torch.LongTensor] = None,
+            flan_attention_mask: Optional[torch.FloatTensor] = None,
+            flan_input_lens: Optional[torch.LongTensor] = None,
+            use_cache: Optional[bool] = None,
+            output_attentions: Optional[bool] = None,
+            output_hidden_states: Optional[bool] = None,
+            return_dict: Optional[bool] = None,
+    ) -> Union[Tuple, MultipleChoicePreTrainModelOutput]:
+        return_dict = return_dict if return_dict is not None else self.config.use_return_dict
+
+        outputs1 = super().forward(input_ids=input_ids,
+                                   attention_mask=attention_mask,
+                                   input_lens=input_lens,
+                                   return_dict=return_dict)
+        outputs2 = super().forward(input_ids=flan_input_ids,
+                                   attention_mask=flan_attention_mask,
+                                   input_lens=flan_input_lens,
+                                   return_dict=return_dict)
+        if torch.isnan(outputs1.loss):
+            print("Normal inputs NAN loss")
+        if torch.isnan(outputs2.loss):
+            print("Flan inputs NAN loss")
+
+        loss = (outputs1.loss + outputs2.loss) / 2
+
+        return MultipleChoicePreTrainModelOutput(
+            loss=loss,
+            logits=outputs1.logits,
+        )

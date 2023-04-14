@@ -4,8 +4,8 @@ hydra:
 
 train_file: reclor_data/train.json
 dev_file: reclor_data/val.json
-#test_file: reclor_data/test.json
-test_file: reclor_data/val.json
+test_file: reclor_data/test.json
+#test_file: reclor_data/val.json
 
 # Model
 model:
@@ -24,8 +24,11 @@ read_tensor:
     read_func:
       _target_: data.readers.ReClorReader
     instruct: "Answer the following question with the given context through logical reasoning:"
+#    instruct: "Answer the following question with the given context and options: "
+#    instruct: "Answer the following question with the given context and options. Let's think step by step: "
   read_func:
     _target_: data.readers.ReClorReader
+  suffix: ""
 
 
 extended_vocab:
@@ -44,7 +47,7 @@ prefetch_factor: 2
 model_name_or_path: pretrained-models/google/flan-t5-xl
 pretrain:
 
-output_dir: experiments/flan-t5.xlarge.flan-baseline.seq1024.w8.adamw.500steps.NA100
+output_dir: experiments/flan-t5.xlarge.wiki_erica_path_v9.1_v9.1.v1.5.1.3aug.seq512.w8.adamw.500steps.NA100
 
 do_train: False
 evaluate_during_training: True
@@ -98,9 +101,11 @@ max_output_length: 64
 num_beams: 1
 num_return_sequences: 1
 output_scores: False
+do_sample: False
 post_process:
   _target_: post_processors.reclor.GeneratorPredictor
-predict_dir: ${output_dir}/reclor_val_prompt_${read_tensor.prompt_generator.shot}shot.v1.0
+predict_dir: ${output_dir}/reclor_test_prompt_${read_tensor.prompt_generator.shot}shot.v1.0
+#predict_dir: ${output_dir}/reclor_val_prompt_${read_tensor.prompt_generator.shot}shot_sample.v1.1.s${seed}
 
 #dist_init:
 #  _target_: general_util.dist_utils.setup_slurm_distributed

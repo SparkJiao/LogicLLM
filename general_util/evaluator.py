@@ -468,6 +468,7 @@ class GeneratorForwardFn:
             "max_length": self.cfg.max_output_length,
             "num_beams": self.cfg.num_beams,
             "num_return_sequences": self.cfg.num_return_sequences,
+            "do_sample": getattr(self.cfg, "do_sample", False),
         }
         if getattr(self.cfg, "output_scores", False):
             param_dict["output_scores"] = True

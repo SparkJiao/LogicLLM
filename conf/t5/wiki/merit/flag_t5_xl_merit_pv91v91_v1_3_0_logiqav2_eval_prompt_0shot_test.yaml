@@ -2,10 +2,10 @@ hydra:
   run:
     dir: ./
 
-train_file: reclor_data/train.json
-dev_file: reclor_data/val.json
-#test_file: reclor_data/test.json
-test_file: reclor_data/val.json
+train_file: logiqa-v2/train.txt
+dev_file: logiqa-v2/dev.txt
+test_file: logiqa-v2/test.txt
+#test_file: logiqa-v2/dev.txt
 
 # Model
 model:
@@ -22,10 +22,13 @@ read_tensor:
     shot: 0
     random_sampling: False
     read_func:
-      _target_: data.readers.ReClorReader
+      _target_: data.readers.LogiQAReaderV2
     instruct: "Answer the following question with the given context through logical reasoning:"
+#    instruct: "Answer the following question with the given context and options: "
+#    instruct: "Answer the following question with the given context and options. Let's think step by step: "
   read_func:
-    _target_: data.readers.ReClorReader
+    _target_: data.readers.LogiQAReaderV2
+#  suffix: ""
 
 
 extended_vocab:
@@ -44,7 +47,8 @@ prefetch_factor: 2
 model_name_or_path: pretrained-models/google/flan-t5-xl
 pretrain:
 
-output_dir: experiments/flan-t5.xlarge.flan-baseline.seq1024.w8.adamw.500steps.NA100
+#output_dir: experiments/flan-t5.xlarge.wiki_erica_path_v9.1_v9.1.v1.3.1aug.seq512.w8.adamw.500steps.NA100
+output_dir: experiments/flan-t5.xlarge.wiki_erica_path_v9.1_v9.1.v1.3.1.1aug.seq512.w8.adamw.500steps.NA100
 
 do_train: False
 evaluate_during_training: True
@@ -98,9 +102,13 @@ max_output_length: 64
 num_beams: 1
 num_return_sequences: 1
 output_scores: False
+do_sample: False
 post_process:
   _target_: post_processors.reclor.GeneratorPredictor
-predict_dir: ${output_dir}/reclor_val_prompt_${read_tensor.prompt_generator.shot}shot.v1.0
+#predict_dir: ${output_dir}/logiqav2_val_prompt_${read_tensor.prompt_generator.shot}shot.v1.1
+predict_dir: ${output_dir}/logiqav2_test_prompt_${read_tensor.prompt_generator.shot}shot.v1.0
+#predict_dir: ${output_dir}/logiqav2_test_prompt_${read_tensor.prompt_generator.shot}shot.v1.1
+#predict_dir: ${output_dir}/reclor_val_prompt_${read_tensor.prompt_generator.shot}shot_sample.v1.1.s${seed}
 
 #dist_init:
 #  _target_: general_util.dist_utils.setup_slurm_distributed

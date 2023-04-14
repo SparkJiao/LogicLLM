@@ -182,9 +182,21 @@ class GeneratorPredictor(DistGatherMixin):
             output_file = os.path.join(output_dir, "decode_results.json")
 
         json.dump(self.predictions, open(output_file, "w"))
+        self.predictions = sorted(self.predictions, key=lambda x: x["index"])
 
         correct = 0
+        existing_ids = set()
+        npy_outputs = []
         for pred in self.predictions:
+            if pred["index"] in existing_ids:
+                continue
+            existing_ids.add(pred["index"])
             if pred["label"] == pred["cleaned_output"]:
                 correct += 1
-        return {"acc": correct / len(self.predictions)}, self.predictions
+            if pred["cleaned_output"]:
+                npy_outputs.append(ord(pred["cleaned_output"]) - ord("A"))
+            else:
+                npy_outputs.append(0)
+        np.save(os.path.join(output_dir, "decode_results.npy"), np.array(npy_outputs))
+        assert len(npy_outputs) == len(existing_ids), (len(npy_outputs), len(self.predictions), len(existing_ids))
+        return {"acc": correct / len(existing_ids)}, self.predictions
