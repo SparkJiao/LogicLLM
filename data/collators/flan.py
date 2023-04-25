@@ -53,18 +53,45 @@ class WikiPathDatasetV5WFlan(Dataset):
         self.flan_data = load_flan_data_w_filter(flan_file)
 
     def __len__(self):
-        return len(self.examples)
+        return max(len(self.examples), len(self.flan_data))
 
     def __getitem__(self, index):
-        example = self.examples[index]
+        example = self.examples[index % len(self.examples)]
+        flan = self.flan_data[index % len(self.flan_data)]
+        # example = self.examples[index]
         # if index >= len(self.flan_data):
-        flan = random.choice(self.flan_data)
+        # flan = random.choice(self.flan_data)
         # else:
         #     flan = self.flan_data[index]
         return {
             "example": example,
             "flan": flan,
             "index": index,
+        }
+
+
+class FlanCollectionGroupDataset(Dataset):
+    def __init__(self, file_path: str, tokenizer=None):
+        super().__init__()
+        logger.info(f"Loading FLAN data from {file_path}...")
+        data = torch.load(file_path, map_location="cpu")
+        self.data = []
+        cnt = 0
+        for item in data:
+            if item["inputs"].strip() == "":
+                continue
+            if item["targets"].strip() == "":
+                cnt += 1
+                continue
+            self.data.append(item)
+        logger.info(f"Removed {cnt} empty examples.")
+
+    def __len__(self):
+        return len(self.data)
+
+    def __getitem__(self, index):
+        return {
+            "flan": self.data[index],
         }
 
 

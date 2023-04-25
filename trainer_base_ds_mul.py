@@ -136,6 +136,9 @@ def train(cfg, model, tokenizer, continue_from_global_step=0):
             del _train_sampler
             del sub_train_dataset
 
+    if getattr(cfg, "do_preprocess", False):
+        return
+
     if "extended_vocab" in cfg and cfg.extended_vocab:
         logger.info(f"Extended extra vocab size: {cfg.extended_vocab}")
         model.resize_token_embeddings(model.config.vocab_size + cfg.extended_vocab)
@@ -160,7 +163,7 @@ def train(cfg, model, tokenizer, continue_from_global_step=0):
     #     {'params': [p for n, p in model.named_parameters() if any(nd in n for nd in no_decay)],
     #      'weight_decay': 0.0}
     # ]
-
+    torch.compile(model, mode="max-autotune")
     model, optimizer, _, scheduler = deepspeed.initialize(model=model,
                                                           model_parameters=model.parameters(),
                                                           config=ds_config)
@@ -168,7 +171,7 @@ def train(cfg, model, tokenizer, continue_from_global_step=0):
 
     # Train!
     logger.info("***** Running training *****")
-    logger.info("  Num examples = %d", total_dataset_len)
+    logger.info("  Num examples = %d", total_dataset_len * cfg.train_batch_size * dist.get_world_size() if cfg.local_rank != -1 else 1)
     logger.info("  Num Epochs = %d", cfg.num_train_epochs)
     logger.info("  Instantaneous batch size per GPU = %d", cfg.per_gpu_train_batch_size)
     logger.info("  Total train batch size (w. parallel, distributed & accumulation) = %d",
@@ -238,7 +241,7 @@ def train(cfg, model, tokenizer, continue_from_global_step=0):
                     if cfg.save_steps > 0 and global_step % cfg.save_steps == 0:
                         output_dir = os.path.join(cfg.output_dir, 'checkpoint-{}'.format(global_step))
                         if cfg.local_rank in [-1, 0] and not os.path.exists(output_dir):
-                            os.makedirs(output_dir)
+                            os.makedirs(output_dir, exist_ok=True)
                         save_model(model, cfg, output_dir, tokenizer)
 
                     # Evaluation
@@ -339,7 +342,7 @@ def main(cfg: DictConfig):
             project="LLaMA-BiFLAN",
             name=cfg.exp_name,
             notes=cfg.exp_notes,
-            config=OmegaConf.to_container(cfg, resolve=True)
+            config=OmegaConf.to_container(cfg, resolve=True),
         )
         wandb.define_metric(cfg.prediction_cfg.metric, summary=("max" if cfg.prediction_cfg.measure > 0 else "min"))
 
@@ -406,6 +409,8 @@ def main(cfg: DictConfig):
 
 
 if __name__ == "__main__":
+    os.environ["HYDRA_FULL_ERROR"] = "1"
+
     hydra_formatted_args = []
     # convert the cli params added by torch.distributed.launch into Hydra format
     for arg in sys.argv:

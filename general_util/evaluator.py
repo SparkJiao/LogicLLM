@@ -9,6 +9,7 @@ from omegaconf import DictConfig
 from torch.utils.data import DistributedSampler, SequentialSampler, DataLoader
 from tqdm import tqdm
 from transformers import PreTrainedTokenizer
+from transformers.generation.configuration_utils import GenerationConfig
 
 from general_util.logger import get_child_logger
 from general_util.training_utils import batch_to_device, load_and_cache_examples, unwrap_model
@@ -454,37 +455,35 @@ class AutoRegressiveDiscriminatorForwardFn:
 
 
 class GeneratorForwardFn:
-    def __init__(self, cfg: DictConfig, model: torch.nn.Module, tokenizer: PreTrainedTokenizer):
+    def __init__(self, cfg: DictConfig, model: torch.nn.Module, tokenizer: PreTrainedTokenizer, generation_config: GenerationConfig,
+                 skip_special_tokens: bool = True, clean_input: bool = False):
         self.cfg = cfg
         self.model = model
         self.tokenizer = tokenizer
+        self.generation_config = generation_config
+        self.skip_special_tokens = skip_special_tokens
+        self.clean_input = clean_input
 
     def __call__(self, batch):
         if "labels" in batch:  # Kept as the `decoder_input_ids`. Should be removed during auto-regressive inference.
             batch.pop("labels")
 
         outputs = {}
-        param_dict = {
-            "max_length": self.cfg.max_output_length,
-            "num_beams": self.cfg.num_beams,
-            "num_return_sequences": self.cfg.num_return_sequences,
-            "do_sample": getattr(self.cfg, "do_sample", False),
-        }
-        if getattr(self.cfg, "output_scores", False):
-            param_dict["output_scores"] = True
-            param_dict["return_dict_in_generate"] = True
-        else:
-            param_dict["output_scores"] = False
+        decoding_outputs = self.model.generate(**batch, generation_config=self.generation_config)
 
-        decoding_outputs = self.model.generate(**batch, **param_dict)
-
-        if param_dict["output_scores"]:
-            generated_seq = self.tokenizer.batch_decode(decoding_outputs["sequences"], skip_special_tokens=True)
+        if self.generation_config.output_scores:
+            generated_seq = self.tokenizer.batch_decode(decoding_outputs["sequences"], skip_special_tokens=self.skip_special_tokens)
             outputs["generated_seq"] = generated_seq
             outputs["sequences_scores"] = decoding_outputs["sequences_scores"]
         else:
-            generated_seq = self.tokenizer.batch_decode(decoding_outputs, skip_special_tokens=True)
+            generated_seq = self.tokenizer.batch_decode(decoding_outputs, skip_special_tokens=self.skip_special_tokens)
             outputs["generated_seq"] = generated_seq
+
+        # Clean the inputs from the generated sequences if the model is decoder only model.
+        if self.clean_input:
+            outputs["generated_seq"] = [seq.replace(self.tokenizer.decode(batch["input_ids"][i],
+                                                                          skip_special_tokens=self.skip_special_tokens), "")
+                                        for i, seq in enumerate(outputs["generated_seq"])]
 
         return outputs, []
 

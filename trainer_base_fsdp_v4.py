@@ -412,6 +412,7 @@ def main(cfg: DictConfig):
                     model.parallelize()
 
             tokenizer = AutoTokenizer.from_pretrained(checkpoint)
+            logger.info(tokenizer)
             cfg.model_name_or_path = checkpoint
 
             if cfg.test_file:
@@ -428,6 +429,8 @@ def main(cfg: DictConfig):
 
 
 if __name__ == "__main__":
+    os.environ["HYDRA_FULL_ERROR"] = "1"
+
     hydra_formatted_args = []
     # convert the cli params added by torch.distributed.launch into Hydra format
     for arg in sys.argv:

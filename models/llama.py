@@ -44,6 +44,7 @@ class MultipleChoicePreTrainModelOutput(SequenceClassifierOutputWithPast):
     rel_ctr_loss: torch.FloatTensor = None
     local_ctr_loss: torch.FloatTensor = None
     local_ctr_acc: torch.FloatTensor = None
+    original_logits: torch.FloatTensor = None
 
 
 class LlamaPreTrainedModelPeftMixin(LlamaPreTrainedModel, ABC):
@@ -442,9 +443,12 @@ class LlamaForMultipleChoiceCausalLM(LlamaPreTrainedModelPeftMixin, LogMixin, AB
 class LlamaForConditionalGeneration(LlamaPreTrainedModelPeftMixin, LogMixin, ABC):
     _keys_to_ignore_on_load_missing = [r"lm_head.weight"]
 
-    def __init__(self, config: LlamaConfig):
+    def __init__(self, config: LlamaConfig, gradient_checkpointing=False):
         super().__init__(config)
         self.model = LlamaModel(config)
+        # set gradient checkpointing
+        self.model.gradient_checkpointing = gradient_checkpointing
+        logger.info(f"gradient_checkpointing: {gradient_checkpointing}")
 
         self.lm_head = nn.Linear(config.hidden_size, config.vocab_size, bias=False)
         # logger.info(f"Config pad token id: {self.config.pad_token_id}")
@@ -574,6 +578,10 @@ class LlamaForConditionalGeneration(LlamaPreTrainedModelPeftMixin, LogMixin, ABC
 
 
 class LlamaForConditionalGenerationFlan(LlamaForConditionalGeneration, LogMixin, ABC):
+    def __init__(self, config: LlamaConfig, gradient_checkpointing=False, merit_ratio: float = 0.5):
+        super().__init__(config, gradient_checkpointing)
+        self.merit_ratio = merit_ratio
+
     def forward(
             self,
             input_ids: torch.LongTensor = None,
@@ -600,14 +608,95 @@ class LlamaForConditionalGenerationFlan(LlamaForConditionalGeneration, LogMixin,
                                    attention_mask=flan_attention_mask,
                                    input_lens=flan_input_lens,
                                    return_dict=return_dict)
-        if torch.isnan(outputs1.loss):
-            print("Normal inputs NAN loss")
-        if torch.isnan(outputs2.loss):
-            print("Flan inputs NAN loss")
+        # if torch.isnan(outputs1.loss):
+        #     print("Normal inputs NAN loss")
+        # if torch.isnan(outputs2.loss):
+        #     print("Flan inputs NAN loss")
 
-        loss = (outputs1.loss + outputs2.loss) / 2
+        # loss = (outputs1.loss + outputs2.loss) / 2
+        loss = self.merit_ratio * outputs1.loss + (1 - self.merit_ratio) * outputs2.loss
 
         return MultipleChoicePreTrainModelOutput(
             loss=loss,
+            mlm_loss=outputs1.loss,
             logits=outputs1.logits,
+        )
+
+
+def mask_according_lens(input_ids, input_lens, pad_token_id):
+    label_mask = input_ids.ne(pad_token_id)
+    # keep only logits after the end of the condition part in each item of the batch
+    # [batch_size * num_choices, input_lens]
+    lens_mask = torch.arange(input_ids.size(1), device=label_mask.device)[None, :] >= input_lens[:, None]
+    label_mask = label_mask & lens_mask
+    return label_mask
+
+
+def token_wise_ctr_forward(
+        model: LlamaModel,
+        linear_layer: nn.Module,
+        input_ids: torch.Tensor = None,
+        attention_mask: Optional[torch.Tensor] = None,
+        input_lens: Optional[torch.Tensor] = None,
+        pad_token_id: int = 0,
+):
+    batch_size, num_choice = input_ids.size()[:2]
+    input_ids = fold_tensor(input_ids)
+    attention_mask = fold_tensor(attention_mask)
+
+    outputs = model(input_ids=input_ids,
+                    attention_mask=attention_mask,
+                    return_dict=True)
+
+    hidden_states = outputs[0]
+    label_mask = mask_according_lens(input_ids, input_lens, pad_token_id)
+    # [batch_size * num_choices, seq_len]
+    token_logits = linear_layer(hidden_states).squeeze(-1)
+    logits = token_logits.masked_fill(~label_mask, 0).sum(dim=1) / label_mask.sum(dim=1)
+    logits = logits.view(batch_size, num_choice)
+    return logits
+
+
+class LlamaCtrAndLMPretrain(LlamaForConditionalGeneration, ABC):
+    def __init__(self, config: LlamaConfig, gradient_checkpointing=False):
+        super().__init__(config, gradient_checkpointing)
+
+        self.linear = nn.Linear(config.hidden_size, 1)
+        self.init_metric("loss", "acc", "cls_loss")
+
+    def forward(
+            self,
+            input_ids: torch.LongTensor = None,
+            attention_mask: Optional[torch.Tensor] = None,
+            input_lens: Optional[torch.Tensor] = None,
+            past_key_values: Optional[List[torch.FloatTensor]] = None,
+            inputs_embeds: Optional[torch.FloatTensor] = None,
+            labels: Optional[torch.LongTensor] = None,
+            flan_input_ids: Optional[torch.LongTensor] = None,
+            flan_attention_mask: Optional[torch.FloatTensor] = None,
+            flan_input_lens: Optional[torch.LongTensor] = None,
+            use_cache: Optional[bool] = None,
+            output_attentions: Optional[bool] = None,
+            output_hidden_states: Optional[bool] = None,
+            return_dict: Optional[bool] = None,
+    ) -> Union[Tuple, MultipleChoicePreTrainModelOutput]:
+        return_dict = return_dict if return_dict is not None else self.config.use_return_dict
+
+        ctr_logits = token_wise_ctr_forward(self.model, self.linear, input_ids, attention_mask, input_lens, self.config.pad_token_id)
+        ctr_loss = nn.CrossEntropyLoss()(ctr_logits, labels)
+
+        lm_outputs = super().forward(input_ids=flan_input_ids,
+                                     attention_mask=flan_attention_mask,
+                                     input_lens=flan_input_lens,
+                                     return_dict=return_dict)
+        lm_loss = lm_outputs.loss
+        loss = ctr_loss + lm_loss
+
+        ctr_acc = get_accuracy(ctr_logits, labels)
+        return MultipleChoicePreTrainModelOutput(
+            loss=loss,
+            logits=ctr_logits,
+            mlm_loss=lm_loss,
+            cls_loss=ctr_loss,
+            cls_acc=ctr_acc,
         )

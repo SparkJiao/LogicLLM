@@ -39,7 +39,7 @@ def construct_seq2seq(example, generative_mode: bool = False):
 class WikiSeq2SeqCollator:
     def __init__(self, max_seq_length: int, tokenizer: str, causal_lm: bool = False, generative_mode: bool = False):
         self.max_seq_length = max_seq_length
-        self.tokenizer: PreTrainedTokenizer = AutoTokenizer.from_pretrained(tokenizer, use_fast=False)
+        self.tokenizer: PreTrainedTokenizer = AutoTokenizer.from_pretrained(tokenizer)
         self.causal_lm = causal_lm
         self.generative_mode = generative_mode
 
@@ -91,6 +91,27 @@ class WikiSeq2SeqCollator:
             model_inputs["attention_mask"] = model_inputs["attention_mask"].reshape(batch_size, op_num, -1)
             model_inputs["labels"] = torch.zeros(len(examples), dtype=torch.long)
 
+        return model_inputs
+
+
+class WikiSeq2SeqCollatorWithCausalLM(WikiSeq2SeqCollator):
+    def __init__(self, max_seq_length: int, tokenizer: str, causal_lm: bool = False, generative_mode: bool = False,
+                 causal_lm_add_eos: bool = False):
+        super().__init__(max_seq_length, tokenizer, causal_lm, generative_mode)
+        assert self.causal_lm
+        self.causal_lm_add_eos = causal_lm_add_eos
+
+    def __call__(self, batch):
+        if self.causal_lm_add_eos:
+            texts = [b["text"] + self.tokenizer.eos_token for b in batch]
+        else:
+            texts = [b["text"] for b in batch]
+        causal_lm_model_inputs = self.tokenizer(texts, padding="longest", truncation=True, return_tensors="pt",
+                                                max_length=self.max_seq_length)
+
+        model_inputs = super().__call__(batch)
+        for k, v in causal_lm_model_inputs.items():
+            model_inputs[f"flan_{k}"] = v
         return model_inputs
 
 

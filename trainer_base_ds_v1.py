@@ -219,10 +219,10 @@ def train(cfg, train_dataset, model, tokenizer, continue_from_global_step=0):
                             for key, value in results.items():
                                 tb_writer.add_scalar(f"eval/{key}", value, global_step)
 
-                            sub_path = os.path.join(cfg.output_dir, 'checkpoint-{}'.format(global_step))
-                            flag = note_best_checkpoint(cfg, results, sub_path)
-                            if cfg.save_best and flag:
-                                save_model(model, cfg, cfg.output_dir, tokenizer)
+                        sub_path = os.path.join(cfg.output_dir, 'checkpoint-{}'.format(global_step))
+                        flag = note_best_checkpoint(cfg, results, sub_path)
+                        if cfg.save_best and flag:
+                            save_model(model, cfg, cfg.output_dir, tokenizer)
 
             if 0 < cfg.max_steps < global_step:
                 epoch_iterator.close()

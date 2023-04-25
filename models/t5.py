@@ -46,10 +46,15 @@ class MultipleChoicePreTrainModelOutput(Seq2SeqLMOutput):
 
 
 class T5ForSeq2Seq(T5ForConditionalGeneration, LogMixin, ABC):
-    def __init__(self, config: T5Config):
+    def __init__(self, config: T5Config, gradient_checkpointing=False):
         super().__init__(config)
         self.config = config
         self.init_metric("loss", "acc")
+
+        if gradient_checkpointing:
+            self.gradient_checkpointing = True
+            self.encoder.gradient_checkpointing = True
+            self.decoder.gradient_checkpointing = True
 
     def forward(
             self,
