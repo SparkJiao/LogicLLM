@@ -10,7 +10,7 @@ test_file: reclor_data/val.json
 # Model
 model:
   _target_: transformers.models.llama.modeling_llama.LlamaForCausalLM.from_pretrained
-#  num_labels: 1
+  torch_dtype: "auto"
 
 
 # Data loading
@@ -50,7 +50,7 @@ do_train: False
 evaluate_during_training: True
 
 do_eval: True
-eval_sub_path: checkpoint-*
+eval_sub_path:
 
 # Training hyper-parameters
 per_gpu_train_batch_size: 4
@@ -94,12 +94,19 @@ prediction_cfg:
   best_result:
 eval_forward_fn:
   _target_: general_util.evaluator.GeneratorForwardFn
-max_output_length: 512
-num_beams: 1
-num_return_sequences: 1
-output_scores: False
+  generation_config:
+    _target_: transformers.generation.configuration_utils.GenerationConfig
+#    max_new_tokens: 128
+    max_new_tokens: 64
+    num_beams: 1
+#    num_beams: 4
+    num_return_sequences: 1
+    output_scores: False
+#    top_k: 0.75
 post_process:
   _target_: post_processors.reclor.GeneratorPredictor
+  answer_trigger: "The answer is"
+#  answer_trigger: ""
   reverse: True
 predict_dir: ${output_dir}/reclor_val_prompt_${read_tensor.prompt_generator.shot}shot.v1.0
 

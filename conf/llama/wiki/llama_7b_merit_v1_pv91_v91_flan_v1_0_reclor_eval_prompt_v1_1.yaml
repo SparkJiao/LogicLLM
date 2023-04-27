@@ -2,16 +2,22 @@ hydra:
   run:
     dir: ./
 
-train_file: logiqa-v2/train.txt
-dev_file: logiqa-v2/dev.txt
-#test_file: logiqa-v2/test.txt
-test_file: logiqa-v2/dev.txt
+train_file: reclor_data/train.json
+dev_file: reclor_data/val.json
+#test_file: reclor_data/test.json
+test_file: reclor_data/val.json
 
 # Model
-model:
-  _target_: transformers.models.t5.modeling_t5.T5ForConditionalGeneration.from_pretrained
-  torch_dtype: "auto"
+#model:
+#  _target_: models.llama.LlamaForConditionalGeneration.from_pretrained
+#  torch_dtype: "auto"
+#  vocab_size: 32001
+#  pad_token_id: 32000
 #  num_labels: 1
+model:
+#  _target_: models.llama.LlamaForConditionalGeneration.from_pretrained
+  _target_: transformers.models.llama.modeling_llama.LlamaForCausalLM.from_pretrained
+  torch_dtype: "auto"
 
 
 # Data loading
@@ -20,17 +26,13 @@ read_tensor:
   prompt_generator:
     _target_: data.reclor_prompt.ReClorExemplarGenerator
     file_path: ${train_file}
-    shot: 3
+    shot: 0
     random_sampling: False
     read_func:
-      _target_: data.readers.LogiQAReaderV2
-    instruct: "Answer the following question with the given context through logical reasoning:"
-#    instruct: "Answer the following question with the given context and options: "
-#    instruct: "Answer the following question with the given context and options. Let's think step by step: "
-#    instruct: ""
+      _target_: data.readers.ReClorReader
   read_func:
-    _target_: data.readers.LogiQAReaderV2
-#  suffix: ""
+    _target_: data.readers.ReClorReader
+  suffix: ""
 
 
 extended_vocab:
@@ -39,17 +41,25 @@ extended_vocab:
 collator:
   _target_: data.reclor_prompt.ReClorGenerativeCollator
   tokenizer: ${model_name_or_path}
-  max_seq_length: 4000
+  max_seq_length: 1024
 
 # Dataloader
 num_workers: 4
 prefetch_factor: 2
 
 # Wiki path pretrain v8.2
-model_name_or_path: pretrained-models/google/flan-t5-xl
+#model_name_or_path: pretrained-models/LLaMA/llama-7b
+model_name_or_path: ${output_dir}/checkpoint-250
 pretrain:
 
-output_dir: experiments/flan-t5.xlarge.wiki_erica_path_v9.1_v9.1.v1.5.1.3aug.seq512.w8.adamw.500steps.NA100
+#output_dir: experiments/llama.7b.flan.v1.0.seq1024.w8.adamw.500steps.NA100.0401
+#output_dir: experiments/llama.7b.flan.10M.v1.0.seq1024.w8.adamw.NA100.0405.ds
+#exp_name: llama.7b.flan.10M.v1.2.seq1024.w8.adamw.NA100.0407.ds
+#exp_notes:
+#output_dir: experiments/${exp_name}  # Fix <pad token id>
+exp_name: llama.7b.merit_v91_v91.seq2seq.flan.v1.0.3aug.w8.adamw.1000steps.NA100.0417
+exp_notes:
+output_dir: experiments/${exp_name}   # Fix <pad token id>
 
 do_train: False
 evaluate_during_training: True
@@ -58,7 +68,7 @@ do_eval: True
 eval_sub_path: checkpoint-*
 
 # Training hyper-parameters
-per_gpu_train_batch_size: 2
+per_gpu_train_batch_size: 4
 per_gpu_eval_batch_size: 1
 learning_rate: 1e-5
 #learning_rate: 5e-6
@@ -108,13 +118,12 @@ eval_forward_fn:
     num_return_sequences: 1
     output_scores: False
 #    top_k: 0.75
-output_scores: False
 post_process:
   _target_: post_processors.reclor.GeneratorPredictor
+#  answer_trigger: "The answer is"
   answer_trigger: ""
-predict_dir: ${output_dir}/logiqav2_val_prompt_${read_tensor.prompt_generator.shot}shot.v1.0
-#predict_dir: ${output_dir}/logiqav2_test_prompt_${read_tensor.prompt_generator.shot}shot.v1.1
-#predict_dir: ${output_dir}/reclor_val_prompt_${read_tensor.prompt_generator.shot}shot_sample.v1.1.s${seed}
+  reverse: True
+predict_dir: ${output_dir}/reclor_val_prompt_${read_tensor.prompt_generator.shot}shot.v1.1
 
 #dist_init:
 #  _target_: general_util.dist_utils.setup_slurm_distributed

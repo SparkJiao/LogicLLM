@@ -3,37 +3,22 @@ hydra:
     dir: ./
 
 train_file: wiki_erica_path/v9.1_fixed/distant_path_v9.1_fix_no_shuffle.train.0.pkl
+dev_file: wiki_erica_path/v9.1_fixed/distant_path_v9.1_fix_no_shuffle.dev.pkl
 test_file:
 
 # Model
 model:
-  _target_: models.llama.LlamaForConditionalGenerationFlan.from_pretrained
-  vocab_size: 32001
-  pad_token_id: 32000
-  use_peft: False
+  _target_: models.t5.T5ForSeq2Seq.from_pretrained
   gradient_checkpointing: True
-#  lora_config:
-#    _target_: models.llama.LoraConfig
-#    task_type: CAUSAL_LM
-#    inference_mode: False
-#    target_modules: ["q_proj", "v_proj"]
-#    r: 8
-#    lora_alpha: 16
-#    lora_dropout: 0.05
-
-#model_eval:
-#  _target_: models.llama.LlamaForConditionalGenerationFlan.from_pretrained_peft_eval
-#  base_model_name_or_path: ${model_name_or_path}
-
 
 # Data loading
-read_tensor:
+read_tensor_train:
   _target_: data.collators.flan.WikiPathDatasetV5WFlan
   _recursive_: False
   raw_data:
     _target_: data.wiki_entity_path_v9_1_2.convert_examples_into_features_raw
     max_neg_num: 3
-    aug_num: 3
+    aug_num: 1
     max_seq_length: 512
     shuffle_context: True
     min_rep_num: 5
@@ -41,8 +26,25 @@ read_tensor:
     deduct_ratio: 1.0
     context_ratio: 1.0
     noise_sent_ratio: 0.0
-    num_workers: 64
-  flan_file: ../research.data/flan_v2_shuffle/flan_v2_67.pt
+    num_workers: 128
+  flan_file: ../research.data/flan/flan_v2_zs_100k.train.bin
+
+read_tensor_dev:
+  _target_: data.collators.flan.WikiPathDatasetV5WFlan
+  _recursive_: False
+  raw_data:
+    _target_: data.wiki_entity_path_v9_1_2.convert_examples_into_features_raw
+    max_neg_num: 3
+    aug_num: 1
+    max_seq_length: 512
+    shuffle_context: True
+    min_rep_num: 5
+    geo_p: 0.4
+    deduct_ratio: 1.0
+    context_ratio: 1.0
+    noise_sent_ratio: 0.0
+    num_workers: 128
+  flan_file: ../research.data/flan/flan_v2_zs_100k.dev.bin
 
 extended_vocab:
 
@@ -50,51 +52,47 @@ extended_vocab:
 collator:
   _target_: data.collators.flan.FlanCollatorOverCollator
   collator:
-    _target_: data.collators.wiki_seq2seq_collator.WikiSeq2SeqCollator
-    max_seq_length: 512
-    tokenizer: ${model_name_or_path}
-    causal_lm: True
-    generative_mode: True
+#    _target_: data.collators.wiki_seq2seq_collator.WikiSeq2SeqCollator
+#    max_seq_length: 512
+#    tokenizer: ${model_name_or_path}
+#    causal_lm: False
   tokenizer: ${model_name_or_path}
-  max_seq_length: 2048
-  decoder_only: True
+  max_seq_length: 1024
 
 # Dataloader
-num_workers: 2
+num_workers: 4
 prefetch_factor: 2
 
 do_preprocess: False
 
 # Wiki path pretrain v8.2
-#model_name_or_path: pretrained-models/llama-7b-hf
-model_name_or_path: pretrained-models/LLaMA/llama-7b
+model_name_or_path: pretrained-models/google/flan-t5-xxl
 pretrain:
 
-exp_name: llama.7b.merit_v91_v91.seq2seq.flan.v1.0.3aug.w8.adamw.1000steps.NA100.0417
+exp_name: flan-t5.xxl.flan-baseline.seq1024.w8.adamw.500steps.NA100
 exp_notes:
-output_dir: experiments/${exp_name}  # Fix <pad token id>
-#resume: ${output_dir}/checkpoint-200
+#output_dir: experiments/flan-t5.xlarge.wiki_erica_path_v9.1_v9.1.v1.5.1.1aug.seq512.w8.adamw.500steps.NA100
+output_dir: experiments/${exp_name}
 
 do_train: True
 evaluate_during_training: False
 
-do_eval: True
+do_eval: False
 eval_sub_path: checkpoint-*
 
 # Training hyper-parameters
 per_gpu_train_batch_size: 4
 per_gpu_eval_batch_size: 4
-#learning_rate: 2e-3
 learning_rate: 5e-5
 gradient_accumulation_steps: 128
-weight_decay: 0.01
+weight_decay: 0.0
 adam_epsilon: 1e-6
-adam_betas: "(0.9, 0.99)"
+adam_betas: "(0.9, 0.95)"
 max_grad_norm: 5.0
 num_train_epochs: 10
-max_steps: 4882
-warmup_proportion: 0
-warmup_steps: 100
+max_steps: 500
+warmup_proportion: 0.1
+warmup_steps: 0
 
 # Optimizer
 optimizer:
@@ -105,8 +103,8 @@ bit_training:
 logging_steps: 1
 #save_best: True
 save_best: False
-save_steps: 250
-eval_steps: -1
+save_steps: 100
+eval_steps: 100
 ddp_eval: True
 no_cuda: False
 seed: 42
@@ -132,18 +130,20 @@ post_process:
 # fairscale.FullyShardedDP
 fairscale_config:
 #  _target_: general_util.fsdp_utils.recursive_initialize
-#  _target_: general_util.fsdp_utils.default_initialize
+  _target_: general_util.fsdp_utils.default_initialize
 #  _target_: general_util.fsdp_utils.default_initialize_v2
-  _target_: general_util.torch_fsdp_utils.torch_fsdp_transformer_init
+#  _target_: general_util.torch_fsdp_utils.torch_fsdp_transformer_init
   fp16: ${fp16}
-#  move_grads_to_cpu: False
-#  move_params_to_cpu: False
+  move_grads_to_cpu: False
+  move_params_to_cpu: False
 #  flatten_parameters: False
-  fp16_bfloat16: ${fp16_bfloat16}
+#  fp16_bfloat16: ${fp16_bfloat16}
 #  disable_reshard_on_root: False
 
 
-# Deepspeed config
+# Lightseq config
+with_lightseq: False
+
 ds_cfg:
   train_micro_batch_size_per_gpu: ${per_gpu_train_batch_size}
   gradient_accumulation_steps: ${gradient_accumulation_steps}
@@ -194,9 +194,6 @@ ds_cfg:
 #    synchronize_checkpoint_boundary: False
 #    profile: False
   steps_per_print: 1024
-
-# Lightseq config
-with_lightseq: False
 
 
 summary_helper:

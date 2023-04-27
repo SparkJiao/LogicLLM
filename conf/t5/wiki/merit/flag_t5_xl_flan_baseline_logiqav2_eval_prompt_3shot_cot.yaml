@@ -18,19 +18,17 @@ model:
 read_tensor:
   _target_: data.reclor_prompt.ReClorGenerativeDataset
   prompt_generator:
-    _target_: data.reclor_prompt.ReClorExemplarGenerator
-    file_path: ${train_file}
-    shot: 3
-    random_sampling: False
-    read_func:
-      _target_: data.readers.LogiQAReaderV2
+    _target_: data.reclor_prompt.read_cot_prompts_logiqa_v2
+    data_file: ${train_file}
+    prediction_file: ../research.data/LogiQA2.0/logiqa/DATA/LOGIQA/train_turbo_zs_cot_v1.1_f200.json
+    sample_num: 3
+    random_sample: False
+    self_consistency: True
     instruct: "Answer the following question with the given context through logical reasoning:"
-#    instruct: "Answer the following question with the given context and options: "
-#    instruct: "Answer the following question with the given context and options. Let's think step by step: "
 #    instruct: ""
   read_func:
     _target_: data.readers.LogiQAReaderV2
-#  suffix: ""
+  suffix: ""
 
 
 extended_vocab:
@@ -49,7 +47,7 @@ prefetch_factor: 2
 model_name_or_path: pretrained-models/google/flan-t5-xl
 pretrain:
 
-output_dir: experiments/flan-t5.xlarge.wiki_erica_path_v9.1_v9.1.v1.5.1.3aug.seq512.w8.adamw.500steps.NA100
+output_dir: experiments/flan-t5.xlarge.flan-baseline.seq1024.w8.adamw.500steps.NA100
 
 do_train: False
 evaluate_during_training: True
@@ -101,8 +99,8 @@ eval_forward_fn:
   _target_: general_util.evaluator.GeneratorForwardFn
   generation_config:
     _target_: transformers.generation.configuration_utils.GenerationConfig
-#    max_new_tokens: 128
-    max_new_tokens: 64
+    max_new_tokens: 256
+#    max_new_tokens: 64
     num_beams: 1
 #    num_beams: 4
     num_return_sequences: 1
@@ -111,10 +109,9 @@ eval_forward_fn:
 output_scores: False
 post_process:
   _target_: post_processors.reclor.GeneratorPredictor
+  reverse: True
   answer_trigger: ""
-predict_dir: ${output_dir}/logiqav2_val_prompt_${read_tensor.prompt_generator.shot}shot.v1.0
-#predict_dir: ${output_dir}/logiqav2_test_prompt_${read_tensor.prompt_generator.shot}shot.v1.1
-#predict_dir: ${output_dir}/reclor_val_prompt_${read_tensor.prompt_generator.shot}shot_sample.v1.1.s${seed}
+predict_dir: ${output_dir}/logiqav2_val_prompt_${read_tensor.prompt_generator.sample_num}shot.cot.v1.1
 
 #dist_init:
 #  _target_: general_util.dist_utils.setup_slurm_distributed

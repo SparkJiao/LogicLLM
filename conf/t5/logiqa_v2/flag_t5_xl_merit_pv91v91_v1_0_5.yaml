@@ -4,60 +4,50 @@ hydra:
 
 train_file: logiqa-v2/train.txt
 dev_file: logiqa-v2/dev.txt
-#test_file: logiqa-v2/test.txt
-test_file: logiqa-v2/dev.txt
+test_file: logiqa-v2/test.txt
 
 # Model
 model:
-  _target_: transformers.models.t5.modeling_t5.T5ForConditionalGeneration.from_pretrained
-#  num_labels: 1
+  _target_: models.t5.T5ForMultipleChoiceAndSeq2Seq.from_pretrained
+  num_labels: 1
 
 
 # Data loading
 read_tensor:
-  _target_: data.reclor_prompt.ReClorGenerativeDataset
-  prompt_generator:
-    _target_: data.reclor_prompt.ReClorExemplarGenerator
-    file_path: ${train_file}
-    shot: 0
-    random_sampling: False
-    read_func:
-      _target_: data.readers.LogiQAReaderV2
-#    instruct: "Answer the following question with the given context through logical reasoning:"
-    instruct: "Answer the following question with the given context and options: "
-#    instruct: "Answer the following question with the given context and options. Let's think step by step: "
+  _target_: data.mcqa.multiple_choice_get_tensor_index
   read_func:
     _target_: data.readers.LogiQAReaderV2
-#  suffix: ""
+  max_seq_length: 256
 
 extended_vocab:
 
 # Data collator
-collator:
-  _target_: data.reclor_prompt.ReClorGenerativeCollator
-  tokenizer: ${model_name_or_path}
-  max_seq_length: 2048
+#collator:
+#  _target_: data.collators.Tuple2DictCollator
 
 # Dataloader
 num_workers: 4
 prefetch_factor: 2
 
 # Wiki path pretrain v8.2
-model_name_or_path: pretrained-models/google/flan-t5-xxl
+model_name_or_path: experiments/flan-t5.xlarge.wiki_erica_path_v9.1_v9.1.baseline.v1.0.1aug.seq512.w5.adafactor.500steps.NA100/checkpoint-500
 pretrain:
 
-output_dir: ${model_name_or_path}
+#output_dir: experiments/reclor.flan-t5.xl.merit.pv91-v91.v1.0.w2.mp.PA100.v1.3.s${seed}
+#output_dir: experiments/logiqa-v2.flan-t5.xl.merit.pv91-v91.v1.0.mp4.RTXA6K.v1.5.s${seed}
+#output_dir: experiments/logiqa-v2.flan-t5.xl.merit.pv91-v91.v1.0.w4.ds.RTXA6K.v1.5.s${seed}
+output_dir: experiments/logiqa-v2.flan-t5.xl.merit.pv91-v91.v1.0.w2.ds.NA100.v1.5.s${seed}
 
-do_train: False
+do_train: True
 evaluate_during_training: True
 
 do_eval: True
 eval_sub_path:
 
 # Training hyper-parameters
-per_gpu_train_batch_size: 2
-per_gpu_eval_batch_size: 1
-learning_rate: 1e-5
+per_gpu_train_batch_size: 1
+per_gpu_eval_batch_size: 2
+learning_rate: 4e-5
 #learning_rate: 5e-6
 gradient_accumulation_steps: 2
 weight_decay: 0.01
@@ -79,7 +69,7 @@ bit_training:
 logging_steps: 5
 save_steps: -1
 save_best: True
-eval_steps: 100
+eval_steps: 500
 ddp_eval: True
 no_cuda: False
 seed: 42
@@ -95,21 +85,9 @@ prediction_cfg:
   best_checkpoint:
   best_result:
 eval_forward_fn:
-  _target_: general_util.evaluator.GeneratorForwardFn
-  generation_config:
-    _target_: transformers.generation.configuration_utils.GenerationConfig
-#    max_new_tokens: 128
-    max_new_tokens: 64
-    num_beams: 1
-#    num_beams: 4
-    num_return_sequences: 1
-    output_scores: False
-#    top_k: 0.75
-output_scores: False
+  _target_: general_util.evaluator.DiscriminatorForwardFn
 post_process:
-  _target_: post_processors.reclor.GeneratorPredictor
-  answer_trigger: ""
-predict_dir: ${output_dir}/logiqav2_val_prompt_${read_tensor.prompt_generator.shot}shot.v1.0
+  _target_: post_processors.reclor.NumpySaver
 
 #dist_init:
 #  _target_: general_util.dist_utils.setup_slurm_distributed
@@ -131,7 +109,7 @@ ds_cfg:
     type: AdamW
     params:
       lr: ${learning_rate}
-      betas: [0.9, 0.999]
+      betas: [ 0.9, 0.98 ]
       eps: ${adam_epsilon}
       weight_decay: ${weight_decay}
   scheduler:
@@ -142,24 +120,37 @@ ds_cfg:
       warmup_num_steps:
       warmup_type: linear
   gradient_clipping: ${max_grad_norm}
-  fp16:
+  #  fp16:
+  #    enabled: ${fp16}
+  #    initial_scale_power: 12
+  bf16:
     enabled: ${fp16}
-    initial_scale_power: 12
+  #  autotuning:
+  #    enabled: true
+  #    arg_mappings:
+  #      train_micro_batch_size_per_gpu: "per_gpu_train_batch_size"
+  #      gradient_accumulation_steps: "gradient_accumulation_steps"
+  #      zero_optimization: "ds_cfg.zero_optimization"
   zero_optimization:
-    stage: 3
-#    offload_optimizer:
-#      device: cpu
-#      pin_memory: True
-#    offload_param:
-#      device: cpu
-#      pin_memory: True
-#  activation_checkpointing:
-#    partition_activations: True
-#    cpu_checkpointing: True
-#    contiguous_memory_optimization: False
-#    number_checkpoints: False
-#    synchronize_checkpoint_boundary: False
-#    profile: False
+    stage: 1
+    contiguous_gradients: True
+    overlap_comm: True
+    reduce_scatter: True
+    reduce_bucket_size: 5e8
+    allgather_bucket_size: 5e8
+  #    offload_optimizer:
+  #      device: cpu
+  #      pin_memory: True
+  #    offload_param:
+  #      device: cpu
+  #      pin_memory: True
+  #  activation_checkpointing:
+  #    partition_activations: True
+  #    cpu_checkpointing: True
+  #    contiguous_memory_optimization: False
+  #    number_checkpoints: False
+  #    synchronize_checkpoint_boundary: False
+  #    profile: False
   steps_per_print: 1024
 
 summary_helper:

@@ -4,8 +4,8 @@ hydra:
 
 train_file: logiqa-v2/train.txt
 dev_file: logiqa-v2/dev.txt
-#test_file: logiqa-v2/test.txt
-test_file: logiqa-v2/dev.txt
+test_file: logiqa-v2/test.txt
+#test_file: logiqa-v2/dev.txt
 
 # Model
 model:
@@ -25,8 +25,6 @@ read_tensor:
     read_func:
       _target_: data.readers.LogiQAReaderV2
     instruct: "Answer the following question with the given context through logical reasoning:"
-#    instruct: "Answer the following question with the given context and options: "
-#    instruct: "Answer the following question with the given context and options. Let's think step by step: "
 #    instruct: ""
   read_func:
     _target_: data.readers.LogiQAReaderV2
@@ -49,7 +47,7 @@ prefetch_factor: 2
 model_name_or_path: pretrained-models/google/flan-t5-xl
 pretrain:
 
-output_dir: experiments/flan-t5.xlarge.wiki_erica_path_v9.1_v9.1.v1.5.1.3aug.seq512.w8.adamw.500steps.NA100
+output_dir: ${model_name_or_path}
 
 do_train: False
 evaluate_during_training: True
@@ -81,7 +79,7 @@ bit_training:
 
 logging_steps: 5
 save_steps: -1
-save_best: False
+save_best: True
 eval_steps: 100
 ddp_eval: True
 no_cuda: False
@@ -112,9 +110,7 @@ output_scores: False
 post_process:
   _target_: post_processors.reclor.GeneratorPredictor
   answer_trigger: ""
-predict_dir: ${output_dir}/logiqav2_val_prompt_${read_tensor.prompt_generator.shot}shot.v1.0
-#predict_dir: ${output_dir}/logiqav2_test_prompt_${read_tensor.prompt_generator.shot}shot.v1.1
-#predict_dir: ${output_dir}/reclor_val_prompt_${read_tensor.prompt_generator.shot}shot_sample.v1.1.s${seed}
+predict_dir: ${output_dir}/logiqav2_test_prompt_${read_tensor.prompt_generator.shot}shot.v1.0
 
 #dist_init:
 #  _target_: general_util.dist_utils.setup_slurm_distributed

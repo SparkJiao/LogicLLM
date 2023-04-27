@@ -10,6 +10,7 @@ test_file: logiqa-v2/dev.txt
 # Model
 model:
   _target_: transformers.models.t5.modeling_t5.T5ForConditionalGeneration.from_pretrained
+  torch_dtype: "auto"
 #  num_labels: 1
 
 
@@ -23,8 +24,8 @@ read_tensor:
     random_sampling: False
     read_func:
       _target_: data.readers.LogiQAReaderV2
-#    instruct: "Answer the following question with the given context through logical reasoning:"
-    instruct: ""
+    instruct: "Answer the following question with the given context through logical reasoning:"
+#    instruct: ""
   read_func:
     _target_: data.readers.LogiQAReaderV2
 #  suffix: ""
@@ -96,12 +97,19 @@ prediction_cfg:
   best_result:
 eval_forward_fn:
   _target_: general_util.evaluator.GeneratorForwardFn
-max_output_length: 64
-num_beams: 1
-num_return_sequences: 1
+  generation_config:
+    _target_: transformers.generation.configuration_utils.GenerationConfig
+#    max_new_tokens: 128
+    max_new_tokens: 64
+    num_beams: 1
+#    num_beams: 4
+    num_return_sequences: 1
+    output_scores: False
+#    top_k: 0.75
 output_scores: False
 post_process:
   _target_: post_processors.reclor.GeneratorPredictor
+  answer_trigger: ""
 predict_dir: ${output_dir}/logiqav2_val_prompt_${read_tensor.prompt_generator.shot}shot.v1.0
 
 #dist_init:
