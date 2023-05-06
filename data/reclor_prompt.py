@@ -152,6 +152,29 @@ class ReClorExemplarGenerator:
         return self.prompt, self.indices
 
 
+class ReClorExemplarGeneratorZh:
+    def __init__(self, file_path, read_func, shot: int = 0, random_sampling: bool = False, instruct: str = _default_instruct):
+        self.shot = shot
+        self.random = random_sampling
+        all_context, all_question, all_option_list, all_label = read_func(file_path)
+        index = list(range(len(all_context)))
+
+        if self.random:
+            random.shuffle(index)
+
+        prompts = []
+        for i in index[:self.shot]:
+            prompt = f"文章：\n{all_context[i]}\n\n问题：\n{all_question[i]}\n\n选项：\n{_format_option_list(all_option_list[i])}" \
+                     f"\n\n答案是 {_rank2option[all_label[i]]}"
+            prompts.append(prompt)
+
+        self.prompt = instruct + "\n\n" + "\n\n".join(prompts)
+        self.indices = index[:self.shot]
+
+    def __call__(self):
+        return self.prompt, self.indices
+
+
 class ReClorGenerativeDataset(Dataset):
     def __init__(self, file_path: str, tokenizer: PreTrainedTokenizer, read_func, prompt_generator, suffix: str = "The answer is"):
         self.prompt_generator = prompt_generator
@@ -163,6 +186,35 @@ class ReClorGenerativeDataset(Dataset):
         self.labels = []
         for i in range(len(all_context)):
             prompt = f"Context:\n{all_context[i]}\n\nQuestion:\n{all_question[i]}\n\nOptions:\n{_format_option_list(all_option_list[i])}" \
+                     f"\n\n" + suffix
+            self.inputs.append(prompt)
+            self.indices.append(i)
+            self.labels.append(_rank2option[all_label[i]])
+
+    def __len__(self):
+        return len(self.inputs)
+
+    def __getitem__(self, index):
+        prompt, prompt_indices = self.prompt_generator()
+        return {
+            "input": prompt + "\n\n" + self.inputs[index],
+            "index": self.indices[index],
+            "prompt_index": ",".join(map(str, prompt_indices)),
+            "label": self.labels[index],
+        }
+
+
+class ReClorGenerativeDatasetZh(Dataset):
+    def __init__(self, file_path: str, tokenizer: PreTrainedTokenizer, read_func, prompt_generator, suffix: str = "The answer is"):
+        self.prompt_generator = prompt_generator
+        # read_func = ReClorReader()
+        all_context, all_question, all_option_list, all_label = read_func(file_path)
+
+        self.inputs = []
+        self.indices = []
+        self.labels = []
+        for i in range(len(all_context)):
+            prompt = f"{all_context[i]}\n\n问题：\n{all_question[i]}\n\n选项：\n{_format_option_list(all_option_list[i])}" \
                      f"\n\n" + suffix
             self.inputs.append(prompt)
             self.indices.append(i)

@@ -1,6 +1,7 @@
 import json
 from typing import List
 from data.data_utils import dfs_enumerate_all_assign
+import csv
 
 from general_util.logger import get_child_logger
 
@@ -446,3 +447,35 @@ class DreamReader:
 
         assert len(all_context) == len(all_question) == len(all_option_list) == len(all_label)
         return all_context, all_question, all_option_list, all_label
+
+
+class CosmosQACsvReader:
+    def __call__(self, file):
+        all_context = []
+        all_question = []
+        all_option_list = []
+        all_label = []
+
+        with open(file) as f:
+            for row in csv.DictReader(f):
+                all_context.append(row["context"])
+                all_question.append(row["question"])
+                all_option_list.append([row["answer0"], row["answer1"], row["answer2"], row["answer3"]])
+                all_label.append(int(row["label"]))
+
+        return all_context, all_question, all_option_list, all_label
+
+
+class FOLIOReader:
+    def __call__(self, file):
+        all_premises = []
+        all_hypotheses = []
+        all_labels = []
+        with open(file) as f:
+            for line in f.readlines():
+                item = json.loads(line)
+                all_premises.append(" ".join(item["premises"]))
+                all_hypotheses.append(item["conclusion"])
+                all_labels.append(item["label"])
+
+        return all_premises, all_hypotheses, all_labels

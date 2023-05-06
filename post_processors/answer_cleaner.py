@@ -8,7 +8,7 @@ class AnswerTrigger:
         self.split_index = split_index
 
     def __call__(self, text):
-        if self.trigger in text:
+        if self.trigger and self.trigger in text:
             return text.split(self.trigger)[self.split_index]
         return text
 
@@ -39,3 +39,61 @@ class AnswerCleaner:
         text = self.trigger(text)
         text = self.matcher(text)
         return text
+
+
+# BIG-Bench Hard
+bbh_regrex = {
+    "boolean_expressions": "True|False",
+    "data_understanding": "(A)|(B)|(C)|(D)|(E)|(F)",
+    "disambiguation_qa": "(A)|(B)|(C)",
+    "dyck_languages": "",
+    "formal_fallacies": "valid|invalid",
+    "geometric_shapes": "(A)|(B)|(C)|(D)|(E)|(F)|(G)|(H)|(I)|(J)|(K)|(L)|(M)|(N)|(O)|(P)|(Q)|(R)|(S)|(T)|(U)|(V)|(W)|(X)|(Y)|(Z)",
+
+}
+
+BBH_MULTIPLE_CHOICE_TASKS = [
+    'temporal_sequences', 'disambiguation_qa', 'date_understanding', 'tracking_shuffled_objects_three_objects', 'penguins_in_a_table',
+    'geometric_shapes', 'snarks', 'ruin_names', 'tracking_shuffled_objects_seven_objects', 'tracking_shuffled_objects_five_objects',
+    'logical_deduction_three_objects', 'hyperbaton', 'logical_deduction_five_objects', 'logical_deduction_seven_objects',
+    'movie_recommendation', 'salient_translation_error_detection', 'reasoning_about_colored_objects',
+]
+
+BBH_FREE_FORM_TASKS = [
+    'dyck_languages', 'word_sorting',
+]
+
+BBH_OTHER_TASKS = {
+    "navigate": "Yes|No",
+    "sports_understanding": "yes|no",
+    "boolean_expressions": "True|False",
+    "object_counting": r'-?\d+\.?\d*',  # number matching,
+    "multistep_arithmetic_two": r'-?\d+\.?\d*',
+    "formal_fallacies": "valid|invalid",
+    "causal_judgment": "Yes|No",
+    "web_of_lies": "Yes|No",
+}
+
+
+class BBHMatcher:
+    def __init__(self, reverse: bool = False):
+        self.reverse = reverse
+
+    def __call__(self, text, mode):
+        if mode in BBH_FREE_FORM_TASKS:
+            # A to Z
+            regrex = "A|B|C|D|E|F|G|H|I|J|K|L|M|N|O|P|Q|R|S|T|U|V|W|X|Y|Z"
+        elif mode in BBH_FREE_FORM_TASKS:
+            regrex = ""
+        elif mode in BBH_OTHER_TASKS:
+            regrex = BBH_OTHER_TASKS[mode]
+        else:
+            raise ValueError(f"Mode {mode} not found in BBH tasks")
+
+        preds = re.findall(regrex, text)
+        if len(preds) == 0:
+            return ""
+
+        if self.reverse:
+            return preds[-1]
+        return preds[0]

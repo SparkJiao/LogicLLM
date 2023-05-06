@@ -11,7 +11,7 @@ model:
   vocab_size: 32001
   pad_token_id: 32000
   use_peft: False
-  gradient_checkpointing: True
+  gradient_checkpointing: False
 
 
 # Data loading
@@ -42,15 +42,16 @@ collator:
   generative_mode: True
 
 # Dataloader
-num_workers: 2
+num_workers: 4
 prefetch_factor: 2
 
 do_preprocess: False
 
-model_name_or_path: pretrained-models/LLaMA/llama-30b
+model_name_or_path: pretrained-models/LLaMA/llama-7b
 pretrain:
 
-exp_name: llama.30b.merit_v91_v91.seq2seq.v5.0.3aug.w8.adamw.400steps.NA100.0423
+#exp_name: llama.7b.merit_v91_v91.seq2seq.v5.0.3aug.w8.adamw.500steps.NA100.0503
+exp_name: llama.7b.merit_v91_v91.seq2seq.v5.0.3aug.w4.adamw.500steps.NA100.0504
 exp_notes:
 output_dir: experiments/${exp_name}  # Fix <pad token id>
 
@@ -61,10 +62,10 @@ do_eval: True
 eval_sub_path: checkpoint-*
 
 # Training hyper-parameters
-per_gpu_train_batch_size: 1
+per_gpu_train_batch_size: 2
 per_gpu_eval_batch_size: 8
 #learning_rate: 2e-3
-learning_rate: 3e-6
+learning_rate: 1e-5
 gradient_accumulation_steps: 512
 weight_decay: 0.01
 adam_epsilon: 1e-6
@@ -84,7 +85,7 @@ bit_training:
 logging_steps: 1
 #save_best: True
 save_best: False
-save_steps: 100
+save_steps: 250
 eval_steps: -1
 ddp_eval: True
 no_cuda: False
@@ -153,15 +154,15 @@ ds_cfg:
 #      gradient_accumulation_steps: "gradient_accumulation_steps"
 #      zero_optimization: "ds_cfg.zero_optimization"
   zero_optimization:
-    stage: 2
+    stage: 1
     contiguous_gradients: True
     overlap_comm: True
     reduce_scatter: True
     reduce_bucket_size: 5e8
     allgather_bucket_size: 5e8
-    offload_optimizer:
-      device: cpu
-      pin_memory: True
+#    offload_optimizer:
+#      device: cpu
+#      pin_memory: True
 #    offload_param:
 #      device: cpu
 #      pin_memory: True

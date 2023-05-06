@@ -7,6 +7,7 @@ from transformers import AutoTokenizer, PreTrainedTokenizer
 from general_util.logger import get_child_logger
 from general_util.tokenization_utils import expand_special_tokenizer
 from typing import Callable
+from datasets import load_dataset
 import hydra
 from omegaconf import DictConfig
 from typing import Union, Tuple
@@ -29,6 +30,27 @@ def load_flan_data_w_filter(file_path: str):
     logger.info(f"Removed {cnt} empty examples.")
     logger.info(f"Loaded {len(new_data)} examples.")
     return new_data
+
+
+# def load_gpt4all_data():
+#     return load_dataset("nomic-ai/gpt4all-j-prompt-generations", revision='v1.2-jazzy')["train"]
+
+
+class PromptDataset(Dataset):
+    def __init__(self, file_path, tokenizer: PreTrainedTokenizer, cfg: DictConfig):
+        self.data = hydra.utils.instantiate(cfg, file_path)
+        self.tokenizer = tokenizer
+
+    def __len__(self):
+        return len(self.data)
+
+    def __getitem__(self, idx):
+        return {
+            "flan": {
+                "inputs": self.data[idx]["prompt"],
+                "targets": self.data[idx]["response"],
+            }
+        }
 
 
 class FLANDataset(Dataset):

@@ -109,6 +109,8 @@ def train(cfg, model, tokenizer, continue_from_global_step=0):
 
     if "_target_" in cfg.train_file:
         files = hydra.utils.instantiate(cfg.train_file)
+    elif cfg.train_file.startswith("hf:"):
+        files = [cfg.train_file[3:]]
     elif os.path.exists(cfg.train_file):
         files = [cfg.train_file]
     else:

@@ -1,3 +1,4 @@
+import collections
 import json
 import os
 import re
@@ -201,10 +202,14 @@ class GeneratorPredictor(DistGatherMixin):
                 npy_outputs.append(ord(pred["cleaned_output"]) - ord("A"))
             else:
                 npy_outputs.append(0)
+
+        metrics = {"acc": correct / len(existing_ids)}
+
         if not dist.is_initialized() or dist.get_rank() == 0:
             np.save(os.path.join(output_dir, "decode_results.npy"), np.array(npy_outputs))
+            json.dump(metrics, open(os.path.join(output_dir, "metrics.json"), "w"))
         assert len(npy_outputs) == len(existing_ids), (len(npy_outputs), len(self.predictions), len(existing_ids))
-        return {"acc": correct / len(existing_ids)}, self.predictions
+        return metrics, self.predictions
 
 
 class GeneratorPredictorV2(DistGatherMixin):
@@ -266,11 +271,91 @@ class GeneratorPredictorV2(DistGatherMixin):
             existing_ids.add(pred["index"])
             if pred["label"] == pred["cleaned_output"]:
                 correct += 1
-            if pred["cleaned_output"]:
+            if pred["cleaned_output"] and len(pred["cleaned_output"]) == 1:
                 npy_outputs.append(ord(pred["cleaned_output"]) - ord("A"))
             else:
                 npy_outputs.append(0)
+
+        metrics = {"acc": correct / len(existing_ids)}
+
         if not dist.is_initialized() or dist.get_rank() == 0:
             np.save(os.path.join(output_dir, "decode_results.npy"), np.array(npy_outputs))
+            json.dump(metrics, open(os.path.join(output_dir, "metrics.json"), "w"))
         assert len(npy_outputs) == len(existing_ids), (len(npy_outputs), len(self.predictions), len(existing_ids))
-        return {"acc": correct / len(existing_ids)}, self.predictions
+        return metrics, self.predictions
+
+
+class BBHPredictor(DistGatherMixin):
+    def __init__(self, answer_trigger: Callable, matcher: Callable):
+        self.predictions = []
+        self.answer_trigger = answer_trigger
+        self.matcher = matcher
+
+    def __call__(self, meta_data: Union[List[Dict[str, Any]], Dict[str, Any]], batch_model_outputs, ddp: bool = False):
+        labels = meta_data["target"]
+        index = meta_data["index"]
+        inputs = meta_data["input"]
+        modes = meta_data["task"]
+
+        pred_seq = batch_model_outputs["generated_seq"]
+        assert len(labels) == len(modes) == len(index) == len(inputs), (len(labels), len(modes), len(index), len(inputs))
+        if len(pred_seq) == len(labels):
+            pass
+        elif len(pred_seq) % len(labels) == 0:
+            pass
+        else:
+            raise ValueError((len(pred_seq), len(labels)))
+
+        predictions = [
+            {
+                "label": label,
+                "index": idx,
+                "task": task,
+                "output": res,
+                "cleaned_output": self.matcher(self.answer_trigger(res), task),
+                "input": src,
+            } for label, idx, task, res, src in zip(labels, index, modes, pred_seq, inputs)
+        ]
+
+        if ddp:
+            gather_res = self.gather_object(predictions)
+            if dist.get_rank() == 0:
+                tmp = []
+                for item in gather_res:
+                    tmp.extend(item)
+                predictions = tmp
+
+        self.predictions.extend(predictions)
+
+    def get_results(self, output_dir: str):
+        if dist.is_initialized():
+            output_file = os.path.join(output_dir, f"decode_results_rank{dist.get_rank()}.json")
+        else:
+            output_file = os.path.join(output_dir, "decode_results.json")
+
+        predictions = collections.defaultdict(list)
+        for pred in self.predictions:
+            predictions[pred["task"]].append(pred)
+        predictions = {k: sorted(v, key=lambda x: x["index"]) for k, v in predictions.items()}
+        json.dump(predictions, open(output_file, "w"), indent=2)
+
+        metrics = {}
+        for task, task_predictions in predictions.items():
+            correct = 0
+            existing_ids = set()
+            # npy_outputs = []
+            for pred in task_predictions:
+                if pred["index"] in existing_ids:
+                    continue
+                existing_ids.add(pred["index"])
+                if pred["label"].strip() == pred["cleaned_output"].strip():
+                    correct += 1
+                # if pred["cleaned_output"] and len(pred["cleaned_output"]) == 1:
+                #     npy_outputs.append(ord(pred["cleaned_output"]) - ord("A"))
+                # else:
+                #     npy_outputs.append(0)
+            metrics[task] = {"acc": correct / len(existing_ids)}
+
+        if not dist.is_initialized() or dist.get_rank() == 0:
+            json.dump(metrics, open(os.path.join(output_dir, "metrics.json"), "w"))
+        return metrics, self.predictions
