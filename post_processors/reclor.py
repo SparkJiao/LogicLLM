@@ -340,6 +340,8 @@ class BBHPredictor(DistGatherMixin):
         json.dump(predictions, open(output_file, "w"), indent=2)
 
         metrics = {}
+        total_correct = 0
+        total_samples = 0
         for task, task_predictions in predictions.items():
             correct = 0
             existing_ids = set()
@@ -348,13 +350,24 @@ class BBHPredictor(DistGatherMixin):
                 if pred["index"] in existing_ids:
                     continue
                 existing_ids.add(pred["index"])
-                if pred["label"].strip() == pred["cleaned_output"].strip():
+                if task == "word_sorting":
+                    cleaned_output = pred["cleaned_output"].replace(".", "")
+                    for i in range(10):
+                        cleaned_output = cleaned_output.replace(str(i), "")
+                    cleaned_output = " ".join(cleaned_output.split())
+                    label = " ".join(pred["label"].split())
+                    if cleaned_output == label:
+                        correct += 1
+                    continue
+
+                if pred["label"].strip().lower() == pred["cleaned_output"].replace(".", "").strip().lower():
                     correct += 1
-                # if pred["cleaned_output"] and len(pred["cleaned_output"]) == 1:
-                #     npy_outputs.append(ord(pred["cleaned_output"]) - ord("A"))
-                # else:
-                #     npy_outputs.append(0)
+
             metrics[task] = {"acc": correct / len(existing_ids)}
+            total_correct += correct
+            total_samples += len(existing_ids)
+
+        metrics["overall"] = {"acc": total_correct / total_samples}
 
         if not dist.is_initialized() or dist.get_rank() == 0:
             json.dump(metrics, open(os.path.join(output_dir, "metrics.json"), "w"))

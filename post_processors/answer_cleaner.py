@@ -64,14 +64,14 @@ BBH_FREE_FORM_TASKS = [
 ]
 
 BBH_OTHER_TASKS = {
-    "navigate": "Yes|No",
-    "sports_understanding": "yes|no",
+    "navigate": "Yes|No|yes|no",
+    "sports_understanding": "yes|no|Yes|No",
     "boolean_expressions": "True|False",
     "object_counting": r'-?\d+\.?\d*',  # number matching,
     "multistep_arithmetic_two": r'-?\d+\.?\d*',
     "formal_fallacies": "valid|invalid",
-    "causal_judgment": "Yes|No",
-    "web_of_lies": "Yes|No",
+    "causal_judgement": "Yes|No|yes|no",
+    "web_of_lies": "Yes|No|yes|no",
 }
 
 
@@ -80,7 +80,7 @@ class BBHMatcher:
         self.reverse = reverse
 
     def __call__(self, text, mode):
-        if mode in BBH_FREE_FORM_TASKS:
+        if mode in BBH_MULTIPLE_CHOICE_TASKS:
             # A to Z
             regrex = "A|B|C|D|E|F|G|H|I|J|K|L|M|N|O|P|Q|R|S|T|U|V|W|X|Y|Z"
         elif mode in BBH_FREE_FORM_TASKS:
@@ -89,6 +89,9 @@ class BBHMatcher:
             regrex = BBH_OTHER_TASKS[mode]
         else:
             raise ValueError(f"Mode {mode} not found in BBH tasks")
+
+        if not regrex:
+            return text
 
         preds = re.findall(regrex, text)
         if len(preds) == 0:

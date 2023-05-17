@@ -32,6 +32,7 @@ from omegaconf import DictConfig, OmegaConf
 from torch import distributed as dist
 from torch.utils.data import (DataLoader, RandomSampler)
 from torch.utils.data.distributed import DistributedSampler
+from torch.utils.tensorboard import SummaryWriter
 from tqdm import tqdm, trange
 from transformers import (AutoTokenizer, PreTrainedTokenizer)
 
@@ -73,6 +74,9 @@ def save_model(model: Union[deepspeed.DeepSpeedEngine, deepspeed.PipelineEngine]
     else:
         state_dict = unwrapped_model.state_dict()
 
+    if cfg.local_rank not in [-1, 0]:
+        dist.barrier()
+
     if cfg.local_rank in [-1, 0]:
         # output_file = os.path.join(output_dir, "pytorch_model.bin")
         # print(f"Saving fp32 state dict to {output_file}")
@@ -84,6 +88,13 @@ def save_model(model: Union[deepspeed.DeepSpeedEngine, deepspeed.PipelineEngine]
 
         OmegaConf.save(cfg, os.path.join(output_dir, "training_config.yaml"))
         logger.info("Saving model checkpoint to %s", output_dir)
+        
+        end_dir = output_dir.split("/")[-1]
+
+        os.system(f"./s5cmd sync {output_dir}/ {cfg.aws_output_bucket}/{end_dir}/")
+
+        if cfg.local_rank == 0:
+            dist.barrier()
 
 
 def forward_step(model, inputs: Dict[str, torch.Tensor]):
@@ -109,8 +120,6 @@ def train(cfg, model, tokenizer, continue_from_global_step=0):
 
     if "_target_" in cfg.train_file:
         files = hydra.utils.instantiate(cfg.train_file)
-    elif cfg.train_file.startswith("hf:"):
-        files = [cfg.train_file[3:]]
     elif os.path.exists(cfg.train_file):
         files = [cfg.train_file]
     else:
@@ -154,7 +163,8 @@ def train(cfg, model, tokenizer, continue_from_global_step=0):
     num_warmup_steps = int(t_total * cfg.warmup_proportion) if cfg.warmup_proportion else cfg.warmup_steps
 
     ds_config = cfg.ds_cfg
-    ds_config.scheduler.params.total_num_steps = t_total
+    if "total_num_steps" in ds_config.scheduler.params:
+        ds_config.scheduler.params.total_num_steps = t_total
     ds_config.scheduler.params.warmup_num_steps = num_warmup_steps
     ds_config = OmegaConf.to_container(ds_config, resolve=True)
 
@@ -286,6 +296,13 @@ def train(cfg, model, tokenizer, continue_from_global_step=0):
 
 @hydra.main(config_path="conf", config_name="config", version_base="1.2")
 def main(cfg: DictConfig):
+    if "LOCAL_RANK" in os.environ and os.environ["LOCAL_RANK"] != -1:
+        cfg.local_rank = int(os.environ["LOCAL_RANK"])
+    if "WORLD_SIZE" in os.environ and os.environ["WORLD_SIZE"]:
+        cfg.world_size = int(os.environ["WORLD_SIZE"])
+    if "WORLD_RANK" in os.environ and os.environ["WORLD_RANK"]:
+        cfg.world_rank = int(os.environ["WORLD_RANK"])
+
     if cfg.local_rank == -1 or cfg.no_cuda:
         device = str(torch.device("cuda" if torch.cuda.is_available() and not cfg.no_cuda else "cpu"))
         cfg.n_gpu = torch.cuda.device_count()
@@ -306,9 +323,8 @@ def main(cfg: DictConfig):
     # Set seed
     set_seed(cfg)
 
-    use_barrier = not os.path.exists(cfg.model_name_or_path)
     # Load pre-trained model and tokenizer
-    if use_barrier and cfg.local_rank not in [-1, 0]:
+    if cfg.local_rank not in [-1, 0]:
         dist.barrier()  # Make sure only the first process in distributed training will download model & vocab
 
     if cfg.pretrain:
@@ -328,12 +344,8 @@ def main(cfg: DictConfig):
         logger.warning(e)
         model = hydra.utils.call(cfg.model)
 
-    if use_barrier and cfg.local_rank == 0:
+    if cfg.local_rank == 0:
         dist.barrier()  # Make sure only the first process in distributed training will download model & vocab
-
-    # TODO: model parallel.
-    # if cfg.local_rank == -1:  # For FullyShardedDDP, place the model on cpu first.
-    #     model.to(cfg.device)
 
     # logger.info("Training/evaluation parameters %s", OmegaConf.to_yaml(cfg))
     if cfg.local_rank in [-1, 0] and cfg.do_train:
@@ -343,7 +355,7 @@ def main(cfg: DictConfig):
 
         wandb.init(
             project="LLaMA-BiFLAN",
-            name=cfg.exp_name,
+            name=f"{cfg.exp_name}-{dist.get_rank()}",
             notes=cfg.exp_notes,
             config=OmegaConf.to_container(cfg, resolve=True),
         )
@@ -388,17 +400,23 @@ def main(cfg: DictConfig):
                 model = hydra.utils.call(cfg.model_eval, checkpoint)
             else:
                 model = hydra.utils.call(cfg.model, checkpoint)
-            if cfg.n_gpu == 1:
-                model.to(cfg.device)
-            else:
-                # For model parallel (of mT5)
-                if getattr(cfg, "get_device_map", None):
-                    model.parallelize(hydra.utils.call(cfg.get_device_map))
-                else:
-                    model.parallelize()
 
-            tokenizer = AutoTokenizer.from_pretrained(checkpoint)
-            cfg.model_name_or_path = checkpoint
+            model = deepspeed.init_inference(
+                model,
+                mp_size=cfg.world_size,
+                dtype=torch.bfloat16,
+                injection_policy=hydra.utils.instantiate(cfg.injection_policy) if "injection_policy" in cfg else None,
+            )
+            print(model.device)
+
+            # if cfg.n_gpu == 1:
+            #     model.to(cfg.device)
+            # else:
+            #     # For model parallel (of mT5)
+            #     if getattr(cfg, "get_device_map", None):
+            #         model.parallelize(hydra.utils.call(cfg.get_device_map))
+            #     else:
+            #         model.parallelize()
 
             if cfg.test_file:
                 prefix = f'test' + (f'-{prefix}' if prefix != "" else "")

@@ -47,6 +47,15 @@ def unwrap_model(model: torch.nn.Module) -> torch.nn.Module:
         return model
 
 
+def return_torch_dtype(dtype: str):
+    if dtype == "float16":
+        return torch.float16
+    elif dtype == "bfloat16":
+        return torch.bfloat16
+    else:
+        return dtype
+
+
 def batch_to_device(batch: Dict[str, torch.Tensor], device):
     if "meta_data" in batch:
         batch.pop("meta_data")

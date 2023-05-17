@@ -92,6 +92,32 @@ class WikiPathDatasetV5WFlan(Dataset):
         }
 
 
+class WikiPathDatasetV5WithDataset(Dataset):
+    def __init__(self, raw_data: Union[Tuple, DictConfig], extra_data: Union[PromptDataset, DictConfig],
+                 file_path: str, tokenizer: PreTrainedTokenizer):
+        if isinstance(raw_data, DictConfig):
+            raw_data = hydra.utils.instantiate(raw_data, file_path=file_path, tokenizer=tokenizer)
+
+        if isinstance(extra_data, DictConfig):
+            extra_data = hydra.utils.instantiate(extra_data, tokenizer=tokenizer)
+
+        self.examples = raw_data[0]
+        self.extra_data = extra_data
+
+    def __len__(self):
+        return max(len(self.examples), len(self.extra_data))
+
+    def __getitem__(self, index):
+        example = self.examples[index % len(self.examples)]
+        flan = self.extra_data[index % len(self.extra_data)]
+        res = {
+            "example": example,
+            "index": index,
+        }
+        res.update(flan)
+        return res
+
+
 class FlanCollectionGroupDataset(Dataset):
     def __init__(self, file_path: str, tokenizer=None):
         super().__init__()

@@ -269,7 +269,7 @@ def evaluate_fn(cfg: DictConfig, model: torch.nn.Module, tokenizer: PreTrainedTo
             prediction_file = os.path.join(output_dir, prefix, "eval_predictions.json")
         else:
             prediction_file = os.path.join(output_dir, prefix, f"eval_predictions_rank{cfg.local_rank}.json")
-        json.dump(predictions, open(prediction_file, "w"), ensure_ascii=False, indent=2)
+        json.dump(predictions, open(prediction_file, "w"), indent=2)
 
     torch.cuda.empty_cache()
 
