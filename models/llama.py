@@ -489,6 +489,7 @@ class LlamaForConditionalGeneration(LlamaPreTrainedModelPeftMixin, LogMixin, ABC
             output_attentions: Optional[bool] = None,
             output_hidden_states: Optional[bool] = None,
             return_dict: Optional[bool] = None,
+            **kwargs,
     ) -> Union[Tuple, MultipleChoicePreTrainModelOutput]:
 
         output_attentions = output_attentions if output_attentions is not None else self.config.output_attentions
@@ -586,12 +587,14 @@ class LlamaForConditionalGenerationFlan(LlamaForConditionalGeneration, LogMixin,
             self,
             input_ids: torch.LongTensor = None,
             attention_mask: Optional[torch.Tensor] = None,
+            token_type_ids: Optional[torch.Tensor] = None,
             input_lens: Optional[torch.Tensor] = None,
             past_key_values: Optional[List[torch.FloatTensor]] = None,
             inputs_embeds: Optional[torch.FloatTensor] = None,
             labels: Optional[torch.LongTensor] = None,
             flan_input_ids: Optional[torch.LongTensor] = None,
             flan_attention_mask: Optional[torch.FloatTensor] = None,
+            flan_token_type_ids: Optional[torch.LongTensor] = None,
             flan_input_lens: Optional[torch.LongTensor] = None,
             use_cache: Optional[bool] = None,
             output_attentions: Optional[bool] = None,
