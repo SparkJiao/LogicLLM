@@ -1,6 +1,7 @@
 import logging
 import os
 import sys
+from torch import distributed as dist
 
 _root_name = 'FK'
 
@@ -32,9 +33,16 @@ def setting_logger(log_file: str, local_rank: int = -1):
     rf_handler.setFormatter(logging.Formatter(fmt='%(asctime)s - %(levelname)s - %(name)s -   %(message)s',
                                               datefmt='%m/%d/%Y %H:%M:%S'))
 
-    output_dir = './log_dir'
+    output_dir = '/tmp/log_dir'
+    if local_rank not in [-1, 0]:
+        dist.barrier()
+    
     if not os.path.exists(output_dir):
         os.makedirs(output_dir)
+        
+    if local_rank == 0:
+        dist.barrier()
+    
     f_handler = logging.FileHandler(os.path.join(
         output_dir, model_name + '-output.log'))
     f_handler.setLevel(logging.INFO)
