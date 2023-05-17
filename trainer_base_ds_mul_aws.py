@@ -91,7 +91,8 @@ def save_model(model: Union[deepspeed.DeepSpeedEngine, deepspeed.PipelineEngine]
         
         end_dir = output_dir.split("/")[-1]
 
-        os.system(f"./s5cmd sync {output_dir}/ {cfg.aws_output_bucket}/{end_dir}/")
+        if not dist.is_initialized() or dist.get_rank() == 0:
+            os.system(f"./s5cmd sync {output_dir}/ {cfg.aws_output_bucket}/{end_dir}/")
 
         if cfg.local_rank == 0:
             dist.barrier()
