@@ -2,60 +2,43 @@ hydra:
   run:
     dir: ./
 
-train_file: wiki_erica_path/v9.1_fixed/distant_path_v9.1_fix_no_shuffle.train.0.pkl
-#train_file: /opt/ml/input/data/train/distant_path_v9.1_fix_no_shuffle.train.0.pkl
-test_file:
+train_file: folio/folio-train.jsonl
+dev_file: folio/folio-validation.jsonl
+test_file: folio/folio-validation.jsonl
 
 # Model
 model:
-  _target_: models.llama.LlamaForConditionalGenerationFlan.from_pretrained
-  vocab_size: 32001
-  pad_token_id: 32000
-  use_peft: False
-  gradient_checkpointing: True
+#  _target_: models.llama.LlamaForConditionalGeneration.from_pretrained
+  _target_: transformers.models.llama.modeling_llama.LlamaForCausalLM.from_pretrained
+  torch_dtype:
+    _target_: general_util.training_utils.return_torch_dtype
+    dtype: bfloat16
 
 
 # Data loading
 read_tensor:
-  _target_: data.collators.flan.WikiPathDatasetV5WithDataset
-  _recursive_: False
-  raw_data:
-    _target_: data.wiki_entity_path_v9_1_2.convert_examples_into_features_raw
-    max_neg_num: 3
-    aug_num: 3
-    max_seq_length: 512
-    shuffle_context: True
-    min_rep_num: 5
-    geo_p: 0.4
-    deduct_ratio: 1.0
-    context_ratio: 1.0
-    noise_sent_ratio: 0.0
-    num_workers: 128
-  extra_data:
-    _target_: data.collators.flan.PromptDataset
-    file_path: "nomic-ai/gpt4all-j-prompt-generations"
-    _recursive_: False
-    cfg:
-      _target_: datasets.load_dataset
-      revision: v1.2-jazzy
-      split: train
-
+  _target_: data.folio_prompt.FolioPromptGenerator
+  read_func:
+    _target_: data.readers.FOLIOReader
+  prompt_template:
+    _target_: data.folio_prompt.get_template_by_name
+    name: mcqa
+  instruction:
+    _target_: data.folio_prompt.get_instruction_by_name
+    name: base
+#  suffix:
+#    _target_: data.folio_prompt.get_suffix_by_name
+#    name: base
 
 
 extended_vocab:
 
 # Data collator
+
 collator:
-  _target_: data.collators.flan.FlanCollatorOverCollator
-  collator:
-    _target_: data.collators.wiki_seq2seq_collator.WikiSeq2SeqCollator
-    max_seq_length: 512
-    tokenizer: ${model_name_or_path}
-    causal_lm: True
-    generative_mode: True
-  max_seq_length: 1024
+  _target_: data.reclor_prompt.ReClorGenerativeCollator
   tokenizer: ${model_name_or_path}
-  decoder_only: True
+  max_seq_length: 4000
 
 # Dataloader
 num_workers: 4
@@ -63,26 +46,26 @@ prefetch_factor: 2
 
 do_preprocess: False
 
-model_name_or_path: pretrained-models/LLaMA/llama-13b
-#model_name_or_path: /tmp/llama-13b
+model_name_or_path: pretrained-models/LLaMA/llama-7b
 pretrain:
 
-exp_name: llama.13b.merit_v91_v91.seq2seq.v5.0.3aug.gpt4all.union.w8.adamw.500steps.NA100.0516
+#exp_name: llama.7b.merit_v91_v91.seq2seq.v5.0.3aug.w8.adamw.500steps.NA100.0503
+exp_name: llama.7b.merit_v91_v91.seq2seq.v5.0.3aug.w4.adamw.500steps.NA100.0504
 exp_notes:
 output_dir: experiments/${exp_name}  # Fix <pad token id>
 
-do_train: True
+do_train: False
 evaluate_during_training: False
 
 do_eval: True
 eval_sub_path: checkpoint-*
 
 # Training hyper-parameters
-per_gpu_train_batch_size: 8
+per_gpu_train_batch_size: 2
 per_gpu_eval_batch_size: 8
 #learning_rate: 2e-3
-learning_rate: 5e-6
-gradient_accumulation_steps: 64
+learning_rate: 1e-5
+gradient_accumulation_steps: 512
 weight_decay: 0.01
 adam_epsilon: 1e-6
 adam_betas: "(0.9, 0.99)"
@@ -101,7 +84,7 @@ bit_training:
 logging_steps: 1
 #save_best: True
 save_best: False
-save_steps: 100
+save_steps: 250
 eval_steps: -1
 ddp_eval: True
 no_cuda: False
@@ -118,8 +101,32 @@ prediction_cfg:
   best_checkpoint:
   best_result:
 eval_forward_fn:
-  _target_: general_util.evaluator.DiscriminatorForwardFn
+  _target_: general_util.evaluator.GeneratorForwardFn
+  generation_config:
+    _target_: transformers.generation.configuration_utils.GenerationConfig
+#    max_new_tokens: 128
+    max_new_tokens: 64
+    num_beams: 1
+#    num_beams: 4
+    num_return_sequences: 1
+    output_scores: False
+#    top_k: 0.75
+  clean_input: True
 post_process:
+  _target_: post_processors.reclor.GeneratorPredictorV2
+  answer_cleaner:
+    _target_: post_processors.answer_cleaner.AnswerCleaner
+    trigger:
+      _target_: post_processors.answer_cleaner.AnswerTrigger
+      trigger: ""
+      split_index: 1
+    matcher:
+      _target_: post_processors.answer_cleaner.Matcher
+      regrex: "Uncertain|True|False"
+      reverse: False
+    remove_input: False
+predict_dir: ${output_dir}/folio_val_prompt_0shot.v1.1
+#predict_dir: ${output_dir}/reclor_val_prompt_${read_tensor.prompt_generator.shot}shot_sample.v1.1.s${seed}
 
 #dist_init:
 #  _target_: general_util.dist_utils.setup_slurm_distributed
@@ -170,7 +177,7 @@ ds_cfg:
 #      gradient_accumulation_steps: "gradient_accumulation_steps"
 #      zero_optimization: "ds_cfg.zero_optimization"
   zero_optimization:
-    stage: 3
+    stage: 1
     contiguous_gradients: True
     overlap_comm: True
     reduce_scatter: True

@@ -4,8 +4,8 @@ hydra:
 
 train_file: reclor_data/train.json
 dev_file: reclor_data/val.json
-#test_file: reclor_data/test.json
-test_file: reclor_data/val.json
+test_file: reclor_data/test.json
+#test_file: reclor_data/val.json
 
 # Model
 #model:
@@ -124,7 +124,7 @@ post_process:
 #  answer_trigger: "The answer is"
   answer_trigger: ""
   reverse: False # version 1.1
-predict_dir: ${output_dir}/reclor_val_prompt_${read_tensor.prompt_generator.shot}shot.v1.1
+predict_dir: ${output_dir}/reclor_test_prompt_${read_tensor.prompt_generator.shot}shot.v1.1
 
 #dist_init:
 #  _target_: general_util.dist_utils.setup_slurm_distributed

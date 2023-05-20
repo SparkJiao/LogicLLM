@@ -12,7 +12,11 @@ logger = get_child_logger(__name__)
 
 _template = {
     "base": "Premises:\n{}\n\nConclusion: {}\n\nLabel:",
-    "value": "Premises:\n{}\n\nConclusion: {}\n\nThe truth value of the conclusion is: "
+    "value": "Premises:\n{}\n\nConclusion: {}\n\nThe truth value of the conclusion is: ",
+    "mcqa": "Premises:\n{}\n\nConclusion: {}\n\nThe truth value options of the conclusion is:\nA. True\nB. False\nC. Uncertain\n\n"
+            "The truth answer is:",
+    "mcqa2": "Premises:\n{}\n\nConclusion: {}\n\nQuestion: What is the truth value of the conclusion?\n\n"
+             "Options:\nA. True\nB. False\nC. Uncertain\n\nThe answer is: "
 }
 
 
@@ -27,11 +31,12 @@ _instruction = {
     "base": "Read following premises, select the correct truth values from {True, False, Uncertain} for the given conclusion,  "
             "where ``True`` means\n\n the conclusion can be logically inferred from the premises, "
             "``False`` means the conclusion cannot be logically inferred from the premises, "
-            "and ``Uncertain`` means the premises are not sufficient to determine the truth value of the conclusion.",
+            "and ``Uncertain`` means the premises are not sufficient to determine the truth value of the conclusion.\n\n",
     "base-1": "Read following premises, select the correct truth values from {True, False, Uncertain} for the given conclusion,  "
               "where True means\n\n the conclusion can be logically inferred from the premises, "
               "False means the conclusion cannot be logically inferred from the premises, "
-              "and Uncertain means the premises are not sufficient to determine the truth value of the conclusion.",
+              "and Uncertain means the premises are not sufficient to determine the truth value of the conclusion.\n\n",
+    "simple": "Read the following premises and conclusion, decide the correct truth value of the conclusion.\n\n",
 }
 
 

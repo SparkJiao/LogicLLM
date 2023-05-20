@@ -2,10 +2,13 @@ hydra:
   run:
     dir: ./
 
-train_file: reclor_data/train.json
-dev_file: reclor_data/val.json
-#test_file: reclor_data/test.json
-test_file: reclor_data/val.json
+#train_file: reclor_data/train.json
+train_file: c3/c3-d-train.json
+dev_file: c3/c3-d-dev.json
+test_file: c3/c3-d-test.json
+#train_file: logiqa-v2/train_zh.txt
+#dev_file: logiqa-v2/dev_zh.txt
+#test_file: logiqa-v2/test_zh.txt
 
 # Model
 #model:
@@ -17,22 +20,25 @@ test_file: reclor_data/val.json
 model:
 #  _target_: models.llama.LlamaForConditionalGeneration.from_pretrained
   _target_: transformers.models.llama.modeling_llama.LlamaForCausalLM.from_pretrained
-  torch_dtype: "auto"
+  torch_dtype:
+    _target_: general_util.training_utils.return_torch_dtype
+    dtype: float16
 
 
 # Data loading
 read_tensor:
-  _target_: data.reclor_prompt.ReClorGenerativeDataset
+  _target_: data.reclor_prompt.ReClorGenerativeDatasetZh
   prompt_generator:
     _target_: data.reclor_prompt.ReClorExemplarGenerator
     file_path: ${train_file}
     shot: 0
     random_sampling: False
     read_func:
-      _target_: data.readers.ReClorReader
+      _target_: data.readers.DreamReader
+    instruct: "Human: 阅读下面的文章并从选项中选择的答案回答问题："
   read_func:
-    _target_: data.readers.ReClorReader
-#  suffix: ""
+    _target_: data.readers.DreamReader
+  suffix: "Assistant: 本题的答案是："
 
 
 extended_vocab:
@@ -41,7 +47,7 @@ extended_vocab:
 collator:
   _target_: data.reclor_prompt.ReClorGenerativeCollator
   tokenizer: ${model_name_or_path}
-  max_seq_length: 1024
+  max_seq_length: 2048
 
 # Dataloader
 num_workers: 4
@@ -49,7 +55,9 @@ prefetch_factor: 2
 
 # Wiki path pretrain v8.2
 #model_name_or_path: pretrained-models/LLaMA/llama-7b
-model_name_or_path: ${output_dir}/checkpoint-250
+#model_name_or_path: /home/fangkai/instruct-v1.0-coig-sft-v1.0/checkpoint-3000
+#model_name_or_path: /home/fangkai/instruct-v1.0-coig-sft-v1.0/checkpoint-3000
+model_name_or_path: /home/fangkai/llama-7b-sft-zh-hf/
 pretrain:
 
 #output_dir: experiments/llama.7b.flan.v1.0.seq1024.w8.adamw.500steps.NA100.0401
@@ -57,15 +65,16 @@ pretrain:
 #exp_name: llama.7b.flan.10M.v1.2.seq1024.w8.adamw.NA100.0407.ds
 #exp_notes:
 #output_dir: experiments/${exp_name}  # Fix <pad token id>
-exp_name: llama.7b.merit_v91_v91.seq2seq.v4.0.3aug.w8.adamw.1000steps.NA100.0422
-exp_notes:
-output_dir: experiments/${exp_name}  # Fix <pad token id>
+#exp_name: llama.7b.merit_v91_v91.seq2seq.v4.0.3aug.w8.adamw.1000steps.NA100.0422
+#exp_notes:
+#output_dir: experiments/${exp_name}  # Fix <pad token id>
+output_dir: /home/fangkai/llama-7b-sft-zh-hf/
 
 do_train: False
 evaluate_during_training: True
 
 do_eval: True
-eval_sub_path: checkpoint-*
+eval_sub_path:
 
 # Training hyper-parameters
 per_gpu_train_batch_size: 4
@@ -91,7 +100,7 @@ bit_training:
 
 logging_steps: 5
 save_steps: -1
-save_best: False
+save_best: True
 eval_steps: 100
 ddp_eval: True
 no_cuda: False
@@ -123,8 +132,8 @@ post_process:
   _target_: post_processors.reclor.GeneratorPredictor
 #  answer_trigger: "The answer is"
   answer_trigger: ""
-  reverse: False # version 1.1
-predict_dir: ${output_dir}/reclor_val_prompt_${read_tensor.prompt_generator.shot}shot.v1.1
+  reverse: False
+predict_dir: ${output_dir}/c3m_test_prompt_${read_tensor.prompt_generator.shot}shot.v1.0
 
 #dist_init:
 #  _target_: general_util.dist_utils.setup_slurm_distributed

@@ -2,10 +2,10 @@ hydra:
   run:
     dir: ./
 
-train_file: reclor_data/train.json
-dev_file: reclor_data/val.json
-#test_file: reclor_data/test.json
-test_file: reclor_data/val.json
+train_file: dream/train.json
+dev_file: dream/dev.json
+#test_file: logiqa-v2/test.txt
+test_file: dream/dev.json
 
 # Model
 model:
@@ -19,15 +19,18 @@ read_tensor:
   prompt_generator:
     _target_: data.reclor_prompt.ReClorExemplarGenerator
     file_path: ${train_file}
-    shot: 3
+    shot: 0
     random_sampling: False
     read_func:
-      _target_: data.readers.ReClorReader
-    instruct: "Answer the following question with the given context through logical reasoning:"
+      _target_: data.readers.DreamReader
+    instruct: "Read the following dialogue, answer the question by selecting the correct option:"
+#    instruct: "Answer the following question with the given context through logical reasoning:"
 #    instruct: "Answer the following question with the given context and options: "
 #    instruct: "Answer the following question with the given context and options. Let's think step by step: "
   read_func:
-    _target_: data.readers.ReClorReader
+    _target_: data.readers.DreamReader
+#  suffix: ""
+
 
 extended_vocab:
 
@@ -35,14 +38,14 @@ extended_vocab:
 collator:
   _target_: data.reclor_prompt.ReClorGenerativeCollator
   tokenizer: ${model_name_or_path}
-  max_seq_length: 2048
+  max_seq_length: 4000
 
 # Dataloader
 num_workers: 4
 prefetch_factor: 2
 
 # Wiki path pretrain v8.2
-model_name_or_path: pretrained-models/google/flan-t5-xxl
+model_name_or_path: pretrained-models/google/flan-t5-xl
 pretrain:
 
 output_dir: ${model_name_or_path}
@@ -97,18 +100,15 @@ eval_forward_fn:
   _target_: general_util.evaluator.GeneratorForwardFn
   generation_config:
     _target_: transformers.generation.configuration_utils.GenerationConfig
-#    max_new_tokens: 128
     max_new_tokens: 64
     num_beams: 1
-#    num_beams: 4
     num_return_sequences: 1
     output_scores: False
 #    top_k: 0.75
-output_scores: False
 post_process:
   _target_: post_processors.reclor.GeneratorPredictor
   answer_trigger: ""
-predict_dir: ${output_dir}/reclor_val_prompt_${read_tensor.prompt_generator.shot}shot.v1.0
+predict_dir: ${output_dir}/dream_val_prompt_${read_tensor.prompt_generator.shot}shot
 
 #dist_init:
 #  _target_: general_util.dist_utils.setup_slurm_distributed

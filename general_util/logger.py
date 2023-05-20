@@ -33,7 +33,7 @@ def setting_logger(log_file: str, local_rank: int = -1):
     rf_handler.setFormatter(logging.Formatter(fmt='%(asctime)s - %(levelname)s - %(name)s -   %(message)s',
                                               datefmt='%m/%d/%Y %H:%M:%S'))
 
-    output_dir = '/tmp/log_dir'
+    output_dir = './log_dir'
     if local_rank not in [-1, 0]:
         dist.barrier()
     

@@ -2,20 +2,14 @@ hydra:
   run:
     dir: ./
 
-train_file: reclor_data/train.json
-dev_file: reclor_data/val.json
-#test_file: reclor_data/test.json
-test_file: reclor_data/val.json
+train_file: logiqa-v2/train.txt
+dev_file: logiqa-v2/dev.txt
+#test_file: logiqa-v2/test.txt
+test_file: logiqa-v2/dev.txt
 
 # Model
-#model:
-#  _target_: models.llama.LlamaForConditionalGeneration.from_pretrained
-#  torch_dtype: "auto"
-#  vocab_size: 32001
-#  pad_token_id: 32000
-#  num_labels: 1
 model:
-#  _target_: models.llama.LlamaForConditionalGeneration.from_pretrained
+  #  _target_: models.llama.LlamaForConditionalGeneration.from_pretrained
   _target_: transformers.models.llama.modeling_llama.LlamaForCausalLM.from_pretrained
   torch_dtype: "auto"
 
@@ -29,9 +23,9 @@ read_tensor:
     shot: 0
     random_sampling: False
     read_func:
-      _target_: data.readers.ReClorReader
+      _target_: data.readers.LogiQAReaderV2
   read_func:
-    _target_: data.readers.ReClorReader
+    _target_: data.readers.LogiQAReaderV2
 #  suffix: ""
 
 
@@ -48,18 +42,15 @@ num_workers: 4
 prefetch_factor: 2
 
 # Wiki path pretrain v8.2
-#model_name_or_path: pretrained-models/LLaMA/llama-7b
-model_name_or_path: ${output_dir}/checkpoint-250
+model_name_or_path: pretrained-models/LLaMA/llama-13b
+#model_name_or_path: ${output_dir}/checkpoint-100
 pretrain:
 
-#output_dir: experiments/llama.7b.flan.v1.0.seq1024.w8.adamw.500steps.NA100.0401
-#output_dir: experiments/llama.7b.flan.10M.v1.0.seq1024.w8.adamw.NA100.0405.ds
-#exp_name: llama.7b.flan.10M.v1.2.seq1024.w8.adamw.NA100.0407.ds
-#exp_notes:
-#output_dir: experiments/${exp_name}  # Fix <pad token id>
-exp_name: llama.7b.merit_v91_v91.seq2seq.v4.0.3aug.w8.adamw.1000steps.NA100.0422
+
+exp_name: llama.13b.merit_v91_v91.seq2seq.v5.0.3aug.gpt4all.union.w8.adamw.500steps.NA100.0516
 exp_notes:
 output_dir: experiments/${exp_name}  # Fix <pad token id>
+
 
 do_train: False
 evaluate_during_training: True
@@ -111,20 +102,20 @@ eval_forward_fn:
   _target_: general_util.evaluator.GeneratorForwardFn
   generation_config:
     _target_: transformers.generation.configuration_utils.GenerationConfig
-#    max_new_tokens: 128
+    #    max_new_tokens: 128
     max_new_tokens: 64
     num_beams: 1
-#    num_beams: 4
+    #    num_beams: 4
     num_return_sequences: 1
     output_scores: False
-#    top_k: 0.75
   clean_input: True
+#    top_k: 0.75
 post_process:
   _target_: post_processors.reclor.GeneratorPredictor
-#  answer_trigger: "The answer is"
+  #  answer_trigger: "The answer is"
   answer_trigger: ""
-  reverse: False # version 1.1
-predict_dir: ${output_dir}/reclor_val_prompt_${read_tensor.prompt_generator.shot}shot.v1.1
+  reverse: False
+predict_dir: ${output_dir}/reclor_logiqav2_prompt_${read_tensor.prompt_generator.shot}shot.v1.1
 
 #dist_init:
 #  _target_: general_util.dist_utils.setup_slurm_distributed
@@ -146,7 +137,7 @@ ds_cfg:
     type: AdamW
     params:
       lr: ${learning_rate}
-      betas: [0.9, 0.999]
+      betas: [ 0.9, 0.999 ]
       eps: ${adam_epsilon}
       weight_decay: ${weight_decay}
   scheduler:
@@ -161,20 +152,20 @@ ds_cfg:
     enabled: ${fp16}
     initial_scale_power: 12
   zero_optimization:
-    stage: 3
-#    offload_optimizer:
-#      device: cpu
-#      pin_memory: True
-#    offload_param:
-#      device: cpu
-#      pin_memory: True
-#  activation_checkpointing:
-#    partition_activations: True
-#    cpu_checkpointing: True
-#    contiguous_memory_optimization: False
-#    number_checkpoints: False
-#    synchronize_checkpoint_boundary: False
-#    profile: False
+    stage: 2
+  #    offload_optimizer:
+  #      device: cpu
+  #      pin_memory: True
+  #    offload_param:
+  #      device: cpu
+  #      pin_memory: True
+  #  activation_checkpointing:
+  #    partition_activations: True
+  #    cpu_checkpointing: True
+  #    contiguous_memory_optimization: False
+  #    number_checkpoints: False
+  #    synchronize_checkpoint_boundary: False
+  #    profile: False
   steps_per_print: 1024
 
 summary_helper:

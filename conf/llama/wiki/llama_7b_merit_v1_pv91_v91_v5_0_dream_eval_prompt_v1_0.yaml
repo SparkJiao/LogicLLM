@@ -2,22 +2,18 @@ hydra:
   run:
     dir: ./
 
-train_file: reclor_data/train.json
-dev_file: reclor_data/val.json
-#test_file: reclor_data/test.json
-test_file: reclor_data/val.json
+train_file: dream/train.json
+dev_file: dream/dev.json
+#test_file: logiqa-v2/test.txt
+test_file: dream/dev.json
 
 # Model
-#model:
-#  _target_: models.llama.LlamaForConditionalGeneration.from_pretrained
-#  torch_dtype: "auto"
-#  vocab_size: 32001
-#  pad_token_id: 32000
-#  num_labels: 1
 model:
 #  _target_: models.llama.LlamaForConditionalGeneration.from_pretrained
   _target_: transformers.models.llama.modeling_llama.LlamaForCausalLM.from_pretrained
-  torch_dtype: "auto"
+  torch_dtype:
+    _target_: general_util.training_utils.return_torch_dtype
+    dtype: float16
 
 
 # Data loading
@@ -29,15 +25,20 @@ read_tensor:
     shot: 0
     random_sampling: False
     read_func:
-      _target_: data.readers.ReClorReader
+      _target_: data.readers.DreamReader
+    instruct: "Read the following dialogue, answer the question by selecting the correct option:"
+#    instruct: "Answer the following question with the given context through logical reasoning:"
+#    instruct: "Answer the following question with the given context and options: "
+#    instruct: "Answer the following question with the given context and options. Let's think step by step: "
   read_func:
-    _target_: data.readers.ReClorReader
+    _target_: data.readers.DreamReader
 #  suffix: ""
 
 
 extended_vocab:
 
 # Data collator
+
 collator:
   _target_: data.reclor_prompt.ReClorGenerativeCollator
   tokenizer: ${model_name_or_path}
@@ -47,59 +48,55 @@ collator:
 num_workers: 4
 prefetch_factor: 2
 
-# Wiki path pretrain v8.2
-#model_name_or_path: pretrained-models/LLaMA/llama-7b
-model_name_or_path: ${output_dir}/checkpoint-250
+do_preprocess: False
+
+model_name_or_path: pretrained-models/LLaMA/llama-7b
 pretrain:
 
-#output_dir: experiments/llama.7b.flan.v1.0.seq1024.w8.adamw.500steps.NA100.0401
-#output_dir: experiments/llama.7b.flan.10M.v1.0.seq1024.w8.adamw.NA100.0405.ds
-#exp_name: llama.7b.flan.10M.v1.2.seq1024.w8.adamw.NA100.0407.ds
-#exp_notes:
-#output_dir: experiments/${exp_name}  # Fix <pad token id>
-exp_name: llama.7b.merit_v91_v91.seq2seq.v4.0.3aug.w8.adamw.1000steps.NA100.0422
+#exp_name: llama.7b.merit_v91_v91.seq2seq.v5.0.3aug.w8.adamw.500steps.NA100.0503
+exp_name: llama.7b.merit_v91_v91.seq2seq.v5.0.3aug.w4.adamw.500steps.NA100.0504
 exp_notes:
 output_dir: experiments/${exp_name}  # Fix <pad token id>
 
 do_train: False
-evaluate_during_training: True
+evaluate_during_training: False
 
 do_eval: True
 eval_sub_path: checkpoint-*
 
 # Training hyper-parameters
-per_gpu_train_batch_size: 4
-per_gpu_eval_batch_size: 1
+per_gpu_train_batch_size: 2
+per_gpu_eval_batch_size: 8
+#learning_rate: 2e-3
 learning_rate: 1e-5
-#learning_rate: 5e-6
-gradient_accumulation_steps: 2
+gradient_accumulation_steps: 512
 weight_decay: 0.01
 adam_epsilon: 1e-6
-adam_betas: "(0.9, 0.98)"
-#adam_betas: "(0.9, 0.999)"
-max_grad_norm: 0.0
-#max_grad_norm: 1.0
-num_train_epochs: 10
-max_steps: 0
-warmup_proportion: 0.1
-warmup_steps: 0
+adam_betas: "(0.9, 0.99)"
+max_grad_norm: 5.0
+num_train_epochs: 1
+max_steps: -1
+warmup_proportion: 0
+warmup_steps: 100
 
 # Optimizer
 optimizer:
 use_nvlamb:
 bit_training:
 
-logging_steps: 5
-save_steps: -1
+
+logging_steps: 1
+#save_best: True
 save_best: False
-eval_steps: 100
+save_steps: 250
+eval_steps: -1
 ddp_eval: True
 no_cuda: False
 seed: 42
 local_rank: -1
 fp16: True
 fp16_opt_level: O1
-fp16_bfloat16: True
+fp16_bfloat16: False
 
 # Prediction config
 prediction_cfg:
@@ -121,10 +118,10 @@ eval_forward_fn:
   clean_input: True
 post_process:
   _target_: post_processors.reclor.GeneratorPredictor
-#  answer_trigger: "The answer is"
   answer_trigger: ""
-  reverse: False # version 1.1
-predict_dir: ${output_dir}/reclor_val_prompt_${read_tensor.prompt_generator.shot}shot.v1.1
+#  answer_trigger: ""
+  reverse: False
+predict_dir: ${output_dir}/dream_val_prompt_${read_tensor.prompt_generator.shot}shot.v1.0
 
 #dist_init:
 #  _target_: general_util.dist_utils.setup_slurm_distributed
@@ -132,11 +129,17 @@ predict_dir: ${output_dir}/reclor_val_prompt_${read_tensor.prompt_generator.shot
 
 # fairscale.FullyShardedDP
 fairscale_config:
-  _target_: general_util.fsdp_utils.default_initialize
+#  _target_: general_util.fsdp_utils.recursive_initialize
+#  _target_: general_util.fsdp_utils.default_initialize
+#  _target_: general_util.fsdp_utils.default_initialize_v2
+  _target_: general_util.torch_fsdp_utils.torch_fsdp_transformer_init
   fp16: ${fp16}
-  reshard_after_forward: False
-  move_grads_to_cpu: False
-  move_params_to_cpu: False
+#  move_grads_to_cpu: False
+#  move_params_to_cpu: False
+#  flatten_parameters: False
+  fp16_bfloat16: ${fp16_bfloat16}
+#  disable_reshard_on_root: False
+
 
 # Deepspeed config
 ds_cfg:
@@ -146,7 +149,7 @@ ds_cfg:
     type: AdamW
     params:
       lr: ${learning_rate}
-      betas: [0.9, 0.999]
+      betas: [0.9, 0.99]
       eps: ${adam_epsilon}
       weight_decay: ${weight_decay}
   scheduler:
@@ -157,11 +160,24 @@ ds_cfg:
       warmup_num_steps:
       warmup_type: linear
   gradient_clipping: ${max_grad_norm}
-  fp16:
+#  fp16:
+#    enabled: ${fp16}
+#    initial_scale_power: 12
+  bf16:
     enabled: ${fp16}
-    initial_scale_power: 12
+#  autotuning:
+#    enabled: true
+#    arg_mappings:
+#      train_micro_batch_size_per_gpu: "per_gpu_train_batch_size"
+#      gradient_accumulation_steps: "gradient_accumulation_steps"
+#      zero_optimization: "ds_cfg.zero_optimization"
   zero_optimization:
-    stage: 3
+    stage: 1
+    contiguous_gradients: True
+    overlap_comm: True
+    reduce_scatter: True
+    reduce_bucket_size: 5e8
+    allgather_bucket_size: 5e8
 #    offload_optimizer:
 #      device: cpu
 #      pin_memory: True
@@ -177,10 +193,24 @@ ds_cfg:
 #    profile: False
   steps_per_print: 1024
 
+# Lightseq config
+with_lightseq: False
+
+
 summary_helper:
-  _target_: general_util.tensorboard_helper.SummaryWriterHelper
+#  _target_: general_util.tensorboard_helper.SummaryWriterHelper
+  _target_: general_util.tensorboard_helper.WandbWriter
   batch_index_or_keys:
+#    "train/pair_value_num": pair_value_num
+#    "train/pair_label_num": pair_label_num
+#    "train/dropped_op_cnt": dropped_op_cnt
+#    "train/invalid_path": invalid_path
   outputs_index_or_keys:
+    "train/mlm_loss": mlm_loss
+#    "train/cls_loss": cls_loss
+#    "train/cls_acc": cls_acc
+#    "train/tagging_loss": tagging_loss
+#    "train/path_gen_loss": path_gen_loss
 
 # Temporary variables
 n_gpu:

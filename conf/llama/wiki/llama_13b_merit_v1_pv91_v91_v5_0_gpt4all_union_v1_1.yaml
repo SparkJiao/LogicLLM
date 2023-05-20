@@ -3,7 +3,6 @@ hydra:
     dir: ./
 
 train_file: wiki_erica_path/v9.1_fixed/distant_path_v9.1_fix_no_shuffle.train.0.pkl
-#train_file: /opt/ml/input/data/train/distant_path_v9.1_fix_no_shuffle.train.0.pkl
 test_file:
 
 # Model
@@ -20,7 +19,7 @@ read_tensor:
   _target_: data.collators.flan.WikiPathDatasetV5WithDataset
   _recursive_: False
   raw_data:
-    _target_: data.wiki_entity_path_v9_1_2.convert_examples_into_features_raw
+    _target_: data.wiki_entity_path_v9_1_2.convert_examples_into_features_seq2seq
     max_neg_num: 3
     aug_num: 3
     max_seq_length: 512
@@ -48,10 +47,11 @@ extended_vocab:
 collator:
   _target_: data.collators.flan.FlanCollatorOverCollator
   collator:
-    _target_: data.collators.wiki_seq2seq_collator.WikiSeq2SeqCollator
+    _target_: data.collators.wiki_seq2seq_collator.WikiSeq2SeqCollatorWithCausalLM
     max_seq_length: 512
     tokenizer: ${model_name_or_path}
     causal_lm: True
+    causal_lm_add_eos: False
     generative_mode: True
   max_seq_length: 1024
   tokenizer: ${model_name_or_path}
@@ -67,7 +67,7 @@ model_name_or_path: pretrained-models/LLaMA/llama-13b
 #model_name_or_path: /tmp/llama-13b
 pretrain:
 
-exp_name: llama.13b.merit_v91_v91.seq2seq.v5.0.3aug.gpt4all.union.w8.adamw.500steps.NA100.0516
+exp_name: llama.13b.merit_v91_v91.seq2seq.v5.0.3aug.gpt4all.union.v1.1.w8.adamw.500steps.NA100.0519
 exp_notes:
 output_dir: experiments/${exp_name}  # Fix <pad token id>
 
