@@ -204,6 +204,69 @@ class ReClorGenerativeDataset(Dataset):
         }
 
 
+class ReClorCandidateGenerativeDataset(Dataset):
+    def __init__(self, file_path: str, tokenizer: PreTrainedTokenizer, read_func, prompt_generator, suffix: str = "The answer is",
+                 add_option: bool = False):
+        self.prompt_generator = prompt_generator
+        all_context, all_question, all_option_list, all_label = read_func(file_path)
+
+        self.inputs = []
+        self.indices = []
+        self.labels = []
+        for i in range(len(all_context)):
+            prompt = f"Context:\n{all_context[i]}\n\nQuestion:\n{all_question[i]}\n\nOptions:\n{_format_option_list(all_option_list[i])}" \
+                     f"\n\n" + suffix
+
+            if add_option:
+                self.inputs.append([prompt + f" {_rank2option[i]}: {all_option_list[i]}" for i in range(len(all_option_list[i]))])
+            else:
+                self.inputs.append([prompt + f" {_rank2option[i]}" for i in range(len(all_option_list[i]))])
+            self.indices.append(i)
+            self.labels.append(all_label[i])
+
+    def __len__(self):
+        return len(self.inputs)
+
+    def __getitem__(self, index):
+        prompt, prompt_indices = self.prompt_generator()
+        return {
+            "input": [prompt + "\n\n" + x for x in self.inputs[index]],
+            "index": self.indices[index],
+            "prompt_index": ",".join(map(str, prompt_indices)),
+            "label": self.labels[index],
+        }
+
+
+class ReClorCandidatePPLDataset(Dataset):
+    def __init__(self, file_path: str, tokenizer: PreTrainedTokenizer, read_func,
+                 prefix1: str = "", prefix2: str = "\n\n", suffix: str = "\n\n"):
+        all_context, all_question, all_option_list, all_label = read_func(file_path)
+
+        self.inputs = []
+        self.indices = []
+        self.labels = []
+        for i in range(len(all_context)):
+            # prompt = f"{all_context[i]}\n\n{all_question[i]}\n\n"
+            prompt = f"{prefix1}{all_context[i]}{prefix2}{all_question[i]}{suffix}"
+            if all_question[i][-6:] == "  _  .":
+                prompt = f"{prefix1}{all_context[i]}{prefix2}{all_question[:-5]}{suffix}"
+
+            self.inputs.append([prompt + x for x in all_option_list[i]])
+            self.indices.append(i)
+            self.labels.append(all_label[i])
+
+    def __len__(self):
+        return len(self.inputs)
+
+    def __getitem__(self, index):
+        return {
+            "input": self.inputs[index],
+            "index": self.indices[index],
+            "prompt_index": "0",
+            "label": self.labels[index],
+        }
+
+
 class ReClorGenerativeDatasetZh(Dataset):
     def __init__(self, file_path: str, tokenizer: PreTrainedTokenizer, read_func, prompt_generator, suffix: str = "The answer is"):
         self.prompt_generator = prompt_generator

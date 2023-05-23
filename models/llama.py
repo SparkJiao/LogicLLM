@@ -544,6 +544,14 @@ class LlamaForConditionalGeneration(LlamaPreTrainedModelPeftMixin, LogMixin, ABC
             self.eval_metrics.update("acc", val=acc, n=true_label_num)
             self.eval_metrics.update("loss", val=loss.item(), n=true_label_num)
 
+            score_loss_fct = nn.CrossEntropyLoss(ignore_index=-1, reduction="none")
+            score_loss = score_loss_fct(shifted_logits.view(-1, logits.size(-1)), shifted_lm_labels.view(-1))
+            score_loss = score_loss.reshape(batch_size, -1)
+            score_loss = score_loss.sum(dim=-1) / label_mask.sum(dim=-1).float()
+            return MultipleChoicePreTrainModelOutput(
+                loss=loss,
+                logits=-score_loss,
+            )
         return MultipleChoicePreTrainModelOutput(
             loss=loss,
             logits=shifted_logits,

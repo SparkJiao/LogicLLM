@@ -196,8 +196,17 @@ class FlanCollatorOverCollator:
 
         if self.collator is not None:
             model_inputs = self.collator(batch)
+            orig_batch_size = model_inputs["input_ids"].size(0)
             flan_inputs = vanilla_seq2seq_convertor(flan_batch, self.tokenizer, self.max_seq_length, self.decoder_only)
             for k, v in flan_inputs.items():
+                if k == "input_lens":
+                    if "flan_input_lens" in model_inputs:
+                        model_inputs["flan_input_lens"] = torch.cat([model_inputs["flan_input_lens"], v], dim=0)
+                    else:
+                        empty_input_lens = torch.zeros(orig_batch_size, dtype=torch.long, device=v.device)
+                        model_inputs[f"flan_input_lens"] = torch.cat([empty_input_lens, v], dim=0)
+                    continue
+
                 if f"flan_{k}" in model_inputs:
                     model_inputs[f"flan_{k}"] = combine_tensor_on_length(model_inputs[f"flan_{k}"], v, self.tokenizer.pad_token_id)
                 else:
