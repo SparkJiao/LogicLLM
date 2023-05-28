@@ -172,15 +172,15 @@ ds_cfg:
 #      gradient_accumulation_steps: "gradient_accumulation_steps"
 #      zero_optimization: "ds_cfg.zero_optimization"
   zero_optimization:
-    stage: 1
+    stage: 3
     contiguous_gradients: True
     overlap_comm: True
     reduce_scatter: True
     reduce_bucket_size: 5e8
     allgather_bucket_size: 5e8
-    offload_optimizer:
-      device: cpu
-      pin_memory: True
+#    offload_optimizer:
+#      device: cpu
+#      pin_memory: True
 #    offload_param:
 #      device: cpu
 #      pin_memory: True

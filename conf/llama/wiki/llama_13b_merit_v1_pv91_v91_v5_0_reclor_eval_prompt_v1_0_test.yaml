@@ -113,13 +113,15 @@ eval_forward_fn:
 #    num_beams: 4
     num_return_sequences: 1
     output_scores: False
+  clean_input: True
 #    top_k: 0.75
 post_process:
   _target_: post_processors.reclor.GeneratorPredictor
-  answer_trigger: "The answer is"
-#  answer_trigger: ""
-  reverse: True
-predict_dir: ${output_dir}/reclor_test_prompt_${read_tensor.prompt_generator.shot}shot.v1.0
+#  answer_trigger: "The answer is"
+  answer_trigger: ""
+#  reverse: True  # v1.0
+  reverse: False  # v1.1
+predict_dir: ${output_dir}/reclor_test_prompt_${read_tensor.prompt_generator.shot}shot.v1.1
 
 #dist_init:
 #  _target_: general_util.dist_utils.setup_slurm_distributed

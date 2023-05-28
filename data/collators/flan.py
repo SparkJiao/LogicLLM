@@ -94,7 +94,7 @@ class WikiPathDatasetV5WFlan(Dataset):
 
 class WikiPathDatasetV5WithDataset(Dataset):
     def __init__(self, raw_data: Union[Tuple, DictConfig], extra_data: Union[PromptDataset, DictConfig],
-                 file_path: str, tokenizer: PreTrainedTokenizer):
+                 file_path: str, tokenizer: PreTrainedTokenizer, add_wiki_text: bool = False):
         if isinstance(raw_data, DictConfig):
             raw_data = hydra.utils.instantiate(raw_data, file_path=file_path, tokenizer=tokenizer)
 
@@ -103,6 +103,10 @@ class WikiPathDatasetV5WithDataset(Dataset):
 
         self.examples = raw_data[0]
         self.extra_data = extra_data
+
+        self.add_wiki_text = add_wiki_text
+        if self.add_wiki_text:
+            self.wiki_texts = raw_data[1]
 
     def __len__(self):
         return max(len(self.examples), len(self.extra_data))
@@ -115,6 +119,8 @@ class WikiPathDatasetV5WithDataset(Dataset):
             "index": index,
         }
         res.update(flan)
+        if self.add_wiki_text:
+            res["text"] = self.wiki_texts[index % len(self.wiki_texts)]
         return res
 
 
@@ -167,6 +173,14 @@ def vanilla_seq2seq_convertor(examples, tokenizer: PreTrainedTokenizer, max_seq_
     return model_inputs
 
 
+def combine_tensor_on_length(a: torch.Tensor, b: torch.Tensor, pad_id: int):
+    max_len = max(a.size(1), b.size(1))
+    new_tensor = torch.zeros(a.size(0) + b.size(0), max_len, dtype=a.dtype, device=a.device).fill_(pad_id)
+    new_tensor[:a.size(0), :a.size(1)] = a
+    new_tensor[a.size(0):, :b.size(1)] = b
+    return new_tensor
+
+
 class FlanCollatorOverCollator:
     def __init__(self, collator, tokenizer: str, max_seq_length: int, decoder_only: bool = False):
         self.collator = collator
@@ -182,9 +196,21 @@ class FlanCollatorOverCollator:
 
         if self.collator is not None:
             model_inputs = self.collator(batch)
+            orig_batch_size = model_inputs["input_ids"].size(0)
             flan_inputs = vanilla_seq2seq_convertor(flan_batch, self.tokenizer, self.max_seq_length, self.decoder_only)
             for k, v in flan_inputs.items():
-                model_inputs[f"flan_{k}"] = v
+                if k == "input_lens":
+                    if "flan_input_lens" in model_inputs:
+                        model_inputs["flan_input_lens"] = torch.cat([model_inputs["flan_input_lens"], v], dim=0)
+                    else:
+                        empty_input_lens = torch.zeros(orig_batch_size, dtype=torch.long, device=v.device)
+                        model_inputs[f"flan_input_lens"] = torch.cat([empty_input_lens, v], dim=0)
+                    continue
+
+                if f"flan_{k}" in model_inputs:
+                    model_inputs[f"flan_{k}"] = combine_tensor_on_length(model_inputs[f"flan_{k}"], v, self.tokenizer.pad_token_id)
+                else:
+                    model_inputs[f"flan_{k}"] = v
         else:
             model_inputs = vanilla_seq2seq_convertor(flan_batch, self.tokenizer, self.max_seq_length, self.decoder_only)
 

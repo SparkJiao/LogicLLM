@@ -154,7 +154,8 @@ def train(cfg, model, tokenizer, continue_from_global_step=0):
     num_warmup_steps = int(t_total * cfg.warmup_proportion) if cfg.warmup_proportion else cfg.warmup_steps
 
     ds_config = cfg.ds_cfg
-    ds_config.scheduler.params.total_num_steps = t_total
+    if "total_num_steps" in ds_config.scheduler.params:
+        ds_config.scheduler.params.total_num_steps = t_total
     ds_config.scheduler.params.warmup_num_steps = num_warmup_steps
     ds_config = OmegaConf.to_container(ds_config, resolve=True)
 
@@ -165,7 +166,8 @@ def train(cfg, model, tokenizer, continue_from_global_step=0):
     #     {'params': [p for n, p in model.named_parameters() if any(nd in n for nd in no_decay)],
     #      'weight_decay': 0.0}
     # ]
-    torch.compile(model, mode="max-autotune")
+    if torch.__version__ >= "2" and (getattr(os.environ, "TORCH_COMPILE", False) or getattr(cfg, "compile", False)):
+        model = torch.compile(model, mode="max-autotune")
     model, optimizer, _, scheduler = deepspeed.initialize(model=model,
                                                           model_parameters=model.parameters(),
                                                           config=ds_config)
