@@ -325,8 +325,9 @@ def main(cfg: DictConfig):
     # Set seed
     set_seed(cfg)
 
+    use_barrier = not os.path.exists(cfg.model_name_or_path)
     # Load pre-trained model and tokenizer
-    if cfg.local_rank not in [-1, 0]:
+    if use_barrier and cfg.local_rank not in [-1, 0]:
         dist.barrier()  # Make sure only the first process in distributed training will download model & vocab
 
     if cfg.pretrain:
@@ -346,7 +347,7 @@ def main(cfg: DictConfig):
         logger.warning(e)
         model = hydra.utils.call(cfg.model)
 
-    if cfg.local_rank == 0:
+    if use_barrier and cfg.local_rank == 0:
         dist.barrier()  # Make sure only the first process in distributed training will download model & vocab
 
     # logger.info("Training/evaluation parameters %s", OmegaConf.to_yaml(cfg))
