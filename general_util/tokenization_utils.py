@@ -47,6 +47,11 @@ def expand_special_tokenizer(tokenizer: PreTrainedTokenizer):
         new_tokens = tokenizer.add_special_tokens(
             special_tokens_dict=special_tokens_map
         )
+
+    if not tokenizer.pad_token:
+        tokenizer.pad_token = tokenizer.eos_token
+        tokenizer.pad_token_id = tokenizer.eos_token_id
+
     logger.info(tokenizer)
 
 
