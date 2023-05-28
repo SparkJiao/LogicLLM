@@ -3,6 +3,7 @@ import random
 from typing import Dict, List
 import os
 from torch.utils.data import ConcatDataset
+from transformers.utils.quantization_config import BitsAndBytesConfig
 
 import hydra
 import numpy as np

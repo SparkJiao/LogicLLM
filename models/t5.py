@@ -106,7 +106,7 @@ class T5ForSeq2Seq(T5ForConditionalGeneration, LogMixin, ABC):
         #     if self.config.num_layers == self.config.num_decoder_layers:
         #         warnings.warn(__HEAD_MASK_WARNING_MSG, FutureWarning)
         #         decoder_head_mask = head_mask
-
+        batch_size = input_ids.shape[0]
         # Encode if needed (training, first prediction pass)
         if encoder_outputs is None:
             # Convert encoder inputs in embeddings if needed
@@ -179,7 +179,7 @@ class T5ForSeq2Seq(T5ForConditionalGeneration, LogMixin, ABC):
 
         loss = None
         if labels is not None:
-            label_padding_mask = labels == self.config.pad_token_id
+            label_padding_mask = labels.eq(self.config.pad_token_id)
             labels[label_padding_mask] = -1
             loss_fct = CrossEntropyLoss(ignore_index=-1)
             loss = loss_fct(lm_logits.view(-1, lm_logits.size(-1)), labels.view(-1))
@@ -191,9 +191,18 @@ class T5ForSeq2Seq(T5ForConditionalGeneration, LogMixin, ABC):
                 self.eval_metrics.update("acc", acc, n=true_label_num)
                 self.eval_metrics.update("loss", loss.item(), n=true_label_num)
 
-        if not return_dict:
-            output = (lm_logits,) + decoder_outputs[1:] + encoder_outputs
-            return ((loss,) + output) if loss is not None else output
+                score_loss_fct = CrossEntropyLoss(ignore_index=-1, reduction="none")
+                score_loss = score_loss_fct(lm_logits.view(-1, lm_logits.size(-1)), labels.view(-1))
+                score_loss = score_loss.reshape(batch_size, -1)
+                score_loss = score_loss.sum(dim=-1) / (~label_padding_mask).float().sum(dim=-1)
+                return MultipleChoicePreTrainModelOutput(
+                    loss=loss,
+                    logits=-score_loss,
+                )
+
+        # if not return_dict:
+        #     output = (lm_logits,) + decoder_outputs[1:] + encoder_outputs
+        #     return ((loss,) + output) if loss is not None else output
 
         return Seq2SeqLMOutput(
             loss=loss,

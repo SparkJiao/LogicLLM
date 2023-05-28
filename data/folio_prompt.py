@@ -5,7 +5,7 @@ from typing import List
 import torch
 from torch.utils.data import Dataset, default_collate
 from transformers import PreTrainedTokenizer, AutoTokenizer
-from general_util.tokenization_utils import expand_special_tokenizer
+from general_util.tokenization_utils import expand_special_tokenizer, is_seq2seq_tokenizer
 from general_util.logger import get_child_logger
 
 logger = get_child_logger(__name__)
@@ -156,15 +156,23 @@ class CandidateGenerativeCollator:
         self.tokenizer: PreTrainedTokenizer = AutoTokenizer.from_pretrained(tokenizer)
         expand_special_tokenizer(self.tokenizer)
         self.max_seq_length = max_seq_length
+        self.is_seq2seq = is_seq2seq_tokenizer(self.tokenizer)
 
     def __call__(self, batch):
         inputs = [b.pop("input") for b in batch]
+        outputs = [b.pop("output") for b in batch]
         batch = default_collate(batch)
-        # inputs = batch.pop("input")
         flat_inputs = []
+        flat_outputs = []
         for i in range(len(inputs)):
             flat_inputs.extend(inputs[i])
-        model_inputs = self.tokenizer(flat_inputs, padding="longest", truncation=True, max_length=self.max_seq_length, return_tensors="pt")
+            flat_outputs.extend(outputs[i])
+        if self.is_seq2seq:
+            model_inputs = self.tokenizer(flat_inputs, text_target=flat_outputs,
+                                          padding="longest", truncation=True, max_length=self.max_seq_length, return_tensors="pt")
+        else:
+            model_inputs = self.tokenizer(flat_inputs,
+                                          padding="longest", truncation=True, max_length=self.max_seq_length, return_tensors="pt")
         if "token_type_ids" in model_inputs:
             model_inputs.pop("token_type_ids")
         model_inputs["meta_data"] = batch

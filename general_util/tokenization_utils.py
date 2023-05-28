@@ -48,3 +48,8 @@ def expand_special_tokenizer(tokenizer: PreTrainedTokenizer):
             special_tokens_dict=special_tokens_map
         )
     logger.info(tokenizer)
+
+
+def is_seq2seq_tokenizer(tokenizer: PreTrainedTokenizer):
+    tokenizer_name = tokenizer_get_name(tokenizer)
+    return any([x in tokenizer_name for x in ["t5", "bart", "pegasus", "mbart", "marian", "blenderbot"]])

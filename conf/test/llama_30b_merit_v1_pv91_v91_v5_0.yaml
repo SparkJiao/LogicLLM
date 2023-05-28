@@ -21,7 +21,7 @@ model:
       bits: 4
     r: 64
     lora_alpha: 16
-    lora_dropout: 0.05
+    lora_dropout: 0.0
   gradient_checkpointing: True
   torch_dtype:
     _target_: general_util.training_utils.return_torch_dtype
@@ -86,7 +86,7 @@ do_preprocess: False
 model_name_or_path: pretrained-models/LLaMA/llama-30b
 pretrain:
 
-exp_name: llama.30b.merit_v91_v91.seq2seq.v5.0.3aug.w4.adamw.400steps.NA100.0525
+exp_name: llama.30b.merit_v91_v91.seq2seq.v5.0.3aug.w8.adamw.400steps.NA100.0525.test
 exp_notes:
 output_dir: experiments/${exp_name}  # Fix <pad token id>
 
@@ -97,19 +97,19 @@ do_eval: True
 eval_sub_path: checkpoint-*
 
 # Training hyper-parameters
-per_gpu_train_batch_size: 8
+per_gpu_train_batch_size: 1
 per_gpu_eval_batch_size: 8
 #learning_rate: 2e-3
-learning_rate: 5e-4
-gradient_accumulation_steps: 128
+learning_rate: 1e-4
+gradient_accumulation_steps: 512
 weight_decay: 0.01
 adam_epsilon: 1e-6
 adam_betas: "(0.9, 0.99)"
-max_grad_norm: 0.3
+max_grad_norm: 5.0
 num_train_epochs: 1
 max_steps: -1
 warmup_proportion: 0
-warmup_steps: 50
+warmup_steps: 100
 
 # Optimizer
 optimizer:
@@ -168,13 +168,13 @@ ds_cfg:
     type: AdamW
     params:
       lr: ${learning_rate}
-      betas: [ 0.9, 0.999 ]
+      betas: [ 0.9, 0.99 ]
       eps: ${adam_epsilon}
       weight_decay: ${weight_decay}
   scheduler:
-    type: WarmupLR
+    type: WarmupDecayLR
     params:
-#      total_num_steps:
+      total_num_steps:
       warmup_max_lr: ${learning_rate}
       warmup_num_steps:
       warmup_type: linear
@@ -191,11 +191,11 @@ ds_cfg:
   #      gradient_accumulation_steps: "gradient_accumulation_steps"
   #      zero_optimization: "ds_cfg.zero_optimization"
   zero_optimization:
-    stage: 1
+    stage: 2
     contiguous_gradients: True
     overlap_comm: True
     reduce_scatter: True
-#    reduce_bucket_size: 5e8
+    reduce_bucket_size: 5e8
     allgather_bucket_size: 5e8
 #    offload_optimizer:
 #      device: cpu
