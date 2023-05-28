@@ -176,7 +176,7 @@ def train(cfg, model, tokenizer, continue_from_global_step=0):
     #     {'params': [p for n, p in model.named_parameters() if any(nd in n for nd in no_decay)],
     #      'weight_decay': 0.0}
     # ]
-    if torch.__version__ >= "2":
+    if torch.__version__ >= "2" and (getattr(os.environ, "TORCH_COMPILE", False) or getattr(cfg, "compile", False)):
         model = torch.compile(model, mode="max-autotune")
     model, optimizer, _, scheduler = deepspeed.initialize(model=model,
                                                           model_parameters=model.parameters(),
