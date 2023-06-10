@@ -42,6 +42,8 @@ from general_util.logger import setting_logger
 from general_util.training_utils import batch_to_device, unwrap_model, set_seed, note_best_checkpoint, initialize_optimizer, \
     load_and_cache_examples, if_cancel_sync, initialize_lr_scheduler, set_seed_int
 
+from deepspeed.pipe import PipelineModule
+
 logger: logging.Logger
 
 torch.backends.cuda.matmul.allow_tf32 = True
@@ -308,50 +310,50 @@ def main(cfg: DictConfig):
     # Set seed
     set_seed(cfg)
 
-    # Load pre-trained model and tokenizer
-    if cfg.local_rank not in [-1, 0]:
-        dist.barrier()  # Make sure only the first process in distributed training will download model & vocab
-
-    if cfg.pretrain:
-        pretrain_state_dict = torch.load(cfg.pretrain, map_location='cpu')
-    else:
-        pretrain_state_dict = None
-
-    tokenizer = AutoTokenizer.from_pretrained(cfg.model_name_or_path)
-
-    from general_util.tokenization_utils import expand_special_tokenizer
-
-    expand_special_tokenizer(tokenizer)
-
-    try:
-        model = hydra.utils.call(cfg.model, cfg.model_name_or_path, state_dict=pretrain_state_dict)
-    except Exception as e:
-        logger.warning(e)
-        model = hydra.utils.call(cfg.model)
-    # torch.compile(model, mode="max-autotune")
-
-    if cfg.local_rank == 0:
-        dist.barrier()  # Make sure only the first process in distributed training will download model & vocab
-
-    if cfg.local_rank == -1:  # For FullyShardedDDP, place the model on cpu first.
-        if cfg.n_gpu in [0, 1] or cfg.no_cuda:
-            model.to(cfg.device)
-        else:
-            # For model parallel (of mT5)
-            logger.info(f"Model Parallel initialization.")
-            if getattr(cfg, "get_device_map", None):
-                model.parallelize(hydra.utils.call(cfg.get_device_map))
-            else:
-                model.parallelize()
-
-    # logger.info("Training/evaluation parameters %s", OmegaConf.to_yaml(cfg))
-    if cfg.local_rank in [-1, 0] and cfg.do_train:
-        if not os.path.exists(cfg.output_dir):
-            os.makedirs(cfg.output_dir)
-        OmegaConf.save(cfg, os.path.join(cfg.output_dir, "training_config.yaml"))
-
     # Training
     if cfg.do_train:
+        # Load pre-trained model and tokenizer
+        if cfg.local_rank not in [-1, 0]:
+            dist.barrier()  # Make sure only the first process in distributed training will download model & vocab
+
+        if cfg.pretrain:
+            pretrain_state_dict = torch.load(cfg.pretrain, map_location='cpu')
+        else:
+            pretrain_state_dict = None
+
+        tokenizer = AutoTokenizer.from_pretrained(cfg.model_name_or_path)
+
+        from general_util.tokenization_utils import expand_special_tokenizer
+
+        expand_special_tokenizer(tokenizer)
+
+        try:
+            model = hydra.utils.call(cfg.model, cfg.model_name_or_path, state_dict=pretrain_state_dict)
+        except Exception as e:
+            logger.warning(e)
+            model = hydra.utils.call(cfg.model)
+        # torch.compile(model, mode="max-autotune")
+
+        if cfg.local_rank == 0:
+            dist.barrier()  # Make sure only the first process in distributed training will download model & vocab
+
+        if cfg.local_rank == -1:  # For FullyShardedDDP, place the model on cpu first.
+            if cfg.n_gpu in [0, 1] or cfg.no_cuda:
+                model.to(cfg.device)
+            # else:
+            #     # For model parallel (of mT5)
+            #     logger.info(f"Model Parallel initialization.")
+            #     if getattr(cfg, "get_device_map", None):
+            #         model.parallelize(hydra.utils.call(cfg.get_device_map))
+            #     else:
+            #         model.parallelize()
+
+        # logger.info("Training/evaluation parameters %s", OmegaConf.to_yaml(cfg))
+        if cfg.local_rank in [-1, 0]:
+            if not os.path.exists(cfg.output_dir):
+                os.makedirs(cfg.output_dir)
+            OmegaConf.save(cfg, os.path.join(cfg.output_dir, "training_config.yaml"))
+
         # TODO: Add option for continuously training from checkpoint.
         #  The operation should be introduced in ``train`` method since both the state dict
         #  of schedule and optimizer (and scaler, if any) should be loaded.
@@ -391,7 +393,12 @@ def main(cfg: DictConfig):
                 os.path.dirname(c) for c in
                 glob.glob(cfg.output_dir + f"/{cfg.eval_sub_path}/" + "pytorch_model*.bin", recursive=True)
             ))))
-            logging.getLogger("transformers.modeling_utils").setLevel(logging.WARN)  # Reduce logging
+            if not checkpoints:
+                checkpoints = list(sorted(list(set(
+                    os.path.dirname(c) for c in
+                    glob.glob(cfg.output_dir + f"/{cfg.eval_sub_path}/" + "adapter_model.bin", recursive=True)
+                ))))
+            # logging.getLogger("transformers.modeling_utils").setLevel(logging.WARN)  # Reduce logging
         logger.info(" the following checkpoints: %s", checkpoints)
         for checkpoint in checkpoints:
             global_step = checkpoint.split("-")[-1] if len(checkpoints) > 1 else ""
@@ -402,18 +409,20 @@ def main(cfg: DictConfig):
                 model = hydra.utils.call(cfg.model_eval, checkpoint)
             else:
                 model = hydra.utils.call(cfg.model, checkpoint)
-            if cfg.n_gpu == 1:
-                model.to(cfg.device)
-            else:
-                # For model parallel (of mT5)
-                if getattr(cfg, "get_device_map", None):
-                    model.parallelize(hydra.utils.call(cfg.get_device_map))
-                else:
-                    model.parallelize()
 
             tokenizer = AutoTokenizer.from_pretrained(checkpoint)
-            logger.info(tokenizer)
-            cfg.model_name_or_path = checkpoint
+
+            if cfg.n_gpu == 1 and not model.is_loaded_in_8bit and not model.is_loaded_in_4bit:
+                model.to(cfg.device)
+            # else:  # use device map
+            #     # For model parallel (of mT5)
+            #     if getattr(cfg, "get_device_map", None):
+            #         model.parallelize(hydra.utils.call(cfg.get_device_map))
+            #     else:
+            #         model.parallelize()
+
+            # logger.info(tokenizer)
+            # cfg.model_name_or_path = checkpoint
 
             if cfg.test_file:
                 prefix = f'test' + (f'-{prefix}' if prefix != "" else "")
@@ -422,6 +431,13 @@ def main(cfg: DictConfig):
             result = evaluate(cfg, model, tokenizer, prefix=prefix, _split=split)
             result = dict((k + "_{}".format(global_step), v) for k, v in result.items())
             results.update(result)
+
+            if dist.is_initialized():
+                dist.barrier()
+
+            # model.to(device=torch.device("cpu"))
+            del model
+            torch.cuda.empty_cache()
 
     torch.cuda.synchronize()
 

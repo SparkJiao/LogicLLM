@@ -80,7 +80,7 @@ seed: 42
 local_rank: -1
 fp16: True
 fp16_opt_level: O1
-fp16_bfloat16: False
+fp16_bfloat16: True
 
 # Prediction config
 prediction_cfg:
@@ -103,7 +103,7 @@ post_process:
   _target_: post_processors.reclor.BBHPredictor
   answer_trigger:
     _target_: post_processors.answer_cleaner.AnswerTrigger
-    trigger: "the answer is"
+    trigger: "answer is"
     split_index: -1
   matcher:
     _target_: post_processors.answer_cleaner.BBHMatcher

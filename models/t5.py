@@ -107,6 +107,7 @@ class T5ForSeq2Seq(T5ForConditionalGeneration, LogMixin, ABC):
         #         warnings.warn(__HEAD_MASK_WARNING_MSG, FutureWarning)
         #         decoder_head_mask = head_mask
         batch_size = input_ids.shape[0]
+        # print("input_ids: ", input_ids.size())
         # Encode if needed (training, first prediction pass)
         if encoder_outputs is None:
             # Convert encoder inputs in embeddings if needed
@@ -146,6 +147,8 @@ class T5ForSeq2Seq(T5ForConditionalGeneration, LogMixin, ABC):
             if decoder_attention_mask is not None:
                 decoder_attention_mask = decoder_attention_mask.to(self.decoder.first_device)
 
+        # print("decoder_input_ids: ", decoder_input_ids.size())
+        # print("hidden_states: ", hidden_states.size())
         # Decode
         decoder_outputs = self.decoder(
             input_ids=decoder_input_ids,

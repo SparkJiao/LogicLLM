@@ -94,7 +94,78 @@ class WikiSeq2SeqCollator:
         return model_inputs
 
 
+class WikiSeq2SeqCollatorFixPaddingSide:
+    # This collator fix the padding side problem in computing `input_lens`, which can be merged when ready.
+    def __init__(self, max_seq_length: int, tokenizer: str, causal_lm: bool = False, generative_mode: bool = False):
+        self.max_seq_length = max_seq_length
+        self.tokenizer: PreTrainedTokenizer = AutoTokenizer.from_pretrained(tokenizer)
+        self.causal_lm = causal_lm
+        self.generative_mode = generative_mode
+
+        expand_special_tokenizer(self.tokenizer)
+
+    def __call__(self, batch):
+        examples = [b["example"] for b in batch]
+        inputs_a, inputs_b = [], []
+        for exp in examples:
+            res = construct_seq2seq(exp, generative_mode=self.generative_mode)
+            assert len(res[0]) == len(res[1])
+            if not self.causal_lm:
+                inputs_a.extend(res[0])
+                inputs_b.extend(res[1])
+            else:
+                inputs_a.extend(res[0])
+                inputs_b.extend([x + " " + y + self.tokenizer.eos_token for x, y in zip(res[0], res[1])])
+
+        batch_size = len(batch)
+        op_num = len(inputs_a) // batch_size
+
+        if not self.causal_lm:
+            model_inputs = self.tokenizer(inputs_a, text_target=inputs_b, padding="longest", truncation=True, return_tensors="pt",
+                                          max_length=self.max_seq_length)
+            if not self.generative_mode:
+                model_inputs["decoder_input_ids"] = model_inputs["labels"].reshape(batch_size, op_num, -1)
+        else:
+            tmp = self.tokenizer(inputs_a, padding="longest", truncation=True, return_tensors="pt", max_length=self.max_seq_length)
+            input_lens = tmp["input_ids"].ne(self.tokenizer.pad_token_id).to(torch.long).sum(dim=-1)
+            model_inputs = self.tokenizer(inputs_b, padding="longest", truncation=True, return_tensors="pt", max_length=self.max_seq_length)
+            new_input_lens = model_inputs["input_ids"].ne(self.tokenizer.pad_token_id).sum(dim=1)
+            input_lens = input_lens - input_lens.eq(new_input_lens).to(input_lens.dtype) * (input_lens // 2)
+            input_lens = input_lens.to(torch.long)
+            if self.tokenizer.padding_side == "left":
+                input_lens = model_inputs["input_ids"].eq(self.tokenizer.pad_token_id).to(torch.long).sum(dim=1) + input_lens
+            model_inputs["input_lens"] = input_lens
+
+        if not self.generative_mode:
+            model_inputs["input_ids"] = model_inputs["input_ids"].reshape(batch_size, op_num, -1)
+            model_inputs["attention_mask"] = model_inputs["attention_mask"].reshape(batch_size, op_num, -1)
+            model_inputs["labels"] = torch.zeros(len(examples), dtype=torch.long)
+
+        return model_inputs
+
+
 class WikiSeq2SeqCollatorWithCausalLM(WikiSeq2SeqCollator):
+    def __init__(self, max_seq_length: int, tokenizer: str, causal_lm: bool = False, generative_mode: bool = False,
+                 causal_lm_add_eos: bool = False):
+        super().__init__(max_seq_length, tokenizer, causal_lm, generative_mode)
+        assert self.causal_lm
+        self.causal_lm_add_eos = causal_lm_add_eos
+
+    def __call__(self, batch):
+        if self.causal_lm_add_eos:
+            texts = [b["text"] + self.tokenizer.eos_token for b in batch]
+        else:
+            texts = [b["text"] for b in batch]
+        causal_lm_model_inputs = self.tokenizer(texts, padding="longest", truncation=True, return_tensors="pt",
+                                                max_length=self.max_seq_length)
+
+        model_inputs = super().__call__(batch)
+        for k, v in causal_lm_model_inputs.items():
+            model_inputs[f"flan_{k}"] = v
+        return model_inputs
+
+
+class WikiSeq2SeqCollatorWithCausalLMFixPaddingSide(WikiSeq2SeqCollatorFixPaddingSide):
     def __init__(self, max_seq_length: int, tokenizer: str, causal_lm: bool = False, generative_mode: bool = False,
                  causal_lm_add_eos: bool = False):
         super().__init__(max_seq_length, tokenizer, causal_lm, generative_mode)

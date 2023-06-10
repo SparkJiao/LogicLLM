@@ -53,6 +53,8 @@ def return_torch_dtype(dtype: str):
         return torch.float16
     elif dtype == "bfloat16":
         return torch.bfloat16
+    elif dtype == "int8":
+        return torch.int8
     else:
         return dtype
 
