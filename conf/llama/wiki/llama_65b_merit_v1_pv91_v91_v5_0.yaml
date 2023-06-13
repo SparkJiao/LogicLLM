@@ -81,7 +81,7 @@ collator:
 #  decoder_only: True
 
 # Dataloader
-num_workers: 2
+num_workers: 4
 prefetch_factor: 2
 
 do_preprocess: False
@@ -89,7 +89,7 @@ do_preprocess: False
 model_name_or_path: pretrained-models/LLaMA/llama-65b
 pretrain:
 
-exp_name: llama.65b.q_lora.merit_v91_v91.seq2seq.v5.0.3aug.w4.adamw.500steps.NA100.0526
+exp_name: llama.65b.q_lora.merit_v91_v91.seq2seq.v5.0.3aug.w6.adamw.500steps.NA100.0531
 exp_notes:
 output_dir: experiments/${exp_name}  # Fix <pad token id>
 
@@ -100,11 +100,11 @@ do_eval: True
 eval_sub_path: checkpoint-*
 
 # Training hyper-parameters
-per_gpu_train_batch_size: 8
+per_gpu_train_batch_size: 16
 per_gpu_eval_batch_size: 8
 #learning_rate: 2e-3
-learning_rate: 5e-4
-gradient_accumulation_steps: 256
+learning_rate: 2e-4
+gradient_accumulation_steps: 42
 weight_decay: 0.00
 adam_epsilon: 1e-6
 adam_betas: "(0.9, 0.99)"
@@ -200,7 +200,7 @@ ds_cfg:
     contiguous_gradients: True
     overlap_comm: True
     reduce_scatter: True
-#    reduce_bucket_size: 5e8
+    reduce_bucket_size: 5e8
     allgather_bucket_size: 5e8
 #    offload_optimizer:
 #      device: cpu

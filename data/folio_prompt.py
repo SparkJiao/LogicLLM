@@ -152,8 +152,8 @@ class FolioCandidatePromptGenerator(Dataset):
 
 
 class CandidateGenerativeCollator:
-    def __init__(self, tokenizer: str, max_seq_length: int):
-        self.tokenizer: PreTrainedTokenizer = AutoTokenizer.from_pretrained(tokenizer)
+    def __init__(self, tokenizer: str, max_seq_length: int, **kwargs):
+        self.tokenizer: PreTrainedTokenizer = AutoTokenizer.from_pretrained(tokenizer, **kwargs)
         expand_special_tokenizer(self.tokenizer)
         self.max_seq_length = max_seq_length
         self.is_seq2seq = is_seq2seq_tokenizer(self.tokenizer)
@@ -177,4 +177,29 @@ class CandidateGenerativeCollator:
             model_inputs.pop("token_type_ids")
         model_inputs["meta_data"] = batch
         model_inputs["meta_data"]["input"] = inputs
+        return model_inputs
+
+
+class CandidateSelectionCollator:
+    def __init__(self, tokenizer: str, max_seq_length: int, **kwargs):
+        self.tokenizer: PreTrainedTokenizer = AutoTokenizer.from_pretrained(tokenizer, padding_size="left", **kwargs)
+        expand_special_tokenizer(self.tokenizer)
+        self.max_seq_length = max_seq_length
+        self.is_seq2seq = is_seq2seq_tokenizer(self.tokenizer)
+
+    def __call__(self, batch):
+        inputs = [b.pop("input") for b in batch]
+        outputs = [b.pop("output") for b in batch]
+        batch = default_collate(batch)
+        if self.is_seq2seq:
+            model_inputs = self.tokenizer(inputs, text_target=["" for _ in flat_inputs],
+                                          padding="longest", truncation=True, max_length=self.max_seq_length, return_tensors="pt")
+        else:
+            model_inputs = self.tokenizer(inputs,
+                                          padding="longest", truncation=True, max_length=self.max_seq_length, return_tensors="pt")
+        if "token_type_ids" in model_inputs:
+            model_inputs.pop("token_type_ids")
+        model_inputs["meta_data"] = batch
+        model_inputs["meta_data"]["input"] = inputs
+        model_inputs["meta_data"]["output"] = outputs
         return model_inputs

@@ -14,7 +14,7 @@ model:
   _target_: transformers.models.t5.modeling_t5.T5ForConditionalGeneration.from_pretrained
   torch_dtype:
     _target_: general_util.training_utils.return_torch_dtype
-    dtype: float16
+    dtype: bfloat16
 
 
 
@@ -47,11 +47,11 @@ do_train: False
 evaluate_during_training: True
 
 do_eval: True
-eval_sub_path: checkpoint-*
+eval_sub_path: checkpoint-[2345]00
 
 # Training hyper-parameters
 per_gpu_train_batch_size: 2
-per_gpu_eval_batch_size: 1
+per_gpu_eval_batch_size: 8
 learning_rate: 1e-5
 #learning_rate: 5e-6
 gradient_accumulation_steps: 2
@@ -81,7 +81,7 @@ seed: 42
 local_rank: -1
 fp16: True
 fp16_opt_level: O1
-fp16_bfloat16: False
+fp16_bfloat16: True
 
 # Prediction config
 prediction_cfg:
@@ -104,7 +104,7 @@ post_process:
   _target_: post_processors.reclor.BBHPredictor
   answer_trigger:
     _target_: post_processors.answer_cleaner.AnswerTrigger
-    trigger: "the answer is"
+    trigger: "answer is"
     split_index: -1
   matcher:
     _target_: post_processors.answer_cleaner.BBHMatcher

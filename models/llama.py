@@ -16,7 +16,8 @@ from peft import (
 )
 from peft.tuners.lora import LoraLayer
 from torch import nn
-from transformers.models.llama.modeling_llama import LlamaModel, LlamaPreTrainedModel, LlamaConfig, SequenceClassifierOutputWithPast
+from transformers.models.llama.modeling_llama import LlamaModel, LlamaPreTrainedModel, LlamaConfig, SequenceClassifierOutputWithPast, \
+    LlamaDecoderLayer, LlamaForCausalLM
 
 from general_util.logger import get_child_logger
 from general_util.mixin import LogMixin
@@ -30,6 +31,11 @@ LORA_TARGET_MODULES = [
 ]
 
 PAD_TOKEN_ID = 32000
+
+
+def deepspeed_inference_policy():
+    injection_policy = {LlamaDecoderLayer: ('self_attn.o_proj', 'mlp.down_proj')}
+    return injection_policy
 
 
 def find_all_linear_names(model, bits: int):
@@ -55,6 +61,20 @@ def return_cpu_device_map():
 
 def return_single_device_map_emb():
     return {"embed_tokens": "cuda:" + str(int(os.environ.get("LOCAL_RANK") or 0)), "": "cpu"}
+
+
+def return_mixed_device_map(num_layers: int = 80):
+    res = {
+        "model.embed_tokens": "cpu",
+        "lm_head": "cpu",
+        "model.norm": "cpu",
+    }
+    for i in range(num_layers):
+        res[f"model.layers.{i}.input_layernorm"] = "cpu"
+        res[f"model.layers.{i}.post_attention_layernorm"] = "cpu"
+        res[f"model.layers.{i}.self_attn"] = "cuda:" + str(int(os.environ.get("LOCAL_RANK") or 0))
+        res[f"model.layers.{i}.mlp"] = "cuda:" + str(int(os.environ.get("LOCAL_RANK") or 0))
+    return res
 
 
 @dataclass
@@ -91,7 +111,11 @@ class LlamaPreTrainedModelPeftMixin(LlamaPreTrainedModel, ABC):
         load_in_8bit = kwargs.pop("load_in_8bit", False)
         load_in_4bit = kwargs.pop("load_in_4bit", False)
 
-        model = super().from_pretrained(pretrained_model_name_or_path, *model_args, **kwargs)
+        if use_peft:
+            model = super().from_pretrained(pretrained_model_name_or_path, *model_args, **kwargs)
+        else:
+            model = super().from_pretrained(pretrained_model_name_or_path, load_in_4bit=load_in_4bit, load_in_8bit=load_in_8bit,
+                                            *model_args, **kwargs)
 
         if vocab_size is not None and pad_token_id is not None:
             assert vocab_size == model.config.vocab_size + 1, "Currently, only hack here to add pad token id is supported. "
@@ -105,12 +129,6 @@ class LlamaPreTrainedModelPeftMixin(LlamaPreTrainedModel, ABC):
             # logger.info(*model_args)
             # logger.info(kwargs)
             logger.info(lora_config)
-            model = super().from_pretrained(pretrained_model_name_or_path, *model_args, **kwargs)
-
-            if vocab_size is not None and pad_token_id is not None:
-                assert vocab_size == model.config.vocab_size + 1, "Currently, only hack here to add pad token id is supported. "
-                model.resize_token_embeddings(vocab_size)
-                model.config.pad_token_id = pad_token_id
 
             logger.info(f"LORA Config: {lora_config}")
             logger.info(lora_config.target_modules.__class__)
@@ -144,6 +162,43 @@ class LlamaPreTrainedModelPeftMixin(LlamaPreTrainedModel, ABC):
             model.print_trainable_parameters()
 
         logger.info(f"Config pad token id after loading pre-trained weights: {model.config.pad_token_id}")
+        logger.info(model.lm_head.__class__.__name__)
+
+        return model
+
+    @classmethod
+    def from_pretrained_eval_tp(cls, pretrained_model_name_or_path: Optional[Union[str, os.PathLike]], *model_args, **kwargs):
+        import tensor_parallel as tp
+        from transformers.utils.bitsandbytes import replace_with_bnb_linear
+
+        # if "vocab_size" in kwargs and "pad_token_id" in kwargs:
+        #     # Hack here to avoid embedding weight size mismatch during loading pre-trained weights.
+        #     vocab_size = kwargs.pop("vocab_size")
+        #     pad_token_id = kwargs.pop("pad_token_id")
+        # else:
+        #     vocab_size = None
+        #     pad_token_id = None
+
+        use_peft = kwargs.pop("use_peft", False)
+        lora_config = kwargs.pop("lora_config", None)
+        load_in_8bit = kwargs.pop("load_in_8bit", False)
+        load_in_4bit = kwargs.pop("load_in_4bit", False)
+        quantization_config = kwargs.pop("quantization_config", None)
+
+        model = super().from_pretrained(pretrained_model_name_or_path, *model_args, **kwargs)
+
+        # if vocab_size is not None and pad_token_id is not None:
+        #     assert vocab_size == model.config.vocab_size + 1, "Currently, only hack here to add pad token id is supported. "
+        #     model.resize_token_embeddings(vocab_size)
+        #     model.config.pad_token_id = pad_token_id
+
+        n_gpus = torch.cuda.device_count()
+        model = tp.tensor_parallel(model, [torch.device(f"cuda:{i}") for i in range(n_gpus)])
+
+        if load_in_8bit or load_in_4bit:
+            model = replace_with_bnb_linear(model, quantization_config=quantization_config)
+            model.is_loaded_in_8bit = load_in_8bit
+            model.is_loaded_in_4bit = load_in_4bit
 
         return model
 
@@ -152,8 +207,49 @@ class LlamaPreTrainedModelPeftMixin(LlamaPreTrainedModel, ABC):
         base_model_name_or_path = kwargs.pop("base_model_name_or_path", pretrained_model_name_or_path)
 
         model = super().from_pretrained(base_model_name_or_path, *model_args, **kwargs)
-        model = PeftModel.from_pretrained(model, pretrained_model_name_or_path)
+        model = PeftModel.from_pretrained(model, pretrained_model_name_or_path, *model_args, **kwargs)
         return model
+
+    @classmethod
+    def from_pretrained_peft_eval_tp(cls, pretrained_model_name_or_path: Optional[Union[str, os.PathLike]], *model_args, **kwargs):
+        import tensor_parallel as tp
+        from transformers.utils.bitsandbytes import replace_with_bnb_linear
+
+        base_model_name_or_path = kwargs.pop("base_model_name_or_path", pretrained_model_name_or_path)
+
+        model = super().from_pretrained(base_model_name_or_path, *model_args, **kwargs)
+
+        n_gpus = torch.cuda.device_count()
+        model = tp.tensor_parallel(model, [torch.device(f"cuda:{i}") for i in range(n_gpus)])
+
+        model = PeftModel.from_pretrained(model, pretrained_model_name_or_path, *model_args, **kwargs)
+        return model
+
+
+def load_model_from_pretrained_tp(pretrained_model_name_or_path: str, *args, **kwargs):
+    model = LlamaForCausalLM.from_pretrained(pretrained_model_name_or_path, *args, **kwargs)
+
+    import tensor_parallel as tp
+
+    n_gpus = torch.cuda.device_count()
+    model = tp.tensor_parallel(model, [torch.device(f"cuda:{i}") for i in range(n_gpus)])
+    return model
+
+
+def load_peft_model_from_pretrained(pretrained_model_name_or_path: str, model: LlamaPreTrainedModel, *model_args, **kwargs):
+    model = PeftModel.from_pretrained(model, pretrained_model_name_or_path, *model_args, **kwargs)
+    return model
+
+
+def load_peft_model_from_pretrained_tp(pretrained_model_name_or_path: str, model: LlamaPreTrainedModel, *model_args, **kwargs):
+    import tensor_parallel as tp
+
+    n_gpus = torch.cuda.device_count()
+    # tp.tensor_parallel(model, [torch.device("cuda:" + str(int(os.environ.get("LOCAL_RANK") or 0)))])
+    model = tp.tensor_parallel(model, [torch.device(f"cuda:{i}") for i in range(n_gpus)])
+
+    model = PeftModel.from_pretrained(model, pretrained_model_name_or_path, *model_args, **kwargs)
+    return model
 
 
 class LlamaForMultipleChoiceCLS(LlamaPreTrainedModelPeftMixin, LogMixin, ABC):
@@ -585,6 +681,9 @@ class LlamaForConditionalGeneration(LlamaPreTrainedModelPeftMixin, LogMixin, ABC
         lm_labels = input_ids.masked_fill(~label_mask, -1).contiguous()
         shifted_lm_labels = lm_labels[..., 1:].contiguous()
 
+        if shifted_logits.device != shifted_lm_labels.device:
+            shifted_logits = shifted_logits.to(shifted_lm_labels.device)
+
         # loss = 0.
         # if labels is not None:
         loss_fct = nn.CrossEntropyLoss(ignore_index=-1)
@@ -601,6 +700,7 @@ class LlamaForConditionalGeneration(LlamaPreTrainedModelPeftMixin, LogMixin, ABC
             self.eval_metrics.update("loss", val=loss.item(), n=true_label_num)
 
             score_loss_fct = nn.CrossEntropyLoss(ignore_index=-1, reduction="none")
+            # print(shifted_logits.dtype)
             score_loss = score_loss_fct(shifted_logits.view(-1, logits.size(-1)), shifted_lm_labels.view(-1))
             score_loss = score_loss.reshape(batch_size, -1)
             score_loss = score_loss.sum(dim=-1) / label_mask.sum(dim=-1).float()
@@ -646,6 +746,7 @@ class LlamaForConditionalGenerationFlan(LlamaForConditionalGeneration, LogMixin,
     def __init__(self, config: LlamaConfig, gradient_checkpointing=False, merit_ratio: float = 0.5):
         super().__init__(config, gradient_checkpointing)
         self.merit_ratio = merit_ratio
+        logger.info(f"Merit ratio: {self.merit_ratio}")
 
     def forward(
             self,

@@ -7,6 +7,8 @@ from typing import Dict, List, Any, Union, Callable
 import numpy as np
 import torch
 from torch import distributed as dist
+from transformers import AutoTokenizer, PreTrainedTokenizer
+from general_util.tokenization_utils import expand_special_tokenizer
 
 from post_processors.dist_mixin import DistGatherMixin
 
@@ -84,3 +86,57 @@ class CategoryMetricSaver(DistGatherMixin):
             json.dump(self.predictions, open(output_file, "w"))
         assert len(npy_outputs) == len(existing_ids), (len(npy_outputs), len(self.predictions), len(existing_ids))
         return metrics, self.predictions
+
+
+class CategoryMetricSaverSelection(CategoryMetricSaver):
+    def __init__(self, tokenizer: Union[str, PreTrainedTokenizer]):
+        super().__init__()
+        if isinstance(tokenizer, str):
+            tokenizer = AutoTokenizer.from_pretrained(tokenizer)
+
+        self.tokenizer = tokenizer
+        # expand_special_tokenizer(tokenizer)
+
+    def __call__(self, meta_data: Dict[str, Any], batch_model_outputs: Dict[str, Any], ddp: bool = False):
+        index = meta_data["index"].float().tolist()
+        labels = meta_data["label"].tolist()
+        inputs = meta_data["input"]
+        category = meta_data["category"]
+        batch_outputs = meta_data["output"]
+
+        # Should be non-shifted logits, e.g., original outputs from huggingface models.
+        logits = batch_model_outputs["logits"].detach().float()
+        assert logits.dim() == 3, logits.dim()  # [batch_size, seq_len, vocab_size]
+        pred = []
+        for i, outputs in enumerate(batch_outputs):
+            output_probs = []
+            for output in outputs:
+                assert len(output) == 1
+                target_token_id = self.tokenizer.convert_tokens_to_ids(output)
+                output_probs.append(logits[i, -1, target_token_id].item())
+            output_probs = torch.tensor(output_probs)
+            pred.append(output_probs.argmax().item())
+
+        if ddp:
+            obj = [pred, index, labels, inputs, category]
+            gather_res = self.gather_object(obj)
+            if dist.get_rank() == 0:
+                pred = []
+                index = []
+                labels = []
+                inputs = []
+                category = []
+                for item in gather_res:
+                    pred.extend(item[0])
+                    index.extend(item[1])
+                    labels.extend(item[2])
+                    inputs.extend(item[3])
+                    category.extend(item[4])
+
+        self.predictions.extend([{
+            "index": idx,
+            "pred": p,
+            "label": t,
+            "input": src,
+            "category": c
+        } for idx, p, t, src, c in zip(index, pred, labels, inputs, category)])
