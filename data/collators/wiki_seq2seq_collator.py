@@ -5,6 +5,7 @@ from transformers import AutoTokenizer, PreTrainedTokenizer
 
 from general_util.logger import get_child_logger
 from general_util.tokenization_utils import expand_special_tokenizer
+from data.collators.flan import combine_tensor_on_length
 
 logger = get_child_logger("Wiki.Path.seq2seq.collator")
 
@@ -184,6 +185,36 @@ class WikiSeq2SeqCollatorWithCausalLMFixPaddingSide(WikiSeq2SeqCollatorFixPaddin
         for k, v in causal_lm_model_inputs.items():
             model_inputs[f"flan_{k}"] = v
         return model_inputs
+
+
+class WikiSeq2SeqCollatorWithCausalLMCombine(WikiSeq2SeqCollatorFixPaddingSide):
+    def __init__(self, max_seq_length: int, tokenizer: str, causal_lm: bool = False, generative_mode: bool = False,
+                 causal_lm_add_eos: bool = False):
+        super().__init__(max_seq_length, tokenizer, causal_lm, generative_mode)
+        assert self.causal_lm
+        self.causal_lm_add_eos = causal_lm_add_eos
+
+    def __call__(self, batch):
+        if self.causal_lm_add_eos:
+            texts = [b["text"] + self.tokenizer.eos_token for b in batch]
+        else:
+            texts = [b["text"] for b in batch]
+        causal_lm_model_inputs = self.tokenizer(texts, padding="longest", truncation=True, return_tensors="pt",
+                                                max_length=self.max_seq_length)
+
+        model_inputs = super().__call__(batch)
+        # for k, v in causal_lm_model_inputs.items():
+        #     model_inputs[f"flan_{k}"] = v
+
+        all_inputs = {}
+        for k, v in model_inputs.items():
+            if k == "input_lens":
+                empty_input_lens = torch.zeros(len(texts), dtype=torch.long, device=v.device)
+                all_inputs[k] = torch.cat([empty_input_lens, v], dim=0)
+            else:
+                all_inputs[k] = combine_tensor_on_length(causal_lm_model_inputs[k], v, self.tokenizer.pad_token_id)
+
+        return all_inputs
 
 
 def flatten_options(options):
