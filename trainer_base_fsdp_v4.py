@@ -310,6 +310,8 @@ def main(cfg: DictConfig):
     # Set seed
     set_seed(cfg)
 
+    from general_util.tokenization_utils import expand_special_tokenizer
+
     # Training
     if cfg.do_train:
         # Load pre-trained model and tokenizer
@@ -322,8 +324,6 @@ def main(cfg: DictConfig):
             pretrain_state_dict = None
 
         tokenizer = AutoTokenizer.from_pretrained(cfg.model_name_or_path)
-
-        from general_util.tokenization_utils import expand_special_tokenizer
 
         expand_special_tokenizer(tokenizer)
 

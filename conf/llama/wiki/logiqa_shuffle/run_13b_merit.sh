@@ -1,0 +1,7 @@
+CUDA_VISIBLE_DEVICES=6 python trainer_base_fsdp_v4.py -cp conf/llama/wiki/logiqa_shuffle -cn llama_13b_merit_v5_0_logiqav2_eval_mc_v1_0_s0312_test eval_sub_path=checkpoint-500
+
+CUDA_VISIBLE_DEVICES=6 python trainer_base_fsdp_v4.py -cp conf/llama/wiki/logiqa_shuffle -cn llama_13b_merit_v5_0_logiqav2_eval_mc_v1_0_s1302_test eval_sub_path=checkpoint-500
+
+CUDA_VISIBLE_DEVICES=6 python trainer_base_fsdp_v4.py -cp conf/llama/wiki/logiqa_shuffle -cn llama_13b_merit_v5_0_logiqav2_eval_mc_v1_0_s2103_test eval_sub_path=checkpoint-500
+
+CUDA_VISIBLE_DEVICES=6 python trainer_base_fsdp_v4.py -cp conf/llama/wiki/logiqa_shuffle -cn llama_13b_merit_v5_0_logiqav2_eval_mc_v1_0_s3012_test eval_sub_path=checkpoint-500

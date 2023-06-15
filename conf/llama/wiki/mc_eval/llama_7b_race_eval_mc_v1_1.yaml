@@ -4,18 +4,12 @@ hydra:
 
 train_file: race-reclor/race-train-reclor.json
 dev_file: race-reclor/race-dev-reclor.json
-test_file: race-reclor/race-test-reclor.json
+#test_file: race-reclor/race-test-reclor.json
+test_file: race-reclor/race-dev-reclor.json
 
 # Model
 model:
   _target_: models.llama.LlamaForConditionalGeneration.from_pretrained
-  torch_dtype:
-    _target_: general_util.training_utils.return_torch_dtype
-    dtype: float16
-
-
-model_eval:
-  _target_: models.llama.LlamaForConditionalGeneration.from_pretrained_eval_tp
   torch_dtype:
     _target_: general_util.training_utils.return_torch_dtype
     dtype: bfloat16
@@ -33,9 +27,7 @@ read_tensor:
       _target_: data.readers.ReClorReader
   read_func:
     _target_: data.readers.ReClorReader
-#  suffix:
-#    _target_: data.folio_prompt.get_suffix_by_name
-#    name: base
+  suffix: "Answer:"
 
 
 extended_vocab:
@@ -65,7 +57,7 @@ eval_sub_path:
 
 # Training hyper-parameters
 per_gpu_train_batch_size: 4
-per_gpu_eval_batch_size: 2
+per_gpu_eval_batch_size: 1
 learning_rate: 1e-5
 #learning_rate: 5e-6
 gradient_accumulation_steps: 2
@@ -132,7 +124,7 @@ eval_forward_fn:
 #    remove_input: False
 post_process:
   _target_: post_processors.reclor.MultiChoiceMetricSaver
-predict_dir: ${output_dir}/race_test_mc_0shot.v1.0.rerun
+predict_dir: ${output_dir}/race_dev_mc_0shot.v1.1
 #predict_dir: ${output_dir}/reclor_val_prompt_${read_tensor.prompt_generator.shot}shot_sample.v1.1.s${seed}
 
 #dist_init:
