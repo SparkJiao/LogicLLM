@@ -449,6 +449,93 @@ class MultiChoiceMetricSaver(DistGatherMixin):
         return metrics, self.predictions
 
 
+class MultiChoiceMetricFlatSaver(DistGatherMixin):
+    def __init__(self, ):
+        self.raw_predictions = []
+        self.predictions = []
+
+    def __call__(self, meta_data: Dict[str, Any], batch_model_outputs: Dict[str, Any], ddp: bool = False):
+        index = meta_data["index"]
+        labels = meta_data["label"].tolist()
+        inputs = meta_data["input"]
+
+        logits = batch_model_outputs["logits"].detach().float().tolist()
+
+        if ddp:
+            obj = [logits, index, labels, inputs]
+            gather_res = self.gather_object(obj)
+            if dist.get_rank() == 0:
+                logits = []
+                index = []
+                labels = []
+                inputs = []
+                for item in gather_res:
+                    logits.extend(item[0])
+                    index.extend(item[1])
+                    labels.extend(item[2])
+                    inputs.extend(item[3])
+
+        self.raw_predictions.extend([{
+            "index": idx,
+            "logit": l,
+            "label": t,
+            "input": src,
+        } for idx, l, t, src in zip(index, logits, labels, inputs)])
+
+    def get_results(self, output_dir: str):
+        if dist.is_initialized():
+            output_file = os.path.join(output_dir, f"eval_predictions_rank{dist.get_rank()}.json")
+        else:
+            output_file = os.path.join(output_dir, "eval_predictions.json")
+
+        if dist.is_initialized() and dist.get_rank() != 0:
+            return {}, []
+
+        sample_groups = collections.defaultdict(list)
+        for pred in self.raw_predictions:
+            sample_id, op_id = pred["index"].split("_")
+            sample_groups[sample_id].append((int(op_id), pred))
+
+        for sample_id, sample_preds in sample_groups.items():
+            sample_preds = sorted(sample_preds, key=lambda x: x[0])
+            sample_logits = []
+            op_id_set = set()
+            for op_id, pred in sample_preds:
+                if op_id in op_id_set:
+                    continue
+                op_id_set.add(op_id)
+                sample_logits.append(pred["logit"])
+            sample_pred = torch.tensor(sample_logits).argmax().item()
+            self.predictions.append({
+                "index": sample_id,
+                "pred": sample_pred,
+                "label": sample_preds[0][1]["label"],
+                "input": sample_preds[0][1]["input"],
+            })
+
+        self.predictions = sorted(self.predictions, key=lambda x: int(x["index"]))
+
+        correct = 0
+        existing_ids = set()
+        npy_outputs = []
+        for pred in self.predictions:
+            if pred["index"] in existing_ids:
+                continue
+            existing_ids.add(pred["index"])
+            if pred["pred"] == pred["label"]:
+                correct += 1
+            npy_outputs.append(pred["pred"])
+
+        metrics = {"acc": round(correct / len(existing_ids), 3)}
+
+        if not dist.is_initialized() or dist.get_rank() == 0:
+            np.save(os.path.join(output_dir, "decode_results.npy"), np.array(npy_outputs))
+            json.dump(metrics, open(os.path.join(output_dir, "metrics.json"), "w"))
+            json.dump(self.predictions, open(output_file, "w"))
+        assert len(npy_outputs) == len(existing_ids), (len(npy_outputs), len(self.predictions), len(existing_ids))
+        return metrics, self.predictions
+
+
 class MultiChoiceMetricSelectionSaver(MultiChoiceMetricSaver):
     def __init__(self, tokenizer: Union[str, PreTrainedTokenizer]):
         super().__init__()
@@ -470,7 +557,7 @@ class MultiChoiceMetricSelectionSaver(MultiChoiceMetricSaver):
         for i, outputs in enumerate(batch_outputs):
             output_probs = []
             for output in outputs:
-                assert len(output) == 1
+                # assert len(output) == 1
                 target_token_id = self.tokenizer.convert_tokens_to_ids(output)
                 output_probs.append(logits[i, -1, target_token_id].item())
             output_probs = torch.tensor(output_probs)

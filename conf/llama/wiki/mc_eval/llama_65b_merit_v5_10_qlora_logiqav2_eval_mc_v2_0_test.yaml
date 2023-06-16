@@ -2,47 +2,54 @@ hydra:
   run:
     dir: ./
 
-train_file: race-reclor/race-train-reclor.json
-dev_file: race-reclor/race-dev-reclor.json
-test_file: race-reclor/race-test-reclor.json
+train_file: logiqa-v2/train.txt
+dev_file: logiqa-v2/dev.txt
+test_file: logiqa-v2/test.txt
+#test_file: logiqa-v2/dev.txt
 
-# Model
 model:
   _target_: models.llama.LlamaForConditionalGeneration.from_pretrained
   torch_dtype:
     _target_: general_util.training_utils.return_torch_dtype
-    dtype: float16
-
+    dtype: bfloat16
+  device_map: "auto"
+  load_in_8bit: True
 
 model_eval:
-  _target_: models.llama.LlamaForConditionalGeneration.from_pretrained_eval_tp
+  _target_: models.llama.LlamaForConditionalGeneration.from_pretrained_peft_eval
+  base_model_name_or_path: ${model_name_or_path}
   torch_dtype:
     _target_: general_util.training_utils.return_torch_dtype
     dtype: bfloat16
+  device_map: "auto"
+  load_in_8bit: True
+
 
 
 # Data loading
 read_tensor:
-  _target_: data.reclor_prompt.ReClorCandidateGenerativeDataset
+  _target_: data.reclor_prompt.ReClorCandidateGenerativeDatasetFlat
   prompt_generator:
     _target_: data.reclor_prompt.ReClorExemplarGenerator
     file_path: ${train_file}
     shot: 0
     random_sampling: False
     read_func:
-      _target_: data.readers.ReClorReader
+      _target_: data.readers.LogiQAReaderV2
+#    instruct: "Read the following dialogue, answer the question by selecting the correct option:"
+#    instruct: "Answer the following question with the given context through logical reasoning:"
+#    instruct: "Answer the following question with the given context and options: "
+#    instruct: "Answer the following question with the given context and options. Let's think step by step: "
   read_func:
-    _target_: data.readers.ReClorReader
-#  suffix:
-#    _target_: data.folio_prompt.get_suffix_by_name
-#    name: base
+    _target_: data.readers.LogiQAReaderV2
+#  suffix: ""
 
 
 extended_vocab:
 
 # Data collator
 collator:
-  _target_: data.folio_prompt.CandidateGenerativeCollator
+  _target_: data.folio_prompt.CandidateSelectionCollator
   tokenizer: ${model_name_or_path}
   max_seq_length: 4000
 
@@ -51,21 +58,23 @@ num_workers: 4
 prefetch_factor: 2
 
 # Wiki path pretrain v8.2
-model_name_or_path: pretrained-models/LLaMA/llama-7b
+model_name_or_path: pretrained-models/LLaMA/llama-65b
 pretrain:
 
-#output_dir: experiments/llama.7b.wiki_erica_path_v9.1_v9.1.v2.0.1aug.seq512.w6.adamw.500steps.NA100.fix
-output_dir: ${model_name_or_path}
+exp_name: llama.65b.q_lora.merit_v91_v91.seq2seq.v5.10.3aug.w8.adamw.500steps.NA100.0608.pad_fix
+exp_notes:
+output_dir: experiments/${exp_name}  # Fix <pad token id
+
 
 do_train: False
 evaluate_during_training: True
 
 do_eval: True
-eval_sub_path:
+eval_sub_path: checkpoint-90
 
 # Training hyper-parameters
 per_gpu_train_batch_size: 4
-per_gpu_eval_batch_size: 2
+per_gpu_eval_batch_size: 1
 learning_rate: 1e-5
 #learning_rate: 5e-6
 gradient_accumulation_steps: 2
@@ -87,7 +96,7 @@ bit_training:
 
 logging_steps: 5
 save_steps: -1
-save_best: True
+save_best: False
 eval_steps: 100
 ddp_eval: True
 no_cuda: False
@@ -103,37 +112,12 @@ prediction_cfg:
   measure: 1
   best_checkpoint:
   best_result:
-#eval_forward_fn:
-#  _target_: general_util.evaluator.GeneratorForwardFn
-#  generation_config:
-#    _target_: transformers.generation.configuration_utils.GenerationConfig
-##    max_new_tokens: 128
-#    max_new_tokens: 64
-#    num_beams: 1
-##    num_beams: 4
-#    num_return_sequences: 1
-#    output_scores: False
-##    top_k: 0.75
-#  clean_input: True
 eval_forward_fn:
   _target_: general_util.evaluator.DefaultForwardFn
-#post_process:
-#  _target_: post_processors.reclor.GeneratorPredictorV2
-#  answer_cleaner:
-#    _target_: post_processors.answer_cleaner.AnswerCleaner
-#    trigger:
-#      _target_: post_processors.answer_cleaner.AnswerTrigger
-#      trigger: ""
-#      split_index: 1
-#    matcher:
-#      _target_: post_processors.answer_cleaner.Matcher
-#      regrex: "Uncertain|True|False"
-#      reverse: False
-#    remove_input: False
 post_process:
-  _target_: post_processors.reclor.MultiChoiceMetricSaver
-predict_dir: ${output_dir}/race_test_mc_0shot.v1.0.rerun
-#predict_dir: ${output_dir}/reclor_val_prompt_${read_tensor.prompt_generator.shot}shot_sample.v1.1.s${seed}
+  _target_: post_processors.reclor.MultiChoiceMetricFlatSaver
+#  tokenizer: ${model_name_or_path}
+predict_dir: ${output_dir}/logiqav2_test_mc_0shot.v1.0
 
 #dist_init:
 #  _target_: general_util.dist_utils.setup_slurm_distributed

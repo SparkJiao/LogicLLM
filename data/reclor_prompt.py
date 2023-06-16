@@ -257,6 +257,51 @@ class ReClorCandidateGenerativeDataset(Dataset):
         }
 
 
+class ReClorCandidateGenerativeDatasetFlat(Dataset):
+    def __init__(self, file_path: str, tokenizer: PreTrainedTokenizer, read_func, prompt_generator, suffix: str = "The answer is",
+                 add_option: bool = False):
+        self.prompt_generator = prompt_generator
+        all_context, all_question, all_option_list, all_label = read_func(file_path)
+
+        is_seq2seq = is_seq2seq_tokenizer(tokenizer)
+        logger.info("{} is seq2seq tokenizer: {}".format(tokenizer.__class__.__name__, is_seq2seq))
+
+        self.inputs = []
+        self.indices = []
+        self.labels = []
+        self.outputs = []
+        for i in range(len(all_context)):
+            prompt = f"Context:\n{all_context[i]}\n\nQuestion:\n{all_question[i]}\n\nOptions:\n{_format_option_list(all_option_list[i])}" \
+                     f"\n\n" + suffix
+
+            if add_option:
+                targets = [f"{_rank2option[i]}: {all_option_list[i]}" for i in range(len(all_option_list[i]))]
+            else:
+                targets = [_rank2option[i] for i in range(len(all_option_list[i]))]
+            if is_seq2seq:
+                self.inputs.extend([prompt] * len(targets))
+                self.outputs.extend(targets)
+            else:
+                self.inputs.extend([prompt + f" {tgt}" for tgt in targets])
+                self.outputs.extend(targets)
+
+            self.indices.extend([f"{i}_{op_id}" for op_id in range(len(all_option_list[i]))])
+            self.labels.extend([all_label[i]] * len(all_option_list[i]))
+
+    def __len__(self):
+        return len(self.inputs)
+
+    def __getitem__(self, index):
+        prompt, prompt_indices = self.prompt_generator()
+        return {
+            "input": prompt + "\n\n" + self.inputs[index],
+            "output": self.outputs[index],
+            "index": self.indices[index],
+            "prompt_index": ",".join(map(str, prompt_indices)),
+            "label": self.labels[index],
+        }
+
+
 class ReClorCandidateSelectionDataset(Dataset):
     def __init__(self, file_path: str, tokenizer: PreTrainedTokenizer, read_func, prompt_generator, suffix: str = "The answer is",
                  add_option: bool = False):
@@ -278,6 +323,7 @@ class ReClorCandidateSelectionDataset(Dataset):
                 targets = [f"{_rank2option[i]}: {all_option_list[i]}" for i in range(len(all_option_list[i]))]
             else:
                 targets = [_rank2option[i] for i in range(len(all_option_list[i]))]
+                targets = [tokenizer.tokenize(prompt + " " + x)[-1] for x in targets]
 
             self.inputs.append(prompt)
             self.outputs.append(targets)

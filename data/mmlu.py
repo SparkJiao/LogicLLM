@@ -49,7 +49,8 @@ class MMLUReader:
         for file in files:
             tmp = file.split("/")[-1].split("_")[:-1]
             subject = " ".join(tmp)
-            df = pd.read_csv(file)
+            # df = pd.read_csv(file)
+            df = pd.read_csv(file, header=None)  # FIXED in 0610. Previous results are all 4-shot.
             for i in range(df.shape[0]):
                 all_questions.append(df.iloc[i, 0])
                 k = df.shape[1] - 2
@@ -194,6 +195,63 @@ class MMLUPromptGenerator(Dataset):
         }
 
 
+class MMLUPromptGeneratorFlat(Dataset):
+    def __init__(self, file_path: str, tokenizer: PreTrainedTokenizer, read_func=MMLUReader(), max_seq_length: int = 2048,
+                 prompt_template: str = candidate_templates["base"],
+                 instruction: str = instructions["base"],
+                 suffix: str = "",
+                 exemplars: Dict[str, List[str]] = {}):
+        all_questions, all_option_list, all_labels, all_subjects = read_func(file_path)
+        choices = ["A", "B", "C", "D"]
+        label2id = {'A': 0, 'B': 1, 'C': 2, 'D': 3, 'E': 4}
+        is_seq2seq = is_seq2seq_tokenizer(tokenizer)
+        logger.info("{} is seq2seq tokenizer: {}".format(tokenizer.__class__.__name__, is_seq2seq))
+        self.tokenizer = tokenizer
+        self.max_seq_length = max_seq_length
+
+        self.inputs = []
+        self.indices = []
+        self.subjects = []
+        self.labels = []
+        self.outputs = []
+        for i in range(len(all_questions)):
+            if is_seq2seq:
+                self.inputs.extend([prompt_template.format(all_questions[i], "\n".join(all_option_list[i]))] * len(all_option_list[i]))
+            else:
+                self.inputs.extend([
+                    prompt_template.format(all_questions[i], "\n".join(all_option_list[i]), choices[op_id])
+                    for op_id in range(len(all_option_list[i]))
+                ])
+            self.outputs.extend([choices[op_id] for op_id in range(len(all_option_list[i]))])
+            self.indices.extend([f"{i}_{op_id}" for op_id in range(len(all_option_list[i]))])
+            self.labels.extend([label2id[all_labels[i]]] * len(all_option_list[i]))
+            self.subjects.extend([all_subjects[i]] * len(all_option_list[i]))
+
+        self.instruction = instruction
+        self.exemplars = exemplars
+        self.suffix = suffix
+
+        assert len(self.inputs) == len(self.outputs) == len(self.indices) == len(self.labels) == len(self.subjects)
+
+    def __len__(self):
+        return len(self.inputs)
+
+    def __getitem__(self, index):
+        if self.exemplars:
+            _input = truncate_prompt(self.exemplars[self.subjects[index]], self.tokenizer, max_length=self.max_seq_length,
+                                     instruction=self.instruction.format(self.subjects[index]),
+                                     op_input=self.inputs[index], suffix=self.suffix)
+        else:
+            _input = self.instruction.format(self.subjects[index]) + self.inputs[index] + self.suffix
+        return {
+            "input": _input,
+            "output": self.outputs[index],
+            "index": self.indices[index],
+            "label": self.labels[index],
+            "category": self.subjects[index],
+        }
+
+
 class MMLUPromptGeneratorSingle(Dataset):
     def __init__(self, file_path: str, tokenizer: PreTrainedTokenizer, read_func=MMLUReader(), max_seq_length: int = 2048,
                  prompt_template: str = candidate_templates["base"],
@@ -217,8 +275,11 @@ class MMLUPromptGeneratorSingle(Dataset):
         self.labels = []
         self.outputs = []
         for i in range(len(all_questions)):
-            self.inputs.append(prompt_template.format(all_questions[i], "\n".join(all_option_list[i])))
-            self.outputs.append([choices[op_id] for op_id in range(len(all_option_list[i]))])
+            flat_options = "\n".join(all_option_list[i])
+            self.inputs.append(prompt_template.format(all_questions[i], flat_options))
+            _full_input = prompt_template + " {}"
+            self.outputs.append([self.tokenizer.tokenize(_full_input.format(all_questions[i], flat_options, choices[op_id]))[-1]
+                                 for op_id in range(len(all_option_list[i]))])
             self.indices.append(i)
             self.labels.append(label2id[all_labels[i]])
             self.subjects.append(all_subjects[i])
@@ -226,6 +287,67 @@ class MMLUPromptGeneratorSingle(Dataset):
         self.instruction = instruction
         self.exemplars = exemplars
         self.suffix = suffix
+
+    def __len__(self):
+        return len(self.inputs)
+
+    def __getitem__(self, index):
+        if self.exemplars:
+            _input = truncate_prompt(self.exemplars[self.subjects[index]], self.tokenizer, max_length=self.max_seq_length,
+                                     instruction=self.instruction.format(self.subjects[index]),
+                                     op_input=self.inputs[index], suffix=self.suffix)
+        else:
+            _input = self.instruction.format(self.subjects[index]) + self.inputs[index] + self.suffix
+
+        return {
+            "input": _input,
+            "output": self.outputs[index],
+            "index": self.indices[index],
+            "label": self.labels[index],
+            "category": self.subjects[index],
+        }
+
+
+class MMLUPromptGeneratorSingleV2(Dataset):
+    def __init__(self, file_path: str, tokenizer: PreTrainedTokenizer, read_func=MMLUReader(), max_seq_length: int = 2048,
+                 prompt_template: str = candidate_templates["base"],
+                 instruction: str = instructions["base"],
+                 suffix: str = "",
+                 exemplars: Dict[str, List[str]] = {}):
+        all_questions, all_option_list, all_labels, all_subjects = read_func(file_path)
+        choices = ["A", "B", "C", "D"]
+        label2id = {'A': 0, 'B': 1, 'C': 2, 'D': 3, 'E': 4}
+        is_seq2seq = is_seq2seq_tokenizer(tokenizer)
+        logger.info("{} is seq2seq tokenizer: {}".format(tokenizer.__class__.__name__, is_seq2seq))
+        self.tokenizer = tokenizer
+        self.max_seq_length = max_seq_length
+
+        if prompt_template[-3:] == " {}":
+            prompt_template = prompt_template[:-3]
+
+        self.inputs = []
+        self.indices = []
+        self.subjects = []
+        self.labels = []
+        self.outputs = []
+        for i in range(len(all_questions)):
+            flat_options = "\n".join(all_option_list[i])
+            self.inputs.append(prompt_template.format(all_questions[i], flat_options))
+            # The following writing is ugly. Another way to implement this is use specific logits processor and call `generate` method.
+            _full_input_1 = prompt_template + " {}"
+            tmp = [(self.tokenizer.tokenize(_full_input_1.format(all_questions[i], flat_options, choices[op_id]))[-1], op_id)
+                   for op_id in range(len(all_option_list[i]))]
+            _full_input_2 = prompt_template + "{}"
+            tmp += [(self.tokenizer.tokenize(_full_input_2.format(all_questions[i], flat_options, choices[op_id]))[-1], op_id)
+                    for op_id in range(len(all_option_list[i]))]
+            self.outputs.append(tmp)
+            self.indices.append(i)
+            self.labels.append(label2id[all_labels[i]])
+            self.subjects.append(all_subjects[i])
+
+            self.instruction = instruction
+            self.exemplars = exemplars
+            self.suffix = suffix
 
     def __len__(self):
         return len(self.inputs)

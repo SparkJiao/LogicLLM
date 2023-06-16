@@ -126,12 +126,14 @@ class FolioCandidatePromptGenerator(Dataset):
         all_premises, all_hypotheses, all_labels = read_func(file_path)
 
         self.inputs = []
+        self.outputs = []
         self.indices = []
         self.labels = []
         for i in range(len(all_premises)):
             self.inputs.append([
                 prompt_template.format(all_premises[i], all_hypotheses[i], op) for op in FOLIO_OPTIONS
             ])
+            self.outputs.append([op for op in FOLIO_OPTIONS])
             self.indices.append(i)
             self.labels.append(all_labels[i])
 
@@ -147,6 +149,7 @@ class FolioCandidatePromptGenerator(Dataset):
             "input": [self.instruction + self.inputs[index][i] + self.suffix for i in range(len(self.inputs[index]))],
             "index": self.indices[index],
             "label": self.label2map[self.labels[index]],
+            "output": self.outputs[index],
             "prompt_index": "0",
         }
 
@@ -192,7 +195,7 @@ class CandidateSelectionCollator:
         outputs = [b.pop("output") for b in batch]
         batch = default_collate(batch)
         if self.is_seq2seq:
-            model_inputs = self.tokenizer(inputs, text_target=["" for _ in flat_inputs],
+            model_inputs = self.tokenizer(inputs, text_target=["" for _ in inputs],
                                           padding="longest", truncation=True, max_length=self.max_seq_length, return_tensors="pt")
         else:
             model_inputs = self.tokenizer(inputs,
