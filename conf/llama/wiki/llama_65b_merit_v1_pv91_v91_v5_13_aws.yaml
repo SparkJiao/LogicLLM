@@ -11,8 +11,7 @@ aws_output_bucket:
 model:
   _target_: models.llama.LlamaForConditionalGenerationFlan.from_pretrained
   merit_ratio: 0.3
-  vocab_size: 32001
-  pad_token_id: 32000
+  pad_token_id: 0
   use_peft: True
   lora_config:
     _recursive_: False
@@ -24,7 +23,7 @@ model:
       bits: 4
     r: 64
     lora_alpha: 16
-    lora_dropout: 0.05
+    lora_dropout: 0.1
   gradient_checkpointing: True
   torch_dtype:
     _target_: general_util.training_utils.return_torch_dtype
@@ -88,7 +87,7 @@ do_preprocess: False
 model_name_or_path: /tmp/llama-65b
 pretrain:
 
-exp_name: llama.65b.q_lora.merit_v91_v91.seq2seq.v5.11.3aug.w16.adamw.500steps.NA100.0608.pad_fix
+exp_name: llama.65b.q_lora.merit_v91_v91.seq2seq.v5.13.3aug.w16.adamw.500steps.NA100.0608.pad_fix.aws
 exp_notes:
 output_dir: /tmp/${exp_name}  # Fix <pad token id>
 
@@ -102,7 +101,7 @@ eval_sub_path: checkpoint-*
 per_gpu_train_batch_size: 8
 per_gpu_eval_batch_size: 8
 #learning_rate: 2e-3
-learning_rate: 4e-5
+learning_rate: 1e-4
 gradient_accumulation_steps: 32
 weight_decay: 0.00
 adam_epsilon: 1e-6
@@ -172,7 +171,7 @@ ds_cfg:
     type: AdamW
     params:
       lr: ${learning_rate}
-      betas: [ 0.9, 0.999 ]
+      betas: [ 0.9, 0.99 ]
       eps: ${adam_epsilon}
       weight_decay: ${weight_decay}
   scheduler:

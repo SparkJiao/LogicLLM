@@ -312,7 +312,7 @@ def main(cfg: DictConfig):
         torch.cuda.set_device(cfg.local_rank)
         device = str(torch.device("cuda", cfg.local_rank))
         deepspeed.init_distributed()
-        cfg.n_gpu = 1
+        cfg.n_gpu = torch.cuda.device_count() // int(os.environ["LOCAL_WORLD_SIZE"])
         cfg.world_size = dist.get_world_size()
     cfg.device = device
 

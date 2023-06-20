@@ -1,6 +1,8 @@
 hydra:
   run:
     dir: ./
+    
+aws_output_bucket:
 
 train_file: /opt/ml/input/data/train/distant_path_v9.1_fix_no_shuffle.train.0.pkl
 test_file:

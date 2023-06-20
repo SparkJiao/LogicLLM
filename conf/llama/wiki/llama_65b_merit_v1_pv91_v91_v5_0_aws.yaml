@@ -5,6 +5,8 @@ hydra:
 train_file: /opt/ml/input/data/train/distant_path_v9.1_fix_no_shuffle.train.0.pkl
 test_file:
 
+aws_output_bucket:
+
 # Model
 model:
   _target_: models.llama.LlamaForConditionalGenerationFlan.from_pretrained
@@ -89,7 +91,7 @@ do_preprocess: False
 model_name_or_path: /tmp/llama-65b
 pretrain:
 
-exp_name: llama.65b.q_lora.merit_v91_v91.seq2seq.v5.0.3aug.w16.adamw.500steps.NA100.0526
+exp_name: llama.65b.q_lora.merit_v91_v91.seq2seq.v5.0.3aug.w16.adamw.500steps.NA100.0528.aws
 exp_notes:
 output_dir: /tmp/${exp_name}  # Fix <pad token id>
 

@@ -140,7 +140,7 @@ def train(cfg, train_dataset, model, tokenizer, continue_from_global_step=0):
 
     # Distributed training (should be after apex fp16 initialization)
     if cfg.local_rank != -1:
-        model = torch.nn.parallel.DistributedDataParallel(model, device_ids=[cfg.local_rank], output_device=cfg.local_rank,
+        model = torch.nn.parallel.DistributedDataParallel(model,
                                                           find_unused_parameters=True)
         optimizer = initialize_optimizer(cfg, model=model)
         scheduler = initialize_lr_scheduler(cfg, optimizer, num_warmup_steps=num_warmup_steps, num_training_steps=t_total)
@@ -288,7 +288,7 @@ def main(cfg: DictConfig):
         torch.cuda.set_device(cfg.local_rank)
         device = str(torch.device("cuda", cfg.local_rank))
         dist.init_process_group(backend="nccl", timeout=datetime.timedelta(seconds=7200))
-        cfg.n_gpu = 1
+        cfg.n_gpu = torch.cuda.device_count() // int(os.environ["LOCAL_WORLD_SIZE"])
         cfg.world_size = dist.get_world_size()
     cfg.device = device
 
@@ -297,6 +297,9 @@ def main(cfg: DictConfig):
     logger.warning("Process rank: %s, device: %s, n_gpu: %s, distributed training: %s, 16-bits training: %s",
                    cfg.local_rank, cfg.device, cfg.n_gpu, bool(cfg.local_rank != -1), cfg.fp16)
     logger.warning(f"CPU cores: {os.cpu_count()}")
+    
+    if os.environ["LOCAL_WORLD_SIZE"] == "1" and cfg.local_rank == 0:
+        cfg.local_rank = -1
 
     # Set seed
     set_seed(cfg)
