@@ -138,9 +138,10 @@ class MMLUPromptGenerator(Dataset):
                  prompt_template: str = candidate_templates["base"],
                  instruction: str = instructions["base"],
                  suffix: str = "",
-                 exemplars: Dict[str, List[str]] = {}):
+                 exemplars: Dict[str, List[str]] = {},
+                 choices: List[str] = ["A", "B", "C", "D"],):
         all_questions, all_option_list, all_labels, all_subjects = read_func(file_path)
-        choices = ["A", "B", "C", "D"]
+        # choices = ["A", "B", "C", "D"]
         label2id = {'A': 0, 'B': 1, 'C': 2, 'D': 3, 'E': 4}
         is_seq2seq = is_seq2seq_tokenizer(tokenizer)
         logger.info("{} is seq2seq tokenizer: {}".format(tokenizer.__class__.__name__, is_seq2seq))

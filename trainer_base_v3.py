@@ -46,7 +46,7 @@ logger: logging.Logger
 torch.backends.cuda.matmul.allow_tf32 = True
 
 
-def save_model(model: Union[torch.nn.Module, FullyShardedDDP], cfg: DictConfig, output_dir: str, tokenizer: PreTrainedTokenizer = None):
+def save_model(model: torch.nn.Module, cfg: DictConfig, output_dir: str, tokenizer: PreTrainedTokenizer = None):
     # Save model checkpoint.
     if cfg.local_rank != -1:
         state_dict = model.state_dict()

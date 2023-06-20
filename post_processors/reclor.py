@@ -388,7 +388,10 @@ class MultiChoiceMetricSaver(DistGatherMixin):
         self.predictions = []
 
     def __call__(self, meta_data: Dict[str, Any], batch_model_outputs: Dict[str, Any], ddp: bool = False):
-        index = meta_data["index"].float().tolist()
+        if isinstance(meta_data["index"], torch.Tensor):
+            index = meta_data["index"].float().tolist()
+        else:
+            index = meta_data["index"]
         labels = meta_data["label"].tolist()
         inputs = meta_data["input"]
 
@@ -534,6 +537,21 @@ class MultiChoiceMetricFlatSaver(DistGatherMixin):
             json.dump(self.predictions, open(output_file, "w"))
         assert len(npy_outputs) == len(existing_ids), (len(npy_outputs), len(self.predictions), len(existing_ids))
         return metrics, self.predictions
+
+
+class LogitsSaver(MultiChoiceMetricFlatSaver):
+    def get_results(self, output_dir: str):
+        if dist.is_initialized():
+            output_file = os.path.join(output_dir, f"eval_predictions_rank{dist.get_rank()}.json")
+        else:
+            output_file = os.path.join(output_dir, "eval_predictions.json")
+
+        if dist.is_initialized() and dist.get_rank() != 0:
+            return {}, []
+
+        if not dist.is_initialized() or dist.get_rank() == 0:
+            json.dump(self.raw_predictions, open(output_file, "w"))
+        return {}, self.raw_predictions
 
 
 class MultiChoiceMetricSelectionSaver(MultiChoiceMetricSaver):

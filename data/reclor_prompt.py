@@ -345,6 +345,47 @@ class ReClorCandidateSelectionDataset(Dataset):
         }
 
 
+class ReClorCandidateSelectionDatasetV2(Dataset):
+    def __init__(self, file_path: str, tokenizer: PreTrainedTokenizer, read_func, prompt_generator, suffix: str = "The answer is"):
+        self.prompt_generator = prompt_generator
+        all_context, all_question, all_option_list, all_label = read_func(file_path)
+
+        is_seq2seq = is_seq2seq_tokenizer(tokenizer)
+        logger.info("{} is seq2seq tokenizer: {}".format(tokenizer.__class__.__name__, is_seq2seq))
+
+        self.inputs = []
+        self.indices = []
+        self.labels = []
+        self.outputs = []
+        for i in range(len(all_context)):
+            prompt = f"Context:\n{all_context[i]}\n\nQuestion:\n{all_question[i]}\n\nOptions:\n{_format_option_list(all_option_list[i])}" \
+                     f"\n\n" + suffix
+
+            options = [_rank2option[i] for i in range(len(all_option_list[i]))]
+
+            targets = [tokenizer.tokenize(prompt + " " + x)[-1] for x in options]
+            targets += [tokenizer.tokenize(prompt + x)[-1] for x in options]
+
+            self.inputs.append(prompt)
+            self.outputs.append(targets)
+
+            self.indices.append(i)
+            self.labels.append(all_label[i])
+
+    def __len__(self):
+        return len(self.inputs)
+
+    def __getitem__(self, index):
+        prompt, prompt_indices = self.prompt_generator()
+        return {
+            "input": prompt + "\n\n" + self.inputs[index],
+            "output": self.outputs[index],
+            "index": self.indices[index],
+            "prompt_index": ",".join(map(str, prompt_indices)),
+            "label": self.labels[index],
+        }
+
+
 class ReClorCandidatePPLDataset(Dataset):
     def __init__(self, file_path: str, tokenizer: PreTrainedTokenizer, read_func,
                  prefix1: str = "", prefix2: str = "\n\n", suffix: str = "\n\n"):

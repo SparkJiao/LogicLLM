@@ -145,6 +145,100 @@ class WikiSeq2SeqCollatorFixPaddingSide:
         return model_inputs
 
 
+class WikiSeq2SeqCollatorFixPaddingSideEvaluation:
+    # This collator fix the padding side problem in computing `input_lens`, which can be merged when ready.
+    def __init__(self, max_seq_length: int, tokenizer: str, causal_lm: bool = False):
+        self.max_seq_length = max_seq_length
+        self.tokenizer: PreTrainedTokenizer = AutoTokenizer.from_pretrained(tokenizer)
+        self.causal_lm = causal_lm
+
+        expand_special_tokenizer(self.tokenizer)
+
+    def __call__(self, batch):
+        examples = [b["example"] for b in batch]
+        inputs_a, inputs_b = [], []
+        for exp in examples:
+            res = construct_seq2seq(exp, generative_mode=False)
+            assert len(res[0]) == len(res[1])
+            if not self.causal_lm:
+                inputs_a.extend(res[0])
+                inputs_b.extend(res[1])
+            else:
+                inputs_a.extend(res[0])
+                inputs_b.extend([x + " " + y + self.tokenizer.eos_token for x, y in zip(res[0], res[1])])
+
+        batch_size = len(batch)
+        op_num = len(inputs_a) // batch_size
+
+        if not self.causal_lm:
+            model_inputs = self.tokenizer(inputs_a, text_target=inputs_b, padding="longest", truncation=True, return_tensors="pt",
+                                          max_length=self.max_seq_length)
+            model_inputs["decoder_input_ids"] = model_inputs["labels"].reshape(batch_size, op_num, -1)
+        else:
+            model_inputs = self.tokenizer(inputs_b, padding="longest", truncation=True, return_tensors="pt", max_length=self.max_seq_length)
+
+        meta_data = {
+            "index": [b["index"] for b in batch],
+            "label": torch.zeros(len(examples), dtype=torch.long),
+            "input": self.tokenizer.batch_decode(model_inputs["input_ids"], skip_special_tokens=False),
+        }
+        model_inputs["meta_data"] = meta_data
+
+        return model_inputs
+
+
+class WikiSeq2SeqCollatorFixPaddingSideEvaluationPPL:
+    # This collator fix the padding side problem in computing `input_lens`, which can be merged when ready.
+    def __init__(self, max_seq_length: int, tokenizer: str, causal_lm: bool = False):
+        self.max_seq_length = max_seq_length
+        self.tokenizer: PreTrainedTokenizer = AutoTokenizer.from_pretrained(tokenizer)
+        self.causal_lm = causal_lm
+
+        expand_special_tokenizer(self.tokenizer)
+
+    def __call__(self, batch):
+        examples = [b["example"] for b in batch]
+        inputs_a, inputs_b = [], []
+        for exp in examples:
+            res = construct_seq2seq(exp, generative_mode=True)
+            assert len(res[0]) == len(res[1]) == 1
+            if not self.causal_lm:
+                inputs_a.extend(res[0])
+                inputs_b.extend(res[1])
+            else:
+                inputs_a.extend(res[0])
+                inputs_b.extend([x + " " + y + self.tokenizer.eos_token for x, y in zip(res[0], res[1])])
+
+        batch_size = len(batch)
+        op_num = len(inputs_a) // batch_size
+
+        if not self.causal_lm:
+            model_inputs = self.tokenizer(inputs_a, text_target=inputs_b, padding="longest", truncation=True, return_tensors="pt",
+                                          max_length=self.max_seq_length)
+            model_inputs["decoder_input_ids"] = model_inputs["labels"].reshape(batch_size, op_num, -1)
+        else:
+            # model_inputs = self.tokenizer(inputs_b, padding="longest",
+            #                               truncation=True, return_tensors="pt", max_length=self.max_seq_length)
+            tmp = self.tokenizer(inputs_a, padding="longest", truncation=True, return_tensors="pt", max_length=self.max_seq_length)
+            input_lens = tmp["input_ids"].ne(self.tokenizer.pad_token_id).to(torch.long).sum(dim=-1)
+            model_inputs = self.tokenizer(inputs_b, padding="longest", truncation=True, return_tensors="pt", max_length=self.max_seq_length)
+            new_input_lens = model_inputs["input_ids"].ne(self.tokenizer.pad_token_id).sum(dim=1)
+            input_lens = input_lens - input_lens.eq(new_input_lens).to(input_lens.dtype) * (input_lens // 2)
+            input_lens = input_lens.to(torch.long)
+            if self.tokenizer.padding_side == "left":
+                input_lens = model_inputs["input_ids"].eq(self.tokenizer.pad_token_id).to(torch.long).sum(dim=1) + input_lens
+            model_inputs["input_lens"] = input_lens
+
+        meta_data = {
+            "index": [b["index"] for b in batch],
+            "label": torch.zeros(len(examples), dtype=torch.long),
+            "input": self.tokenizer.batch_decode(model_inputs["input_ids"], skip_special_tokens=False),
+        }
+        model_inputs["meta_data"] = meta_data
+
+        return model_inputs
+
+
 class WikiSeq2SeqCollatorWithCausalLM(WikiSeq2SeqCollator):
     def __init__(self, max_seq_length: int, tokenizer: str, causal_lm: bool = False, generative_mode: bool = False,
                  causal_lm_add_eos: bool = False):

@@ -494,6 +494,9 @@ class CosmosQACsvReader:
 
 
 class FOLIOReader:
+    def __init__(self, sep: str = " "):
+        self.sep = sep
+
     def __call__(self, file):
         all_premises = []
         all_hypotheses = []
@@ -501,7 +504,7 @@ class FOLIOReader:
         with open(file) as f:
             for line in f.readlines():
                 item = json.loads(line)
-                all_premises.append(" ".join(item["premises"]))
+                all_premises.append(self.sep.join(item["premises"]))
                 all_hypotheses.append(item["conclusion"])
                 all_labels.append(item["label"])
 

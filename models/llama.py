@@ -7,6 +7,7 @@ import bitsandbytes as bnb
 import hydra.utils
 import omegaconf
 import torch
+import accelerate
 from peft import (
     LoraConfig,
     get_peft_model,
@@ -18,7 +19,7 @@ from peft.tuners.lora import LoraLayer
 from torch import nn
 from transformers.models.llama.modeling_llama import LlamaModel, LlamaPreTrainedModel, LlamaConfig, SequenceClassifierOutputWithPast, \
     LlamaDecoderLayer, LlamaForCausalLM, CausalLMOutputWithPast
-from transformers import AutoTokenizer
+from transformers import AutoTokenizer, AutoModelForCausalLM, AutoConfig
 
 from general_util.logger import get_child_logger
 from general_util.mixin import LogMixin
@@ -170,7 +171,7 @@ class LlamaPreTrainedModelPeftMixin(LlamaPreTrainedModel, ABC):
     @classmethod
     def from_pretrained_eval_tp(cls, pretrained_model_name_or_path: Optional[Union[str, os.PathLike]], *model_args, **kwargs):
         import tensor_parallel as tp
-        from transformers.utils.bitsandbytes import replace_with_bnb_linear
+        from transformers.utils.bitsandbytes import replace_with_bnb_linear, get_keys_to_not_convert
         from transformers.utils.quantization_config import BitsAndBytesConfig
 
         use_peft = kwargs.pop("use_peft", False)
@@ -185,8 +186,14 @@ class LlamaPreTrainedModelPeftMixin(LlamaPreTrainedModel, ABC):
         model = tp.tensor_parallel(model, [torch.device(f"cuda:{i}") for i in range(n_gpus)])
 
         if load_in_8bit or load_in_4bit:
-            model = replace_with_bnb_linear(model, quantization_config=BitsAndBytesConfig(load_in_8bit=load_in_8bit,
-                                                                                          load_in_4bit=load_in_4bit))
+            modules_to_not_convert = get_keys_to_not_convert(model)
+            if not isinstance(modules_to_not_convert, list):
+                modules_to_not_convert = [modules_to_not_convert]
+
+            model = replace_with_bnb_linear(model,
+                                            modules_to_not_convert=modules_to_not_convert,
+                                            quantization_config=BitsAndBytesConfig(load_in_8bit=load_in_8bit,
+                                                                                   load_in_4bit=load_in_4bit))
             model.is_loaded_in_8bit = load_in_8bit
             model.is_loaded_in_4bit = load_in_4bit
 
@@ -660,23 +667,18 @@ class LlamaForConditionalGeneration(LlamaPreTrainedModelPeftMixin, LogMixin, ABC
         shifted_logits = logits[..., :-1, :].contiguous()
 
         label_mask = input_ids.ne(self.config.pad_token_id)
-        # logger.info(label_mask[0])
-        # if input_lens is not None:
         # keep only logits after the end of the condition part in each item of the batch
         # [batch_size * num_choices, input_lens]
         if input_lens is not None:
             lens_mask = torch.arange(input_ids.size(1), device=label_mask.device)[None, :] >= input_lens[:, None]
-            # logger.info(lens_mask[0])
             label_mask = label_mask & lens_mask
-        # logger.info(label_mask[0])
+
         lm_labels = input_ids.masked_fill(~label_mask, -1).contiguous()
         shifted_lm_labels = lm_labels[..., 1:].contiguous()
 
         if shifted_logits.device != shifted_lm_labels.device:
             shifted_logits = shifted_logits.to(shifted_lm_labels.device)
 
-        # loss = 0.
-        # if labels is not None:
         loss_fct = nn.CrossEntropyLoss(ignore_index=-1)
         lm_loss = loss_fct(shifted_logits.view(-1, logits.size(-1)), shifted_lm_labels.view(-1))
         loss = lm_loss
@@ -684,7 +686,8 @@ class LlamaForConditionalGeneration(LlamaPreTrainedModelPeftMixin, LogMixin, ABC
         if not self.training:
             acc, true_label_num = get_accuracy(shifted_logits, shifted_lm_labels)
             self.eval_metrics.update("acc", val=acc, n=true_label_num)
-            self.eval_metrics.update("loss", val=loss.item(), n=true_label_num)
+            # self.eval_metrics.update("loss", val=loss.item(), n=true_label_num)
+            self.eval_metrics.update("loss", val=loss.item(), n=batch_size)
 
             score_loss_fct = nn.CrossEntropyLoss(ignore_index=-1, reduction="none")
             score_loss = score_loss_fct(shifted_logits.view(-1, logits.size(-1)), shifted_lm_labels.view(-1))
@@ -857,123 +860,122 @@ class LlamaCtrAndLMPretrain(LlamaForConditionalGeneration, ABC):
             cls_acc=ctr_acc,
         )
 
-
-class LlamaForCausalLMEvaluation(LlamaForCausalLM, ABC):
-    def forward(
-            self,
-            input_ids: torch.LongTensor = None,
-            attention_mask: Optional[torch.Tensor] = None,
-            position_ids: Optional[torch.LongTensor] = None,
-            past_key_values: Optional[List[torch.FloatTensor]] = None,
-            inputs_embeds: Optional[torch.FloatTensor] = None,
-            labels: Optional[torch.LongTensor] = None,
-            use_cache: Optional[bool] = None,
-            output_attentions: Optional[bool] = None,
-            output_hidden_states: Optional[bool] = None,
-            return_dict: Optional[bool] = None,
-    ) -> Union[Tuple, CausalLMOutputWithPast]:
-        output_attentions = output_attentions if output_attentions is not None else self.config.output_attentions
-        output_hidden_states = (
-            output_hidden_states if output_hidden_states is not None else self.config.output_hidden_states
-        )
-        return_dict = return_dict if return_dict is not None else self.config.use_return_dict
-
-        # decoder outputs consists of (dec_features, layer_state, dec_hidden, dec_attn)
-        outputs = self.model(
-            input_ids=input_ids,
-            attention_mask=attention_mask,
-            position_ids=position_ids,
-            past_key_values=past_key_values,
-            inputs_embeds=inputs_embeds,
-            use_cache=use_cache,
-            output_attentions=output_attentions,
-            output_hidden_states=output_hidden_states,
-            return_dict=return_dict,
-        )
-
-        hidden_states = outputs[0]
-        logits = self.lm_head(hidden_states)
-
-        # tokenizer = AutoTokenizer.from_pretrained("pretrained-models/LLaMA/llama-65b")
-        # print(tokenizer.convert_ids_to_tokens(input_ids[0].tolist()))
-
-        loss = None
-        labels = input_ids.clone()
-        if labels is not None:
-            # Shift so that tokens < n predict n
-            shift_logits = logits[..., :-1, :].contiguous()
-            shift_labels = labels[..., 1:].contiguous()
-            # print(tokenizer.convert_ids_to_tokens(shift_labels[0].tolist()))
-            shift_labels.masked_fill_(shift_labels == self.config.pad_token_id, -100)
-            # Flatten the tokens
-            loss_fct = nn.CrossEntropyLoss(reduction="none")
-            shift_logits = shift_logits.view(-1, self.config.vocab_size)
-            shift_labels = shift_labels.view(-1)
-            # Enable model parallelism
-            shift_labels = shift_labels.to(shift_logits.device)
-            loss = loss_fct(shift_logits, shift_labels)
-            # reshape loss to [batch_size, seq_len]
-            loss = loss.view(labels.size(0), -1)
-            # average loss to real number of tokens (i.e. without padding) in each sequence
-            loss = loss.sum(dim=1) / shift_labels.reshape(labels.size(0), -1).ne(-100).sum(dim=1)
-
-        # if not return_dict:
-        #     output = (logits,) + outputs[1:]
-        #     return (loss,) + output if loss is not None else output
-
-        return CausalLMOutputWithPast(
-            loss=loss,
-            logits=-loss,
-            past_key_values=outputs.past_key_values,
-            hidden_states=outputs.hidden_states,
-            attentions=outputs.attentions,
-        )
-
-    @classmethod
-    def from_pretrained_eval_tp(cls, pretrained_model_name_or_path: Optional[Union[str, os.PathLike]], *model_args, **kwargs):
-        import tensor_parallel as tp
-        from transformers.utils.bitsandbytes import replace_with_bnb_linear
-        from transformers.utils.quantization_config import BitsAndBytesConfig
-
-        # use_peft = kwargs.pop("use_peft", False)
-        # lora_config = kwargs.pop("lora_config", None)
-        # load_in_8bit = kwargs.pop("load_in_8bit", False)
-        # load_in_4bit = kwargs.pop("load_in_4bit", False)
-        # quantization_config = kwargs.pop("quantization_config", None)
-
-        model = super().from_pretrained(pretrained_model_name_or_path, *model_args, **kwargs)
-
-        n_gpus = torch.cuda.device_count()
-        model = tp.tensor_parallel(model, [torch.device(f"cuda:{i}") for i in range(n_gpus)])
-
-        # if load_in_8bit or load_in_4bit:
-        #     model = replace_with_bnb_linear(model, quantization_config=BitsAndBytesConfig(load_in_8bit=load_in_8bit,
-        #                                                                                   load_in_4bit=load_in_4bit))
-        #     model.is_loaded_in_8bit = load_in_8bit
-        #     model.is_loaded_in_4bit = load_in_4bit
-
-        return model
-
-    @classmethod
-    def from_pretrained_peft_eval_tp(cls, pretrained_model_name_or_path: Optional[Union[str, os.PathLike]], *model_args, **kwargs):
-        import tensor_parallel as tp
-        from transformers.utils.bitsandbytes import replace_with_bnb_linear
-
-        base_model_name_or_path = kwargs.pop("base_model_name_or_path", pretrained_model_name_or_path)
-
-        # model = super().from_pretrained(base_model_name_or_path, *model_args, **kwargs)
-        #
-        # n_gpus = torch.cuda.device_count()
-        # model = tp.tensor_parallel(model, [torch.device(f"cuda:{i}") for i in range(n_gpus)])
-        model = cls.from_pretrained_eval_tp(base_model_name_or_path, *model_args, **kwargs)
-
-        model = PeftModel.from_pretrained(model, pretrained_model_name_or_path, *model_args, **kwargs)
-        return model
-
-    @classmethod
-    def from_pretrained_peft_eval(cls, pretrained_model_name_or_path: Optional[Union[str, os.PathLike]], *model_args, **kwargs):
-        base_model_name_or_path = kwargs.pop("base_model_name_or_path", pretrained_model_name_or_path)
-
-        model = super().from_pretrained(base_model_name_or_path, *model_args, **kwargs)
-        model = PeftModel.from_pretrained(model, pretrained_model_name_or_path, *model_args, **kwargs)
-        return model
+# class LlamaForCausalLMEvaluation(LlamaForCausalLM, ABC):
+#     def forward(
+#             self,
+#             input_ids: torch.LongTensor = None,
+#             attention_mask: Optional[torch.Tensor] = None,
+#             position_ids: Optional[torch.LongTensor] = None,
+#             past_key_values: Optional[List[torch.FloatTensor]] = None,
+#             inputs_embeds: Optional[torch.FloatTensor] = None,
+#             labels: Optional[torch.LongTensor] = None,
+#             use_cache: Optional[bool] = None,
+#             output_attentions: Optional[bool] = None,
+#             output_hidden_states: Optional[bool] = None,
+#             return_dict: Optional[bool] = None,
+#     ) -> Union[Tuple, CausalLMOutputWithPast]:
+#         output_attentions = output_attentions if output_attentions is not None else self.config.output_attentions
+#         output_hidden_states = (
+#             output_hidden_states if output_hidden_states is not None else self.config.output_hidden_states
+#         )
+#         return_dict = return_dict if return_dict is not None else self.config.use_return_dict
+#
+#         # decoder outputs consists of (dec_features, layer_state, dec_hidden, dec_attn)
+#         outputs = self.model(
+#             input_ids=input_ids,
+#             attention_mask=attention_mask,
+#             position_ids=position_ids,
+#             past_key_values=past_key_values,
+#             inputs_embeds=inputs_embeds,
+#             use_cache=use_cache,
+#             output_attentions=output_attentions,
+#             output_hidden_states=output_hidden_states,
+#             return_dict=return_dict,
+#         )
+#
+#         hidden_states = outputs[0]
+#         logits = self.lm_head(hidden_states)
+#
+#         # tokenizer = AutoTokenizer.from_pretrained("pretrained-models/LLaMA/llama-65b")
+#         # print(tokenizer.convert_ids_to_tokens(input_ids[0].tolist()))
+#
+#         loss = None
+#         labels = input_ids.clone()
+#         if labels is not None:
+#             # Shift so that tokens < n predict n
+#             shift_logits = logits[..., :-1, :].contiguous()
+#             shift_labels = labels[..., 1:].contiguous()
+#             # print(tokenizer.convert_ids_to_tokens(shift_labels[0].tolist()))
+#             shift_labels.masked_fill_(shift_labels == self.config.pad_token_id, -100)
+#             # Flatten the tokens
+#             loss_fct = nn.CrossEntropyLoss(reduction="none")
+#             shift_logits = shift_logits.view(-1, self.config.vocab_size)
+#             shift_labels = shift_labels.view(-1)
+#             # Enable model parallelism
+#             shift_labels = shift_labels.to(shift_logits.device)
+#             loss = loss_fct(shift_logits, shift_labels)
+#             # reshape loss to [batch_size, seq_len]
+#             loss = loss.view(labels.size(0), -1)
+#             # average loss to real number of tokens (i.e. without padding) in each sequence
+#             loss = loss.sum(dim=1) / shift_labels.reshape(labels.size(0), -1).ne(-100).sum(dim=1)
+#
+#         # if not return_dict:
+#         #     output = (logits,) + outputs[1:]
+#         #     return (loss,) + output if loss is not None else output
+#
+#         return CausalLMOutputWithPast(
+#             loss=loss,
+#             logits=-loss,
+#             past_key_values=outputs.past_key_values,
+#             hidden_states=outputs.hidden_states,
+#             attentions=outputs.attentions,
+#         )
+#
+#     @classmethod
+#     def from_pretrained_eval_tp(cls, pretrained_model_name_or_path: Optional[Union[str, os.PathLike]], *model_args, **kwargs):
+#         import tensor_parallel as tp
+#         from transformers.utils.bitsandbytes import replace_with_bnb_linear
+#         from transformers.utils.quantization_config import BitsAndBytesConfig
+#
+#         # use_peft = kwargs.pop("use_peft", False)
+#         # lora_config = kwargs.pop("lora_config", None)
+#         # load_in_8bit = kwargs.pop("load_in_8bit", False)
+#         # load_in_4bit = kwargs.pop("load_in_4bit", False)
+#         # quantization_config = kwargs.pop("quantization_config", None)
+#
+#         model = super().from_pretrained(pretrained_model_name_or_path, *model_args, **kwargs)
+#
+#         n_gpus = torch.cuda.device_count()
+#         model = tp.tensor_parallel(model, [torch.device(f"cuda:{i}") for i in range(n_gpus)])
+#
+#         # if load_in_8bit or load_in_4bit:
+#         #     model = replace_with_bnb_linear(model, quantization_config=BitsAndBytesConfig(load_in_8bit=load_in_8bit,
+#         #                                                                                   load_in_4bit=load_in_4bit))
+#         #     model.is_loaded_in_8bit = load_in_8bit
+#         #     model.is_loaded_in_4bit = load_in_4bit
+#
+#         return model
+#
+#     @classmethod
+#     def from_pretrained_peft_eval_tp(cls, pretrained_model_name_or_path: Optional[Union[str, os.PathLike]], *model_args, **kwargs):
+#         import tensor_parallel as tp
+#         from transformers.utils.bitsandbytes import replace_with_bnb_linear
+#
+#         base_model_name_or_path = kwargs.pop("base_model_name_or_path", pretrained_model_name_or_path)
+#
+#         # model = super().from_pretrained(base_model_name_or_path, *model_args, **kwargs)
+#         #
+#         # n_gpus = torch.cuda.device_count()
+#         # model = tp.tensor_parallel(model, [torch.device(f"cuda:{i}") for i in range(n_gpus)])
+#         model = cls.from_pretrained_eval_tp(base_model_name_or_path, *model_args, **kwargs)
+#
+#         model = PeftModel.from_pretrained(model, pretrained_model_name_or_path, *model_args, **kwargs)
+#         return model
+#
+#     @classmethod
+#     def from_pretrained_peft_eval(cls, pretrained_model_name_or_path: Optional[Union[str, os.PathLike]], *model_args, **kwargs):
+#         base_model_name_or_path = kwargs.pop("base_model_name_or_path", pretrained_model_name_or_path)
+#
+#         model = super().from_pretrained(base_model_name_or_path, *model_args, **kwargs)
+#         model = PeftModel.from_pretrained(model, pretrained_model_name_or_path, *model_args, **kwargs)
+#         return model
