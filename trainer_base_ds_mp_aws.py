@@ -183,10 +183,8 @@ def train(cfg, model, tokenizer, continue_from_global_step=0):
             epoch_update_steps = len(sub_train_dataloader) // cfg.gradient_accumulation_steps
             sub_train_dataloader = iter(deepspeed.utils.RepeatingLoader(sub_train_dataloader))
 
-            # epoch_iterator = tqdm(sub_train_dataloader, desc="Iteration", disable=cfg.local_rank not in [-1, 0], dynamic_ncols=True)
             if isinstance(sub_train_sampler, DistributedSampler):
-                sub_train_dataloader.sampler.set_epoch(epoch)
-            # if dist.is_initialized(): dist.barrier()
+                sub_train_sampler.set_epoch(epoch)
 
             for step in tqdm(range(epoch_update_steps), desc="Iteration", disable=cfg.local_rank not in [-1, 0], dynamic_ncols=True):
                 # If training is continued from a checkpoint, fast forward
