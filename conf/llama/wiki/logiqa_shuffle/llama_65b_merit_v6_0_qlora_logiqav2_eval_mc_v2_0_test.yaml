@@ -2,9 +2,10 @@ hydra:
   run:
     dir: ./
 
-train_file: race-reclor/race-train-reclor.json
-dev_file: race-reclor/race-dev-reclor.json
-test_file: race-reclor/race-test-reclor.json
+train_file: logiqa-v2/train.txt
+dev_file: logiqa-v2/dev.txt
+test_file: logiqa-v2/test.txt
+#test_file: logiqa-v2/dev.txt
 
 model:
   _target_: models.llama.LlamaForConditionalGeneration.from_pretrained
@@ -15,38 +16,33 @@ model:
   load_in_8bit: True
 
 model_eval:
-  _target_: models.llama.load_peft_model_from_pretrained_tp
-  model:
-    _target_: transformers.models.llama.modeling_llama.LlamaForCausalLM.from_pretrained
-    pretrained_model_name_or_path: ${model_name_or_path}
-    torch_dtype:
-      _target_: general_util.training_utils.return_torch_dtype
-      dtype: bfloat16
+  _target_: models.llama.LlamaForConditionalGeneration.from_pretrained_peft_eval
+  base_model_name_or_path: ${model_name_or_path}
   torch_dtype:
     _target_: general_util.training_utils.return_torch_dtype
     dtype: bfloat16
+  low_cpu_mem_usage: True
+  device_map: "auto"
 
 
 
 # Data loading
 read_tensor:
-  _target_: data.reclor_prompt.ReClorCandidateSelectionDatasetV2
+  _target_: data.reclor_prompt.ReClorCandidateGenerativeDatasetFlat
   prompt_generator:
     _target_: data.reclor_prompt.ReClorExemplarGenerator
     file_path: ${train_file}
     shot: 0
     random_sampling: False
     read_func:
-      _target_: data.readers.ReClorReader
-#    instruct: "Read the following dialogue, answer the question by selecting the correct option:"
-#    instruct: "Answer the following question with the given context through logical reasoning:"
-#    instruct: "Answer the following question with the given context and options: "
-#    instruct: "Answer the following question with the given context and options. Let's think step by step: "
+      _target_: data.readers.LogiQAReaderV2
+  #    instruct: "Read the following dialogue, answer the question by selecting the correct option:"
+  #    instruct: "Answer the following question with the given context through logical reasoning:"
+  #    instruct: "Answer the following question with the given context and options: "
+  #    instruct: "Answer the following question with the given context and options. Let's think step by step: "
   read_func:
-    _target_: data.readers.ReClorReader
-#  suffix:
-#    _target_: data.folio_prompt.get_suffix_by_name
-#    name: base
+    _target_: data.readers.LogiQAReaderV2
+#  suffix: ""
 
 
 extended_vocab:
@@ -62,13 +58,13 @@ num_workers: 4
 prefetch_factor: 2
 
 # Wiki path pretrain v8.2
-model_name_or_path: pretrained-models/LLaMA/llama-30b
+model_name_or_path: pretrained-models/LLaMA/llama-65b
 pretrain:
 
-
-exp_name: llama.30b.merit_v91_v91.seq2seq.v5.0.3aug.w4.adamw.400steps.NA100.0525/
+exp_name: llama.65b.q_lora.merit_v91_v91.seq2seq.v6.0.3aug.w8.adamw.500steps.NA100.0626
 exp_notes:
-output_dir: experiments/${exp_name}
+output_dir: experiments/${exp_name}  # Fix <pad token id>
+
 
 do_train: False
 evaluate_during_training: True
@@ -119,9 +115,9 @@ prediction_cfg:
 eval_forward_fn:
   _target_: general_util.evaluator.DefaultForwardFn
 post_process:
-  _target_: post_processors.reclor.MultiChoiceMetricSelectionSaver
-  tokenizer: ${model_name_or_path}
-predict_dir: ${output_dir}/race_dev_mc_0shot.v2.0
+  _target_: post_processors.reclor.MultiChoiceMetricFlatSaver
+#  tokenizer: ${model_name_or_path}
+predict_dir: ${output_dir}/logiqav2_test_mc_0shot.v1.0
 
 #dist_init:
 #  _target_: general_util.dist_utils.setup_slurm_distributed
@@ -143,7 +139,7 @@ ds_cfg:
     type: AdamW
     params:
       lr: ${learning_rate}
-      betas: [0.9, 0.999]
+      betas: [ 0.9, 0.999 ]
       eps: ${adam_epsilon}
       weight_decay: ${weight_decay}
   scheduler:
@@ -159,19 +155,19 @@ ds_cfg:
     initial_scale_power: 12
   zero_optimization:
     stage: 3
-#    offload_optimizer:
-#      device: cpu
-#      pin_memory: True
-#    offload_param:
-#      device: cpu
-#      pin_memory: True
-#  activation_checkpointing:
-#    partition_activations: True
-#    cpu_checkpointing: True
-#    contiguous_memory_optimization: False
-#    number_checkpoints: False
-#    synchronize_checkpoint_boundary: False
-#    profile: False
+  #    offload_optimizer:
+  #      device: cpu
+  #      pin_memory: True
+  #    offload_param:
+  #      device: cpu
+  #      pin_memory: True
+  #  activation_checkpointing:
+  #    partition_activations: True
+  #    cpu_checkpointing: True
+  #    contiguous_memory_optimization: False
+  #    number_checkpoints: False
+  #    synchronize_checkpoint_boundary: False
+  #    profile: False
   steps_per_print: 1024
 
 summary_helper:

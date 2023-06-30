@@ -452,6 +452,79 @@ class MultiChoiceMetricSaver(DistGatherMixin):
         return metrics, self.predictions
 
 
+class MultiChoiceMetricLogitsSaver(DistGatherMixin):
+    def __init__(self, ):
+        self.predictions = []
+
+    def __call__(self, meta_data: Dict[str, Any], batch_model_outputs: Dict[str, Any], ddp: bool = False):
+        if isinstance(meta_data["index"], torch.Tensor):
+            index = meta_data["index"].float().tolist()
+        else:
+            index = meta_data["index"]
+        labels = meta_data["label"].tolist()
+        inputs = meta_data["input"]
+
+        logits = batch_model_outputs["logits"].detach().float()
+        if len(logits.size()) == 1:
+            logits = logits.reshape(len(labels), -1)
+        _, pred = logits.max(dim=-1)
+        pred = pred.tolist()
+
+        logits = logits.tolist()
+        if ddp:
+            obj = [pred, index, labels, inputs, logits]
+            gather_res = self.gather_object(obj)
+            if dist.get_rank() == 0:
+                pred = []
+                index = []
+                labels = []
+                inputs = []
+                logits = []
+                for item in gather_res:
+                    pred.extend(item[0])
+                    index.extend(item[1])
+                    labels.extend(item[2])
+                    inputs.extend(item[3])
+                    logits.extend(item[4])
+
+        self.predictions.extend([{
+            "index": idx,
+            "pred": p,
+            "label": t,
+            "input": src,
+            "logits": logit,
+        } for idx, p, t, src, logit in zip(index, pred, labels, inputs, logits)])
+
+    def get_results(self, output_dir: str):
+        # output_file = os.path.join(output_dir, "eval_predictions.npy")
+        if dist.is_initialized():
+            output_file = os.path.join(output_dir, f"eval_predictions_rank{dist.get_rank()}.json")
+        else:
+            output_file = os.path.join(output_dir, "eval_predictions.json")
+
+        self.predictions = sorted(self.predictions, key=lambda x: x["index"])
+
+        correct = 0
+        existing_ids = set()
+        npy_outputs = []
+        for pred in self.predictions:
+            if pred["index"] in existing_ids:
+                continue
+            existing_ids.add(pred["index"])
+            if pred["pred"] == pred["label"]:
+                correct += 1
+            npy_outputs.append(pred["pred"])
+
+        metrics = {"acc": round(correct / len(existing_ids), 4)}
+
+        if not dist.is_initialized() or dist.get_rank() == 0:
+            np.save(os.path.join(output_dir, "decode_results.npy"), np.array(npy_outputs))
+            json.dump(metrics, open(os.path.join(output_dir, "metrics.json"), "w"))
+            json.dump(self.predictions, open(output_file, "w"))
+        assert len(npy_outputs) == len(existing_ids), (len(npy_outputs), len(self.predictions), len(existing_ids))
+        return metrics, self.predictions
+
+
 class MultiChoiceMetricFlatSaver(DistGatherMixin):
     def __init__(self, ):
         self.raw_predictions = []
@@ -558,7 +631,7 @@ class MultiChoiceMetricSelectionSaver(MultiChoiceMetricSaver):
     def __init__(self, tokenizer: Union[str, PreTrainedTokenizer]):
         super().__init__()
         if isinstance(tokenizer, str):
-            tokenizer = AutoTokenizer.from_pretrained(tokenizer)
+            tokenizer = AutoTokenizer.from_pretrained(tokenizer, use_fast=False)
 
         self.tokenizer = tokenizer
 
@@ -572,14 +645,25 @@ class MultiChoiceMetricSelectionSaver(MultiChoiceMetricSaver):
         logits = batch_model_outputs["logits"].detach().float()
         assert logits.dim() == 3, logits.dim()  # [batch_size, seq_len, vocab_size]
         pred = []
-        for i, outputs in enumerate(batch_outputs):
-            output_probs = []
-            for output in outputs:
-                # assert len(output) == 1
-                target_token_id = self.tokenizer.convert_tokens_to_ids(output)
-                output_probs.append(logits[i, -1, target_token_id].item())
-            output_probs = torch.tensor(output_probs)
-            pred.append(output_probs.argmax().item())
+        if isinstance(batch_outputs[0][0], list) or isinstance(batch_outputs[0][0], tuple):
+            for i, outputs in enumerate(batch_outputs):
+                output_probs = []
+                for output in outputs:
+                    target_token_id = self.tokenizer.convert_tokens_to_ids(output[0])
+                    output_probs.append(logits[i, -1, target_token_id].item())
+                output_probs = torch.tensor(output_probs)
+                tgt_id = output_probs.argmax().item()
+                pred.append(outputs[tgt_id][1])
+                assert isinstance(pred[-1], int)
+        else:
+            assert isinstance(batch_outputs[0][0], str)
+            for i, outputs in enumerate(batch_outputs):
+                output_probs = []
+                for output in outputs:
+                    target_token_id = self.tokenizer.convert_tokens_to_ids(output)
+                    output_probs.append(logits[i, -1, target_token_id].item())
+                output_probs = torch.tensor(output_probs)
+                pred.append(output_probs.argmax().item())
 
         if ddp:
             obj = [pred, index, labels, inputs]

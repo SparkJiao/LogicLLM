@@ -2,19 +2,24 @@ hydra:
   run:
     dir: ./
 
-train_file: wiki_erica_path/v9.1_fixed/distant_path_v9.1_fix_no_shuffle.train.0.pkl
+aws_output_bucket:
+
+train_file: /opt/ml/input/data/train/distant_path_v9.1_fix_no_shuffle.train.0.pkl
 test_file:
 
 # Model
 model:
-  _target_: models.llama.LlamaForConditionalGeneration.from_pretrained
+  _target_: transformers.AutoConfig.from_pretrained
   pad_token_id: 0
-  use_peft: False
-  gradient_checkpointing: True
-  torch_dtype:
-    _target_: general_util.training_utils.return_torch_dtype
-    dtype: bfloat16
 
+
+get_layers:
+    _target_: models.llama_ds_mp_wrap.get_layers_from_config
+    activation_checkpointing: True
+
+# Pipeline parallelism specific
+num_stages: 8
+#activation_checkpoint_interval: 1
 
 # Data loading
 read_tensor_train:
@@ -42,20 +47,21 @@ collator:
   causal_lm: True
   causal_lm_add_eos: False
   generative_mode: True
-  vanilla_input: True
+  return_standard_inputs: True
+  use_fast: False
 
 # Dataloader
-num_workers: 2
+num_workers: 4
 prefetch_factor: 2
 
 do_preprocess: False
 
-model_name_or_path: pretrained-models/LLaMA/llama-65b
+model_name_or_path: /tmp/llama-65b-mp8
 pretrain:
 
-exp_name: llama.65b.merit_v91_v91.seq2seq.v5.0.3aug.w8.adamw.500steps.NA100.0623
+exp_name: llama.65b.merit_v91_v91.seq2seq.v5.0.3aug.mp8.dp2.adamw.500steps.NA100.0630.aws
 exp_notes:
-output_dir: experiments/${exp_name}  # Fix <pad token id>
+output_dir: /tmp/${exp_name}  # Fix <pad token id>
 
 do_train: True
 evaluate_during_training: False
@@ -64,11 +70,11 @@ do_eval: True
 eval_sub_path: checkpoint-*
 
 # Training hyper-parameters
-per_gpu_train_batch_size: 1
-per_gpu_eval_batch_size: 8
+per_gpu_train_batch_size: 2
+per_gpu_eval_batch_size: 1
 #learning_rate: 2e-3
 learning_rate: 1e-6
-gradient_accumulation_steps: 512
+gradient_accumulation_steps: 1024
 weight_decay: 0.01
 adam_epsilon: 1e-6
 adam_betas: "(0.9, 0.99)"
@@ -144,11 +150,15 @@ ds_cfg:
       warmup_num_steps:
       warmup_type: linear
   gradient_clipping: ${max_grad_norm}
-#  fp16:
+  fp16:
+    enabled: true
+    loss_scale: 0
+    loss_scale_window: 1000
+    initial_scale_power: 12
+    hysteresis: 2
+    min_loss_scale: 1
+#  bf16:
 #    enabled: ${fp16}
-#    initial_scale_power: 12
-  bf16:
-    enabled: ${fp16}
 #  autotuning:
 #    enabled: true
 #    arg_mappings:
@@ -156,7 +166,7 @@ ds_cfg:
 #      gradient_accumulation_steps: "gradient_accumulation_steps"
 #      zero_optimization: "ds_cfg.zero_optimization"
   zero_optimization:
-    stage: 3
+    stage: 1
     contiguous_gradients: True
     overlap_comm: True
     reduce_scatter: True
@@ -165,9 +175,9 @@ ds_cfg:
     offload_optimizer:
       device: cpu
       pin_memory: True
-    offload_param:
-      device: cpu
-      pin_memory: True
+#    offload_param:
+#      device: cpu
+#      pin_memory: True
 #  activation_checkpointing:
 #    partition_activations: True
 #    cpu_checkpointing: True

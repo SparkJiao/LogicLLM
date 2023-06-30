@@ -1,187 +1,222 @@
 import os
-from abc import ABC
-from dataclasses import dataclass
-from typing import Optional, List, Tuple, Union
 
-import bitsandbytes as bnb
-import hydra.utils
-import omegaconf
+import deepspeed
 import torch
-from peft import (
-    LoraConfig,
-    get_peft_model,
-    TaskType,
-    PeftModel,
-    prepare_model_for_kbit_training,
-)
-from peft.tuners.lora import LoraLayer
-from torch import nn
+from deepspeed.pipe import TiedLayerSpec, LayerSpec
 from torch.nn import CrossEntropyLoss
-import random
-import numpy as np
 from transformers.models.llama.modeling_llama import (
-    LlamaModel,
     LlamaForCausalLM,
-    LlamaPreTrainedModel,
     LlamaConfig,
-    SequenceClassifierOutputWithPast,
     LlamaDecoderLayer,
-    BaseModelOutputWithPast,
+    LlamaRMSNorm,
 )
 
 from general_util.logger import get_child_logger
-from general_util.mixin import LogMixin
-from modules.layers import fold_tensor, get_accuracy
-from deepspeed.pipe import PipelineModule, TiedLayerSpec, LayerSpec
 
 logger = get_child_logger(__name__)
 
-# LORA_TARGET_MODULES = [
-#     "q_proj",
-#     "v_proj",
-# ]
-
-PAD_TOKEN_ID = 32000
-
-
-# Copied from transformers.models.bart.modeling_bart._make_causal_mask
-def _make_causal_mask(
-        input_ids_shape: torch.Size, dtype: torch.dtype, device: torch.device, past_key_values_length: int = 0
-):
-    """
-    Make causal mask used for bi-directional self-attention.
-    """
-    bsz, tgt_len = input_ids_shape
-    mask = torch.full((tgt_len, tgt_len), torch.tensor(torch.finfo(dtype).min, device=device), device=device)
-    mask_cond = torch.arange(mask.size(-1), device=device)
-    mask.masked_fill_(mask_cond < (mask_cond + 1).view(mask.size(-1), 1), 0)
-    mask = mask.to(dtype)
-
-    if past_key_values_length > 0:
-        mask = torch.cat([torch.zeros(tgt_len, past_key_values_length, dtype=dtype, device=device), mask], dim=-1)
-    return mask[None, None, :, :].expand(bsz, 1, tgt_len, tgt_len + past_key_values_length)
-
-
-# Copied from transformers.models.bart.modeling_bart._expand_mask
-def _expand_mask(mask: torch.Tensor, dtype: torch.dtype, tgt_len: Optional[int] = None):
-    """
-    Expands attention_mask from `[bsz, seq_len]` to `[bsz, 1, tgt_seq_len, src_seq_len]`.
-    """
-    bsz, src_len = mask.size()
-    tgt_len = tgt_len if tgt_len is not None else src_len
-
-    expanded_mask = mask[:, None, None, :].expand(bsz, 1, tgt_len, src_len).to(dtype)
-
-    inverted_mask = 1.0 - expanded_mask
-
-    return inverted_mask.masked_fill(inverted_mask.to(torch.bool), torch.finfo(dtype).min)
-
-
-# Copied from transformers.models.bart.modeling_bart.BartDecoder._prepare_decoder_attention_mask
-def _prepare_decoder_attention_mask(attention_mask, input_shape, inputs_embeds, past_key_values_length):
-    # create causal mask
-    # [bsz, seq_len] -> [bsz, 1, tgt_seq_len, src_seq_len]
-    combined_attention_mask = None
-    if input_shape[-1] > 1:
-        combined_attention_mask = _make_causal_mask(
-            input_shape,
-            inputs_embeds.dtype,
-            device=inputs_embeds.device,
-            past_key_values_length=past_key_values_length,
-        )
-
-    if attention_mask is not None:
-        # [bsz, seq_len] -> [bsz, 1, tgt_seq_len, src_seq_len]
-        expanded_attn_mask = _expand_mask(attention_mask, inputs_embeds.dtype, tgt_len=input_shape[-1]).to(
-            inputs_embeds.device
-        )
-        combined_attention_mask = (
-            expanded_attn_mask if combined_attention_mask is None else expanded_attn_mask + combined_attention_mask
-        )
-
-    return combined_attention_mask
-
 
 class EmbeddingPipeLayer(torch.nn.Module):
-    def __init__(self, model: LlamaModel):
+    def __init__(self, model: LlamaForCausalLM):
         super().__init__()
-        self.embed_tokens = model.embed_tokens
-        self.padding_idx = model.padding_idx
+        self.embed_tokens = model.model.embed_tokens
         self.weight = self.embed_tokens.weight
 
     def forward(self, ipt):
-        input_ids, attention_mask, labels = ipt
-
-        batch_size, seq_length = input_ids.shape
-        seq_length_with_past = seq_length
-        past_key_values_length = 0
-
-        # device = input_ids.device if input_ids is not None else inputs_embeds.device
-        device = input_ids.device
-        position_ids = torch.arange(
-            past_key_values_length, seq_length + past_key_values_length, dtype=torch.long, device=device
-        )
-        position_ids = position_ids.unsqueeze(0).view(-1, seq_length)
-
+        input_ids, attention_mask, position_ids = ipt
         inputs_embeds = self.embed_tokens(input_ids)
-        hidden_states = inputs_embeds
-
-        return hidden_states, attention_mask, position_ids, labels
+        return inputs_embeds, attention_mask, position_ids
 
 
 class LlamaPipeLayer(torch.nn.Module):
-    def __init__(self, model: LlamaModel, layer_idx):
+    def __init__(self, model: LlamaForCausalLM, layer_idx):
         super().__init__()
-        self.layer = model.layers[layer_idx]
-        self.layer_idx = torch.tensor(layer_idx)
+        self.layer = model.model.layers[layer_idx]
+        self.gradient_checkpointing = model.model.gradient_checkpointing
 
     def forward(self, ipt):
-        hidden_states, attention_mask, position_ids, labels = ipt
-        layer_outputs = self.layer(hidden_states, attention_mask, position_ids)
+        hidden_states, attention_mask, position_ids = ipt
+
+        if self.gradient_checkpointing and self.training:
+            output_attentions = False
+
+            def create_custom_forward(module):
+                def custom_forward(*inputs):
+                    # None for past_key_value
+                    return module(*inputs, output_attentions, None)
+
+                return custom_forward
+
+            # layer_outputs = torch.utils.checkpoint.checkpoint(
+            #     create_custom_forward(self.layer),
+            #     hidden_states,
+            #     attention_mask,
+            #     position_ids,
+            #     None,
+            # )
+            # deepspeed checkpoint auto use outputs[0] if len(outputs) == 1
+            outputs = deepspeed.checkpointing.checkpoint(
+                create_custom_forward(self.layer),
+                hidden_states,
+                attention_mask,
+                position_ids,
+                None,
+            )
+            layer_outputs = [outputs]
+        else:
+            layer_outputs = self.layer(
+                hidden_states,
+                attention_mask=attention_mask,
+                position_ids=position_ids,
+                # past_key_value=past_key_value,
+                # output_attentions=output_attentions,
+                # use_cache=use_cache,
+            )
+
         hidden_states = layer_outputs[0]
-        return hidden_states, attention_mask, position_ids, labels
+        return hidden_states, attention_mask, position_ids
 
 
 class FLNPipeLayer(torch.nn.Module):
-    def __init__(self, model: LlamaModel):
+    def __init__(self, model: LlamaForCausalLM):
         super().__init__()
-        self.norm = model.norm
+        self.norm = model.model.norm
 
     def forward(self, ipt):
-        hidden_states, attention_mask, position_ids, labels = ipt
+        hidden_states, attention_mask, position_ids = ipt
         hidden_states = self.norm(hidden_states)
-        return hidden_states, labels
+
+        return hidden_states
 
 
 class LMPipeLayer(torch.nn.Module):
-    def __init__(self, model: LlamaModel):
+    def __init__(self, model: LlamaForCausalLM):
         super().__init__()
         self.lm_head = model.lm_head
+        self.weight = self.lm_head.weight
+        self.config = model.config
 
     def forward(self, ipt):
-        hidden_states, labels = ipt
-        logits = self.lm_head(hidden_states)
-        return logits, labels
+        hidden_states = ipt
+        logits = torch.nn.functional.linear(hidden_states, self.lm_head.weight)
+
+        return logits
 
 
-class LossPipeLayer(torch.nn.Module):
-    def __init__(self, model: LlamaModel):
-        super().__init__()
+def loss_fn(outputs, labels):
+    logits = outputs
+    # last_rank_index = labels[:, -1]
+    # labels = labels[:, :-1]
+    shift_logits = logits[..., :-1, :].contiguous()
+    shift_labels = labels[..., 1:].contiguous()
 
-    def forward(self, ipt):
-        logits, labels = ipt
+    loss_fct = CrossEntropyLoss()
+    loss = loss_fct(shift_logits.reshape(-1, shift_logits.size(-1)), shift_labels.reshape(-1))
+    # print("loss", loss, loss.requires_grad)
+    # print(os.environ["LOCAL_RANK"], index, last_rank_index)
+    return loss
+
+
+def get_model(model):
+    layers = [TiedLayerSpec("weight", EmbeddingPipeLayer, model=model, tied_weight_attr="weight"),
+              *[LayerSpec(LlamaPipeLayer, model=model, layer_idx=idx) for idx in range(model.config.num_hidden_layers)],
+              LayerSpec(FLNPipeLayer, model=model),
+              TiedLayerSpec("weight", LMPipeLayer, model=model, tied_weight_attr="weight"),
+              ]
+    return layers
+
+
+class EmbeddingPipe(torch.nn.Embedding):
+    def forward(self, args):
+        input_ids, attention_mask, position_ids = args
+        inputs_embeds = super().forward(input_ids)
+        return inputs_embeds, attention_mask, position_ids
+
+
+class ParallelTransformerLayerPipe(LlamaDecoderLayer):
+    def __init__(self, config: LlamaConfig, activation_checkpointing: bool = False):
+        super().__init__(config)
+        self.activation_checkpointing = activation_checkpointing
+        # for name, param in self.named_parameters():
+        #     if "norm" in name:
+        #         continue
+        #     param.data = param.data.to(dtype)
+
+    def forward(self, args):
+        if self.activation_checkpointing:
+            return self._ckpt_forward(args)
+
+        hidden_states, attention_mask, position_ids = args
+        outputs = LlamaDecoderLayer.forward(self,
+                                            hidden_states,
+                                            attention_mask,
+                                            position_ids,
+                                            )
+        return outputs[0], attention_mask, position_ids
+
+    def _ckpt_forward(self, args):
+        hidden_states, attention_mask, position_ids = args
+
+        def create_custom_forward(module):
+            def custom_forward(*inputs):
+                return LlamaDecoderLayer.forward(module, *inputs)
+
+            return custom_forward
+
+        # deepspeed checkpoint auto use outputs[0] if len(outputs) == 1
+        outputs = deepspeed.checkpointing.checkpoint(
+            create_custom_forward(self),
+            hidden_states,
+            attention_mask,
+            position_ids,
+            None,
+        )
+        # layer_outputs = torch.utils.checkpoint.checkpoint(
+        #     create_custom_forward(self),
+        #     hidden_states,
+        #     attention_mask,
+        #     position_ids,
+        #     None,
+        # )
+
+        return outputs, attention_mask, position_ids
+
+
+class LayerNormPipe(LlamaRMSNorm):
+    def forward(self, args):
+        hidden_states, attention_mask, position_ids = args
+        last_hidden_states = super().forward(hidden_states)
+        return last_hidden_states
+
+
+class LMLayerPipe(torch.nn.Linear):
+    def forward(self, args):
+        hidden_states = args
+        logits = super().forward(hidden_states)
+        return logits
+
+
+class LossLayer(torch.nn.Module):
+    def forward(self, args):
+        logits, labels = args
         shift_logits = logits[..., :-1, :].contiguous()
         shift_labels = labels[..., 1:].contiguous()
+
         loss_fct = CrossEntropyLoss()
         loss = loss_fct(shift_logits.reshape(-1, shift_logits.size(-1)), shift_labels.reshape(-1))
         return loss
 
 
-def get_model(model):
-    layers = [EmbeddingPipeLayer(model=model),
-              *[LlamaPipeLayer(model=model, layer_idx=idx) for idx in
-                range(model.config.num_layers)],
-              FLNPipeLayer(model=model),
-              TiedLayerSpec("embed_tokens", LMPipeLayer, model=model),
-              LossPipeLayer(model=model)]
+def get_layers_from_config(model_config, activation_checkpointing: bool = False):
+    layers = [
+        # LayerSpec(EmbeddingPipe, model_config.vocab_size, model_config.hidden_size),
+        TiedLayerSpec("weight", EmbeddingPipe, model_config.vocab_size, model_config.hidden_size, tied_weight_attr="weight"),
+        *[LayerSpec(ParallelTransformerLayerPipe, model_config, activation_checkpointing)
+          for _ in range(model_config.num_hidden_layers)],
+        LayerSpec(LayerNormPipe, model_config.hidden_size, model_config.rms_norm_eps),
+        # LayerSpec(LMLayerPipe, model_config.hidden_size, model_config.vocab_size, bias=False),
+        TiedLayerSpec("weight", LMLayerPipe, model_config.hidden_size, model_config.vocab_size, bias=False,
+                      tied_weight_attr="weight"),
+        # LayerSpec(LossLayer),
+    ]
     return layers

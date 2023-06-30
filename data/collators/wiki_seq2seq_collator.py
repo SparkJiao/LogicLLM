@@ -1,3 +1,4 @@
+import os
 import random
 
 import torch
@@ -5,7 +6,7 @@ from transformers import AutoTokenizer, PreTrainedTokenizer
 
 from general_util.logger import get_child_logger
 from general_util.tokenization_utils import expand_special_tokenizer
-from data.collators.flan import combine_tensor_on_length
+from data.collators.flan import combine_tensor_on_length, get_lm_labels, convert_to_standard_inputs
 
 logger = get_child_logger("Wiki.Path.seq2seq.collator")
 
@@ -97,9 +98,9 @@ class WikiSeq2SeqCollator:
 
 class WikiSeq2SeqCollatorFixPaddingSide:
     # This collator fix the padding side problem in computing `input_lens`, which can be merged when ready.
-    def __init__(self, max_seq_length: int, tokenizer: str, causal_lm: bool = False, generative_mode: bool = False):
+    def __init__(self, max_seq_length: int, tokenizer: str, causal_lm: bool = False, generative_mode: bool = False, **kwargs):
         self.max_seq_length = max_seq_length
-        self.tokenizer: PreTrainedTokenizer = AutoTokenizer.from_pretrained(tokenizer)
+        self.tokenizer: PreTrainedTokenizer = AutoTokenizer.from_pretrained(tokenizer, **kwargs)
         self.causal_lm = causal_lm
         self.generative_mode = generative_mode
 
@@ -175,7 +176,17 @@ class WikiSeq2SeqCollatorFixPaddingSideEvaluation:
                                           max_length=self.max_seq_length)
             model_inputs["decoder_input_ids"] = model_inputs["labels"].reshape(batch_size, op_num, -1)
         else:
+            # model_inputs = self.tokenizer(inputs_b, padding="longest",
+            #                               truncation=True, return_tensors="pt", max_length=self.max_seq_length)
+            tmp = self.tokenizer(inputs_a, padding="longest", truncation=True, return_tensors="pt", max_length=self.max_seq_length)
+            input_lens = tmp["input_ids"].ne(self.tokenizer.pad_token_id).to(torch.long).sum(dim=-1)
             model_inputs = self.tokenizer(inputs_b, padding="longest", truncation=True, return_tensors="pt", max_length=self.max_seq_length)
+            new_input_lens = model_inputs["input_ids"].ne(self.tokenizer.pad_token_id).sum(dim=1)
+            input_lens = input_lens - input_lens.eq(new_input_lens).to(input_lens.dtype) * (input_lens // 2)
+            input_lens = input_lens.to(torch.long)
+            if self.tokenizer.padding_side == "left":
+                input_lens = model_inputs["input_ids"].eq(self.tokenizer.pad_token_id).to(torch.long).sum(dim=1) + input_lens
+            model_inputs["input_lens"] = input_lens
 
         meta_data = {
             "index": [b["index"] for b in batch],
@@ -272,7 +283,7 @@ class WikiSeq2SeqCollatorWithCausalLMFixPaddingSide(WikiSeq2SeqCollatorFixPaddin
             texts = [b["text"] + self.tokenizer.eos_token for b in batch]
         else:
             texts = [b["text"] for b in batch]
-        causal_lm_model_inputs = self.tokenizer(texts, padding="longest", truncation=True, return_tensors="pt",
+        causal_lm_model_inputs = self.tokenizer(texts, padding="max_length", truncation=True, return_tensors="pt",
                                                 max_length=self.max_seq_length)
 
         model_inputs = super().__call__(batch)
@@ -283,22 +294,22 @@ class WikiSeq2SeqCollatorWithCausalLMFixPaddingSide(WikiSeq2SeqCollatorFixPaddin
 
 class WikiSeq2SeqCollatorWithCausalLMCombine(WikiSeq2SeqCollatorFixPaddingSide):
     def __init__(self, max_seq_length: int, tokenizer: str, causal_lm: bool = False, generative_mode: bool = False,
-                 causal_lm_add_eos: bool = False):
-        super().__init__(max_seq_length, tokenizer, causal_lm, generative_mode)
+                 causal_lm_add_eos: bool = False, return_standard_inputs: bool = False, **kwargs):
+        super().__init__(max_seq_length, tokenizer, causal_lm, generative_mode, **kwargs)
         assert self.causal_lm
         self.causal_lm_add_eos = causal_lm_add_eos
+        self.return_standard_inputs = return_standard_inputs
 
     def __call__(self, batch):
         if self.causal_lm_add_eos:
             texts = [b["text"] + self.tokenizer.eos_token for b in batch]
         else:
             texts = [b["text"] for b in batch]
-        causal_lm_model_inputs = self.tokenizer(texts, padding="longest", truncation=True, return_tensors="pt",
+        causal_lm_model_inputs = self.tokenizer(texts, padding="max_length", truncation=True, return_tensors="pt",
                                                 max_length=self.max_seq_length)
+        # index = torch.tensor([b["index"] for b in batch], dtype=torch.long)
 
         model_inputs = super().__call__(batch)
-        # for k, v in causal_lm_model_inputs.items():
-        #     model_inputs[f"flan_{k}"] = v
 
         all_inputs = {}
         for k, v in model_inputs.items():
@@ -307,6 +318,18 @@ class WikiSeq2SeqCollatorWithCausalLMCombine(WikiSeq2SeqCollatorFixPaddingSide):
                 all_inputs[k] = torch.cat([empty_input_lens, v], dim=0)
             else:
                 all_inputs[k] = combine_tensor_on_length(causal_lm_model_inputs[k], v, self.tokenizer.pad_token_id)
+
+        if self.return_standard_inputs:
+            input_ids, attention_mask, position_ids, labels = convert_to_standard_inputs(all_inputs, self.tokenizer)
+            # labels = torch.cat([labels, index.unsqueeze(0).expand(2, -1).reshape(-1, 1)], dim=1)
+            # if os.environ["LOCAL_RANK"] in ["0", "3"]:
+            #     print("==============", os.environ["LOCAL_RANK"], input_ids.size(),
+            #     attention_mask.size(), position_ids.size(), labels.size())
+
+            return (
+                (input_ids, attention_mask, position_ids),
+                labels,
+            )
 
         return all_inputs
 

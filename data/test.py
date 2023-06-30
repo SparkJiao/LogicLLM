@@ -10,7 +10,10 @@ class TestDataset(Dataset):
         return 100000000
 
     def __getitem__(self, index):
-        return {"flan": {
-            "inputs": self.data[0],
-            "targets": self.data[0],
-        }}
+        return {
+            "flan": {
+                "inputs": self.data[0],
+                "targets": self.data[0],
+            },
+            "index": index,
+        }

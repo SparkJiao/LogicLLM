@@ -40,7 +40,7 @@ def deepspeed_inference_policy():
     return injection_policy
 
 
-def find_all_linear_names(model, bits: int):
+def find_all_linear_names(model, bits: int, add_lm_head: bool = False):
     cls = bnb.nn.Linear4bit if bits == 4 else (bnb.nn.Linear8bitLt if bits == 8 else torch.nn.Linear)
     lora_module_names = set()
     for name, module in model.named_modules():
@@ -48,7 +48,9 @@ def find_all_linear_names(model, bits: int):
             names = name.split('.')
             lora_module_names.add(names[0] if len(names) == 1 else names[-1])
 
-    if 'lm_head' in lora_module_names:  # needed for 16-bit
+    lora_module_names.add("lm_head")
+
+    if 'lm_head' in lora_module_names and not add_lm_head:  # needed for 16-bit
         lora_module_names.remove('lm_head')
     return list(lora_module_names)
 
@@ -214,13 +216,17 @@ class LlamaPreTrainedModelPeftMixin(LlamaPreTrainedModel, ABC):
 
         base_model_name_or_path = kwargs.pop("base_model_name_or_path", pretrained_model_name_or_path)
 
-        # model = super().from_pretrained(base_model_name_or_path, *model_args, **kwargs)
+        model = super().from_pretrained(base_model_name_or_path, *model_args, **kwargs)
         #
         # n_gpus = torch.cuda.device_count()
         # model = tp.tensor_parallel(model, [torch.device(f"cuda:{i}") for i in range(n_gpus)])
-        model = cls.from_pretrained_eval_tp(base_model_name_or_path, *model_args, **kwargs)
+        # model = cls.from_pretrained_eval_tp(base_model_name_or_path, *model_args, **kwargs)
 
         model = PeftModel.from_pretrained(model, pretrained_model_name_or_path, *model_args, **kwargs)
+
+        n_gpus = torch.cuda.device_count()
+        model = tp.tensor_parallel(model, [torch.device(f"cuda:{i}") for i in range(n_gpus)])
+
         return model
 
 
@@ -593,6 +599,12 @@ class LlamaForConditionalGeneration(LlamaPreTrainedModelPeftMixin, LogMixin, ABC
     def __init__(self, config: LlamaConfig, gradient_checkpointing=False):
         super().__init__(config)
         self.model = LlamaModel(config)
+        self.model.embed_tokens = torch.nn.utils.skip_init(
+            nn.Embedding,
+            config.vocab_size,
+            config.hidden_size,
+            padding_idx=config.pad_token_id,
+        )
         # set gradient checkpointing
         # self.model.gradient_checkpointing = gradient_checkpointing
         if gradient_checkpointing:
@@ -600,11 +612,17 @@ class LlamaForConditionalGeneration(LlamaPreTrainedModelPeftMixin, LogMixin, ABC
             self.gradient_checkpointing_enable()
         logger.info(f"gradient_checkpointing: {gradient_checkpointing}")
 
-        self.lm_head = nn.Linear(config.hidden_size, config.vocab_size, bias=False)
+        # self.lm_head = nn.Linear(config.hidden_size, config.vocab_size, bias=False)
+        self.lm_head = torch.nn.utils.skip_init(
+            nn.Linear,
+            config.hidden_size,
+            config.vocab_size,
+            bias=False,
+        )
         # logger.info(f"Config pad token id: {self.config.pad_token_id}")
 
         # Initialize weights and apply final processing
-        self.post_init()
+        # self.post_init()
 
         metrics = ["loss", "acc"]
         self.init_metric(*metrics)

@@ -1,4 +1,5 @@
 import collections
+import os
 import pickle
 import random
 from collections import Counter, defaultdict
@@ -38,6 +39,7 @@ class WikiPathDatasetV5(Dataset):
         return len(self.examples)
 
     def __getitem__(self, index) -> T_co:
+        print("++++++++++++++++++++++++ Index", os.environ["LOCAL_RANK"], index)
         example = self.examples[index]
         text = self.raw_texts[index]
         return {

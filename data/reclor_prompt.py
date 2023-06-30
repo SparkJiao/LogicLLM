@@ -361,10 +361,11 @@ class ReClorCandidateSelectionDatasetV2(Dataset):
             prompt = f"Context:\n{all_context[i]}\n\nQuestion:\n{all_question[i]}\n\nOptions:\n{_format_option_list(all_option_list[i])}" \
                      f"\n\n" + suffix
 
-            options = [_rank2option[i] for i in range(len(all_option_list[i]))]
+            options = [(_rank2option[i], i) for i in range(len(all_option_list[i]))]
 
-            targets = [tokenizer.tokenize(prompt + " " + x)[-1] for x in options]
-            targets += [tokenizer.tokenize(prompt + x)[-1] for x in options]
+            targets = []
+            targets += [(tokenizer.tokenize(prompt + " " + x[0])[-1], x[1]) for x in options]
+            targets += [(tokenizer.tokenize(prompt + x[0])[-1], x[1]) for x in options]
 
             self.inputs.append(prompt)
             self.outputs.append(targets)
