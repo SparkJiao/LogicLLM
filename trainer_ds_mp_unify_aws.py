@@ -250,7 +250,7 @@ def main(cfg: DictConfig):
                                 # partition_method="uniform",
                                 activation_checkpoint_interval=getattr(cfg, "activation_checkpoint_interval", 0)
                                 )
-    logger.warning(model_pipe)
+    # logger.warning(model_pipe)
 
     if use_barrier and cfg.local_rank == 0:
         dist.barrier()  # Make sure only the first process in distributed training will download model & vocab
