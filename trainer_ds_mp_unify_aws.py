@@ -133,6 +133,10 @@ def train(cfg, model, tokenizer, continue_from_global_step=0):
     train_iterator = trange(int(cfg.num_train_epochs), desc="Epoch", disable=cfg.local_rank not in [-1, 0])
     set_seed(cfg)  # Added here for reproducibility (even between python 2 and 3)
 
+    if cfg.local_rank in [-1, 0]:
+        os.system(f"nvidia-smi")
+        os.system("free -h")
+    
     for epoch in train_iterator:
         epoch_update_steps = num_epoch_steps // cfg.gradient_accumulation_steps
         for step in tqdm(range(epoch_update_steps), desc="Iteration", disable=cfg.local_rank not in [-1, 0], dynamic_ncols=True):
@@ -234,11 +238,11 @@ def main(cfg: DictConfig):
 
     dp_degree = dist.get_world_size() // cfg.num_stages
     # topo = PipeModelDataParallelTopology(num_pp=cfg.num_stages, num_mp=1, num_dp=dp_degree)
-    topo = ProcessTopology(axes=['data', 'pipe'], dims=[dp_degree, cfg.num_stages])
-    print(f"Rank: {dist.get_rank()}, Topo: {topo.get_coord(dist.get_rank())}")
+    # topo = ProcessTopology(axes=['data', 'pipe'], dims=[dp_degree, cfg.num_stages])
+    # print(f"Rank: {dist.get_rank()}, Topo: {topo.get_coord(dist.get_rank())}")
     model_pipe = PipelineModule(layers=layers,
-                                # num_stages=cfg.num_stages,
-                                topology=topo,
+                                num_stages=cfg.num_stages,
+                                # topology=topo,
                                 loss_fn=models.llama_ds_mp_wrap.loss_fn,
                                 # partition_method="uniform",
                                 activation_checkpoint_interval=getattr(cfg, "activation_checkpoint_interval", 0)
