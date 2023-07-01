@@ -104,9 +104,12 @@ def train(cfg, model, tokenizer, continue_from_global_step=0):
 
     if torch.__version__ >= "2" and (getattr(os.environ, "TORCH_COMPILE", False) or getattr(cfg, "compile", False)):
         model = torch.compile(model, mode="max-autotune")
+
+    train_collator = hydra.utils.instantiate(cfg.collator) if "collator" in cfg and cfg.collator else None
     model, optimizer, _, scheduler = deepspeed.initialize(model=model,
                                                           model_parameters=[p for p in model.parameters() if p.requires_grad],
                                                           training_data=train_dataset,
+                                                          collate_fn=train_collator,
                                                           config=ds_config)
 
     model.load_checkpoint(cfg.model_name_or_path, load_module_only=True, load_optimizer_states=False, load_lr_scheduler_states=False)
