@@ -163,11 +163,15 @@ def train(cfg, model, tokenizer, continue_from_global_step=0):
     train_iterator = trange(int(cfg.num_train_epochs), desc="Epoch", disable=cfg.local_rank not in [-1, 0])
     set_seed(cfg)  # Added here for reproducibility (even between python 2 and 3)
 
+    if cfg.local_rank in [-1, 0]:
+        os.system(f"nvidia-smi")
+    
     for epoch in train_iterator:
         for _file in files:
             sub_train_dataset = load_and_cache_examples(cfg, tokenizer, _split="train", _file=_file)
             if dp_degree > 1:
-                sub_train_sampler = DistributedSampler(sub_train_dataset, num_replicas=dp_degree, rank=dist.get_rank() // cfg.num_stages)
+                dp_id = model.grid.get_data_parallel_id()
+                sub_train_sampler = DistributedSampler(sub_train_dataset, num_replicas=dp_degree, rank=dp_id)
             else:
                 sub_train_sampler = RandomSampler(sub_train_dataset)
             sub_train_collator = hydra.utils.instantiate(cfg.collator) if "collator" in cfg and cfg.collator else None
@@ -182,6 +186,9 @@ def train(cfg, model, tokenizer, continue_from_global_step=0):
                                               )
             epoch_update_steps = len(sub_train_dataloader) // cfg.gradient_accumulation_steps
             sub_train_dataloader = iter(deepspeed.utils.RepeatingLoader(sub_train_dataloader))
+            
+            if cfg.local_rank in [-1, 0]:
+                os.system("free -h")
 
             if isinstance(sub_train_sampler, DistributedSampler):
                 sub_train_sampler.set_epoch(epoch)
@@ -286,16 +293,16 @@ def main(cfg: DictConfig):
 
     dp_degree = dist.get_world_size() // cfg.num_stages
     # topo = PipeModelDataParallelTopology(num_pp=cfg.num_stages, num_mp=1, num_dp=dp_degree)
-    topo = ProcessTopology(axes=['data', 'pipe'], dims=[dp_degree, cfg.num_stages])
-    print(f"Rank: {dist.get_rank()}, Topo: {topo.get_coord(dist.get_rank())}")
+    # topo = ProcessTopology(axes=['data', 'pipe'], dims=[dp_degree, cfg.num_stages])
+    # print(f"Rank: {dist.get_rank()}, Topo: {topo.get_coord(dist.get_rank())}")
     model_pipe = PipelineModule(layers=layers,
-                                # num_stages=cfg.num_stages,
-                                topology=topo,
+                                num_stages=cfg.num_stages,
+                                # topology=topo,
                                 loss_fn=models.llama_ds_mp_wrap.loss_fn,
                                 # partition_method="uniform",
                                 activation_checkpoint_interval=getattr(cfg, "activation_checkpoint_interval", 0)
                                 )
-    logger.warning(model_pipe)
+    logger.warning(f"{dist.get_rank()}: {model_pipe}")
 
     if use_barrier and cfg.local_rank == 0:
         dist.barrier()  # Make sure only the first process in distributed training will download model & vocab
