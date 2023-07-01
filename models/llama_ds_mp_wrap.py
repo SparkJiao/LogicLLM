@@ -208,15 +208,18 @@ class LossLayer(torch.nn.Module):
 
 
 def get_layers_from_config(model_config, activation_checkpointing: bool = False):
+    """
+    `tie_word_embeddings` in LLaMA is set to `false`.
+    """
     layers = [
-        # LayerSpec(EmbeddingPipe, model_config.vocab_size, model_config.hidden_size),
-        TiedLayerSpec("weight", EmbeddingPipe, model_config.vocab_size, model_config.hidden_size, tied_weight_attr="weight"),
+        LayerSpec(EmbeddingPipe, model_config.vocab_size, model_config.hidden_size),
+        # TiedLayerSpec("weight", EmbeddingPipe, model_config.vocab_size, model_config.hidden_size, tied_weight_attr="weight"),
         *[LayerSpec(ParallelTransformerLayerPipe, model_config, activation_checkpointing)
           for _ in range(model_config.num_hidden_layers)],
         LayerSpec(LayerNormPipe, model_config.hidden_size, model_config.rms_norm_eps),
-        # LayerSpec(LMLayerPipe, model_config.hidden_size, model_config.vocab_size, bias=False),
-        TiedLayerSpec("weight", LMLayerPipe, model_config.hidden_size, model_config.vocab_size, bias=False,
-                      tied_weight_attr="weight"),
+        LayerSpec(LMLayerPipe, model_config.hidden_size, model_config.vocab_size, bias=False),
+        # TiedLayerSpec("weight", LMLayerPipe, model_config.hidden_size, model_config.vocab_size, bias=False,
+        #               tied_weight_attr="weight"),
         # LayerSpec(LossLayer),
     ]
     return layers

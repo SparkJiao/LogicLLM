@@ -146,6 +146,7 @@ def train(cfg, model, tokenizer, continue_from_global_step=0):
                                                           config=ds_config)
 
     model.load_checkpoint(cfg.model_name_or_path, load_module_only=True, load_optimizer_states=False, load_lr_scheduler_states=False)
+    logger.warning(model)
     logger.info(optimizer.optimizer)
 
     # Train!
