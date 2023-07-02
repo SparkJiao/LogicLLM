@@ -17,6 +17,7 @@
 # See the License for the specific language governing permissions and
 # limitations under the License.
 
+import datetime
 import glob
 import logging
 import os
@@ -281,7 +282,7 @@ def main(cfg: DictConfig):
     else:  # Initializes the distributed backend which will take care of synchronizing nodes/GPUs
         torch.cuda.set_device(cfg.local_rank)
         device = str(torch.device("cuda", cfg.local_rank))
-        deepspeed.init_distributed(dist_backend="nccl")
+        deepspeed.init_distributed(dist_backend="nccl", timeout=datetime.timedelta(seconds=7200))
         cfg.n_gpu = 1
         cfg.world_size = dist.get_world_size()
     cfg.device = device
