@@ -6,6 +6,7 @@ aws_output_bucket:
 
 train_file: /opt/ml/input/data/train/distant_path_v9.1_fix_no_shuffle.train.0.pkl
 test_file:
+dist_load_data_barrier: False
 
 # Model
 model:
@@ -20,7 +21,7 @@ get_layers:
 enable_flash_attention: False
 
 # Pipeline parallelism specific
-num_stages: 16
+num_stages: 8
 #activation_checkpoint_interval: 1
 
 # Data loading
@@ -61,7 +62,7 @@ do_preprocess: False
 model_name_or_path: /tmp/llama-65b-mp8
 pretrain:
 
-exp_name: llama.65b.merit_v91_v91.seq2seq.v5.0.3aug.mp8.dp2.adamw.500steps.NA100.0630.aws
+exp_name: llama.65b.merit_v91_v91.seq2seq.v5.0.3aug.mp8.dp2.adamw.500steps.NA100.0702.aws
 exp_notes:
 output_dir: /tmp/${exp_name}  # Fix <pad token id>
 
@@ -72,12 +73,12 @@ do_eval: True
 eval_sub_path: checkpoint-*
 
 # Training hyper-parameters
-per_gpu_train_batch_size: 1
+per_gpu_train_batch_size: 8
 per_gpu_eval_batch_size: 1
 #learning_rate: 2e-3
 learning_rate: 1e-6
-gradient_accumulation_steps: 2
-weight_decay: 0.01
+gradient_accumulation_steps: 256
+weight_decay: 0.001
 adam_epsilon: 1e-6
 adam_betas: "(0.9, 0.99)"
 max_grad_norm: 5.0
@@ -176,9 +177,9 @@ ds_cfg:
     reduce_bucket_size: 5e7
     allgather_partitions: True
     allgather_bucket_size: 5e7
-    # offload_optimizer:
-    #   device: cpu
-    #   pin_memory: True
+    offload_optimizer:
+      device: cpu
+      pin_memory: True
 #    offload_param:
 #      device: cpu
 #      pin_memory: True
@@ -189,7 +190,7 @@ ds_cfg:
 #    number_checkpoints: False
 #    synchronize_checkpoint_boundary: False
 #    profile: False
-  steps_per_print: 1024
+  steps_per_print: 1
 
 # Lightseq config
 with_lightseq: False

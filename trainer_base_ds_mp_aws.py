@@ -64,7 +64,7 @@ def load_empty_dataset_and_collator(cfg: DictConfig):
     from data.test import TestDataset
     from data.collators.flan import FlanCollatorOverCollator
 
-    dataset = TestDataset(None, None)
+    dataset = TestDataset(None, None, getattr(cfg, "total_dataset_len", -1))
     collator = FlanCollatorOverCollator(collator=None,
                                         tokenizer=cfg.model_name_or_path,
                                         max_seq_length=128,
@@ -132,7 +132,6 @@ def train(cfg, model, tokenizer, continue_from_global_step=0):
         total_dataset_len = 0
         for _file in tqdm(files, total=len(files)):
             sub_train_dataset = load_and_cache_examples(cfg, tokenizer, _split="train", _file=_file)
-            # total_dataset_len += (len(sub_train_dataset) // cfg.train_batch_size // dp_degree)
             total_dataset_len += len(sub_train_dataset)
             del sub_train_dataset
 
@@ -343,7 +342,8 @@ def main(cfg: DictConfig):
                                 # partition_method="uniform",
                                 activation_checkpoint_interval=getattr(cfg, "activation_checkpoint_interval", 0)
                                 )
-    # logger.warning(f"{dist.get_rank()}: {model_pipe}")
+    logger.info(f"{model_pipe.topology}")
+    cfg.topology = str(model_pipe.topology)
 
     if use_barrier and cfg.local_rank == 0:
         dist.barrier()  # Make sure only the first process in distributed training will download model & vocab
