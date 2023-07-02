@@ -144,7 +144,7 @@ def train(cfg, model, tokenizer, continue_from_global_step=0):
 
     # Train!
     logger.info("***** Running training *****")
-    logger.info("  Num examples = %d", total_dataset_len * cfg.train_batch_size * dist.get_world_size() if cfg.local_rank != -1 else 1)
+    logger.info("  Num examples = %d", total_dataset_len * cfg.train_batch_size * dp_degree if cfg.local_rank != -1 else 1)
     logger.info("  Num Epochs = %d", cfg.num_train_epochs)
     logger.info("  Instantaneous batch size per GPU = %d", cfg.per_gpu_train_batch_size)
     logger.info("  Total train batch size (w. parallel, distributed & accumulation) = %d",
@@ -302,7 +302,7 @@ def main(cfg: DictConfig):
                                 # partition_method="uniform",
                                 activation_checkpoint_interval=getattr(cfg, "activation_checkpoint_interval", 0)
                                 )
-    logger.warning(f"{dist.get_rank()}: {model_pipe}")
+    # logger.warning(f"{dist.get_rank()}: {model_pipe}")
 
     if use_barrier and cfg.local_rank == 0:
         dist.barrier()  # Make sure only the first process in distributed training will download model & vocab

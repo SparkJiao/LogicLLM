@@ -139,6 +139,9 @@ def train(cfg, model, tokenizer, continue_from_global_step=0):
     if cfg.local_rank in [-1, 0]:
         os.system(f"nvidia-smi")
         os.system("free -h")
+        
+    if dist.is_initialized():
+        dist.barrier()
     
     for epoch in train_iterator:
         epoch_update_steps = num_epoch_steps // cfg.gradient_accumulation_steps

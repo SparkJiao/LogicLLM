@@ -17,8 +17,10 @@ get_layers:
     _target_: models.llama_ds_mp_wrap.get_layers_from_config
     activation_checkpointing: True
 
+enable_flash_attention: False
+
 # Pipeline parallelism specific
-num_stages: 8
+num_stages: 16
 #activation_checkpoint_interval: 1
 
 # Data loading
@@ -70,11 +72,11 @@ do_eval: True
 eval_sub_path: checkpoint-*
 
 # Training hyper-parameters
-per_gpu_train_batch_size: 2
+per_gpu_train_batch_size: 1
 per_gpu_eval_batch_size: 1
 #learning_rate: 2e-3
 learning_rate: 1e-6
-gradient_accumulation_steps: 1024
+gradient_accumulation_steps: 2
 weight_decay: 0.01
 adam_epsilon: 1e-6
 adam_betas: "(0.9, 0.99)"
@@ -170,11 +172,12 @@ ds_cfg:
     contiguous_gradients: True
     overlap_comm: True
     reduce_scatter: True
-    reduce_bucket_size: 5e8
-    allgather_bucket_size: 5e8
-    offload_optimizer:
-      device: cpu
-      pin_memory: True
+    reduce_bucket_size: 5e7
+    allgather_partitions: True
+    allgather_bucket_size: 5e7
+    # offload_optimizer:
+    #   device: cpu
+    #   pin_memory: True
 #    offload_param:
 #      device: cpu
 #      pin_memory: True
