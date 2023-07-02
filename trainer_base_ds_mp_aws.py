@@ -71,6 +71,14 @@ def load_empty_dataset_and_collator(cfg: DictConfig):
                                         decoder_only=True,
                                         return_standard_inputs=True,
                                         )
+
+    # Keep consistent with `load_and_cache_examples`.
+    if getattr(cfg, "dist_load_data_barrier", True):
+        dist.barrier()
+
+    if dist.is_initialized():
+        dist.barrier()
+
     return dataset, collator
 
 

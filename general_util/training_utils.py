@@ -107,7 +107,7 @@ def load_and_cache_examples(cfg, tokenizer: PreTrainedTokenizer, _split="train",
         else:
             raise RuntimeError(_split)
             
-    if if_barrier and cfg.local_rank not in [-1, 0]:
+    if getattr(cfg, "dist_load_data_barrier", True) and if_barrier and cfg.local_rank not in [-1, 0]:
         dist.barrier()  # Make sure only the first process in distributed training process the dataset, and the others will use the cache
 
     sub_config = f"read_tensor_{_split}"
@@ -116,7 +116,7 @@ def load_and_cache_examples(cfg, tokenizer: PreTrainedTokenizer, _split="train",
     else:
         dataset = initialize_dataset(cfg.read_tensor, file_path=input_file, tokenizer=tokenizer)
 
-    if if_barrier and cfg.local_rank == 0:
+    if getattr(cfg, "dist_load_data_barrier", True) and if_barrier and cfg.local_rank == 0:
         dist.barrier()  # Make sure only the first process in distributed training process the dataset, and the others will use the cache
 
     if dist.is_initialized():
