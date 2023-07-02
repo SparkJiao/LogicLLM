@@ -36,28 +36,12 @@ from tqdm import tqdm, trange
 from transformers import (AutoTokenizer, PreTrainedTokenizer)
 
 import models.llama_ds_mp_wrap
-from general_util.evaluator import evaluate_fn as evaluate
 from general_util.logger import setting_logger
-from general_util.training_utils import set_seed, load_and_cache_examples, set_seed_int
+from general_util.training_utils import set_seed, load_and_cache_examples
 
 logger: logging.Logger
 
 torch.backends.cuda.matmul.allow_tf32 = True
-
-GLOBAL_SEED = 1
-GLOBAL_WORKER_ID = None
-
-
-def get_zero_stage(cfg: DictConfig):
-    if hasattr(cfg, "zero_optimization"):
-        return int(getattr(cfg.zero_optimization, "stage", 0))
-    return 0
-
-
-def worker_init_fn(worker_id):
-    global GLOBAL_WORKER_ID
-    GLOBAL_WORKER_ID = worker_id
-    set_seed_int(GLOBAL_SEED + worker_id)
 
 
 def load_empty_dataset_and_collator(cfg: DictConfig):
@@ -188,7 +172,7 @@ def train(cfg, model, tokenizer, continue_from_global_step=0):
 
     if cfg.local_rank in [-1, 0]:
         os.system(f"nvidia-smi")
-    
+
     for epoch in train_iterator:
         for _file in files:
             if model.is_first_stage() or model.is_last_stage():
@@ -203,15 +187,11 @@ def train(cfg, model, tokenizer, continue_from_global_step=0):
 
                 sub_train_dataloader = DataLoader(dataset=sub_train_dataset,
                                                   sampler=sub_train_sampler,
-                                                  # shuffle=True,
-                                                  # shuffle=False,
                                                   batch_size=cfg.train_batch_size,
                                                   collate_fn=sub_train_collator,
                                                   num_workers=cfg.num_workers,
                                                   pin_memory=True,
                                                   prefetch_factor=cfg.prefetch_factor,
-                                                  # worker_init_fn=worker_init_fn,
-                                                  # generator=g,
                                                   drop_last=True,
                                                   )
             else:
@@ -219,27 +199,27 @@ def train(cfg, model, tokenizer, continue_from_global_step=0):
                 sub_train_sampler = None
 
                 sub_train_dataloader = DataLoader(dataset=sub_train_dataset,
-                                                  batch_size=cfg.train_batch_size,
+                                                  batch_size=cfg.train_batch_size * dp_degree,
                                                   collate_fn=sub_train_collator,
                                                   drop_last=True,
                                                   shuffle=False)
 
             epoch_update_steps = len(sub_train_dataloader) // cfg.gradient_accumulation_steps
             sub_train_dataloader = iter(deepspeed.utils.RepeatingLoader(sub_train_dataloader))
-            
+
             if cfg.local_rank in [-1, 0]:
                 os.system("free -h")
 
             if sub_train_sampler is not None and isinstance(sub_train_sampler, DistributedSampler):
                 sub_train_sampler.set_epoch(epoch)
 
-            for step in tqdm(range(epoch_update_steps), desc="Iteration", disable=cfg.local_rank not in [-1, 0], dynamic_ncols=True):
+            for _ in tqdm(range(epoch_update_steps), desc="Iteration", disable=cfg.local_rank not in [-1, 0], dynamic_ncols=True):
                 # If training is continued from a checkpoint, fast forward
                 # to the state of that checkpoint.
                 if global_step < continue_from_global_step:
-                    if (step + 1) % cfg.gradient_accumulation_steps == 0:
-                        # scheduler.step()  # Update learning rate schedule  # Done by `load_checkpoint` of DS.
-                        global_step += 1
+                    for _ in range(cfg.gradient_accumulation_steps):
+                        next(sub_train_dataloader)
+                    global_step += 1
                     continue
 
                 model.train()
@@ -247,7 +227,6 @@ def train(cfg, model, tokenizer, continue_from_global_step=0):
                 global_step += 1
 
                 tr_loss += loss.item()
-                # print("Outside loss: ", loss)
 
                 # Log metrics
                 log_metrics = {}
@@ -302,17 +281,11 @@ def main(cfg: DictConfig):
 
     # Set seed
     set_seed(cfg)
-    # deepspeed.runtime.utils.set_random_seed(cfg.seed)
 
     use_barrier = not os.path.exists(cfg.model_name_or_path)
     # Load pre-trained model and tokenizer
     if use_barrier and cfg.local_rank not in [-1, 0]:
         dist.barrier()  # Make sure only the first process in distributed training will download model & vocab
-
-    if cfg.pretrain:
-        pretrain_state_dict = torch.load(cfg.pretrain, map_location='cpu')
-    else:
-        pretrain_state_dict = None
 
     tokenizer = AutoTokenizer.from_pretrained(cfg.model_name_or_path)
 
@@ -328,18 +301,9 @@ def main(cfg: DictConfig):
     model_or_config = hydra.utils.call(cfg.model, cfg.model_name_or_path)
 
     layers = hydra.utils.call(cfg.get_layers, model_or_config)
-
-    from deepspeed.runtime.pipe.topology import PipeModelDataParallelTopology, ProcessTopology
-
-    dp_degree = dist.get_world_size() // cfg.num_stages
-    # topo = PipeModelDataParallelTopology(num_pp=cfg.num_stages, num_mp=1, num_dp=dp_degree)
-    # topo = ProcessTopology(axes=['data', 'pipe'], dims=[dp_degree, cfg.num_stages])
-    # print(f"Rank: {dist.get_rank()}, Topo: {topo.get_coord(dist.get_rank())}")
     model_pipe = PipelineModule(layers=layers,
                                 num_stages=cfg.num_stages,
-                                # topology=topo,
                                 loss_fn=models.llama_ds_mp_wrap.loss_fn,
-                                # partition_method="uniform",
                                 activation_checkpoint_interval=getattr(cfg, "activation_checkpoint_interval", 0)
                                 )
     logger.info(f"{model_pipe.topology}")
@@ -348,7 +312,6 @@ def main(cfg: DictConfig):
     if use_barrier and cfg.local_rank == 0:
         dist.barrier()  # Make sure only the first process in distributed training will download model & vocab
 
-    # logger.info("Training/evaluation parameters %s", OmegaConf.to_yaml(cfg))
     if cfg.local_rank in [-1, 0] and cfg.do_train:
         if not os.path.exists(cfg.output_dir):
             os.makedirs(cfg.output_dir)
@@ -372,56 +335,6 @@ def main(cfg: DictConfig):
 
         global_step, tr_loss = train(cfg, model_pipe, tokenizer, continue_from_global_step)
         logger.info(" global_step = %s, average loss = %s", global_step, tr_loss)
-
-    # Test
-    results = {}
-    if cfg.do_eval:
-        if not cfg.ddp_eval and cfg.local_rank not in [-1, 0]:
-            return results
-
-        checkpoints = [cfg.output_dir]
-        if cfg.save_best:
-            logging.getLogger("transformers.modeling_utils").setLevel(logging.WARN)  # Reduce logging
-        elif cfg.prediction_cfg.best_checkpoint and os.path.exists(cfg.prediction_cfg.best_checkpoint):
-            checkpoints = [cfg.prediction_cfg.best_checkpoint]
-            logging.getLogger("transformers.modeling_utils").setLevel(logging.WARN)  # Reduce logging
-        elif cfg.eval_sub_path:
-            checkpoints = list(sorted(list(set(
-                os.path.dirname(c) for c in
-                glob.glob(cfg.output_dir + f"/{cfg.eval_sub_path}/" + "pytorch_model*.bin", recursive=True)
-            ))))
-            logging.getLogger("transformers.modeling_utils").setLevel(logging.WARN)  # Reduce logging
-        logger.info(" the following checkpoints: %s", checkpoints)
-        for checkpoint in checkpoints:
-            global_step = checkpoint.split("-")[-1] if len(checkpoints) > 1 else ""
-            prefix = checkpoint.split("/")[-1] if checkpoint.find("checkpoint") != -1 else ""
-            split = "dev"
-
-            if "model_eval" in cfg:
-                model = hydra.utils.call(cfg.model_eval, checkpoint)
-            else:
-                model = hydra.utils.call(cfg.model, checkpoint)
-            if cfg.n_gpu == 1:
-                model.to(cfg.device)
-            else:
-                # For model parallel (of mT5)
-                if getattr(cfg, "get_device_map", None):
-                    model.parallelize(hydra.utils.call(cfg.get_device_map))
-                else:
-                    model.parallelize()
-
-            tokenizer = AutoTokenizer.from_pretrained(checkpoint)
-            cfg.model_name_or_path = checkpoint
-
-            if cfg.test_file:
-                prefix = f'test' + (f'-{prefix}' if prefix != "" else "")
-                split = "test"
-
-            result = evaluate(cfg, model, tokenizer, prefix=prefix, _split=split)
-            result = dict((k + "_{}".format(global_step), v) for k, v in result.items())
-            results.update(result)
-
-    return results
 
 
 if __name__ == "__main__":
