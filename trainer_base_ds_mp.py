@@ -59,6 +59,20 @@ def worker_init_fn(worker_id):
     set_seed_int(GLOBAL_SEED + worker_id)
 
 
+def load_empty_dataset_and_collator(cfg: DictConfig):
+    from data.test import TestDataset
+    from data.collators.flan import FlanCollatorOverCollator
+
+    dataset = TestDataset(None, None)
+    collator = FlanCollatorOverCollator(collator=None,
+                                        tokenizer=cfg.model_name_or_path,
+                                        max_seq_length=128,
+                                        decoder_only=True,
+                                        return_standard_inputs=True,
+                                        )
+    return dataset, collator
+
+
 def save_model(model: Union[deepspeed.DeepSpeedEngine, deepspeed.PipelineEngine],
                cfg: DictConfig, output_dir: str, tokenizer: PreTrainedTokenizer = None, state_dict: Dict = None):
     model.save_checkpoint(output_dir)
@@ -102,20 +116,8 @@ def train(cfg, model, tokenizer, continue_from_global_step=0):
         total_dataset_len = 0
         for _file in tqdm(files, total=len(files)):
             sub_train_dataset = load_and_cache_examples(cfg, tokenizer, _split="train", _file=_file)
-            # _train_sampler = RandomSampler(sub_train_dataset) if cfg.local_rank == -1 else DistributedSampler(sub_train_dataset)
-            # _train_collator = hydra.utils.instantiate(cfg.collator) if "collator" in cfg and cfg.collator else None
-            # _train_dataloader = DataLoader(dataset=sub_train_dataset,
-            #                                # sampler=_train_sampler,
-            #                                shuffle=False,
-            #                                batch_size=cfg.train_batch_size,
-            #                                collate_fn=_train_collator,
-            #                                # num_workers=cfg.num_workers,
-            #                                # pin_memory=True,
-            #                                # prefetch_factor=cfg.prefetch_factor)
-            #                                )
-            total_dataset_len += len(sub_train_dataset) // cfg.train_batch_size // dp_degree
-            # del _train_dataloader
-            # del _train_collator
+            # total_dataset_len += (len(sub_train_dataset) // cfg.train_batch_size // dp_degree)
+            total_dataset_len += len(sub_train_dataset)
             del sub_train_dataset
 
     if getattr(cfg, "do_preprocess", False):
@@ -125,11 +127,12 @@ def train(cfg, model, tokenizer, continue_from_global_step=0):
         logger.info(f"Extended extra vocab size: {cfg.extended_vocab}")
         model.resize_token_embeddings(model.config.vocab_size + cfg.extended_vocab)
 
+    _actual_train_batch_size = cfg.train_batch_size * cfg.gradient_accumulation_steps * dp_degree
     if cfg.max_steps > 0:
         t_total = cfg.max_steps
-        cfg.num_train_epochs = cfg.max_steps // (total_dataset_len // cfg.gradient_accumulation_steps) + 1
+        cfg.num_train_epochs = cfg.max_steps // (total_dataset_len // _actual_train_batch_size) + 1
     else:
-        t_total = total_dataset_len // cfg.gradient_accumulation_steps * cfg.num_train_epochs
+        t_total = total_dataset_len // _actual_train_batch_size * cfg.num_train_epochs
 
     num_warmup_steps = int(t_total * cfg.warmup_proportion) if cfg.warmup_proportion else cfg.warmup_steps
 
@@ -146,17 +149,14 @@ def train(cfg, model, tokenizer, continue_from_global_step=0):
                                                           config=ds_config)
 
     model.load_checkpoint(cfg.model_name_or_path, load_module_only=True, load_optimizer_states=False, load_lr_scheduler_states=False)
-    logger.warning(model)
     logger.info(optimizer.optimizer)
 
     # Train!
     logger.info("***** Running training *****")
-    logger.info("  Num examples = %d", total_dataset_len * cfg.train_batch_size * dist.get_world_size() if cfg.local_rank != -1 else 1)
+    logger.info("  Num examples = %d", total_dataset_len)
     logger.info("  Num Epochs = %d", cfg.num_train_epochs)
     logger.info("  Instantaneous batch size per GPU = %d", cfg.per_gpu_train_batch_size)
-    logger.info("  Total train batch size (w. parallel, distributed & accumulation) = %d",
-                cfg.train_batch_size * cfg.gradient_accumulation_steps * (
-                    dist.get_world_size() if cfg.local_rank != -1 else 1) / cfg.num_stages)
+    logger.info("  Total train batch size (w. parallel, distributed & accumulation) = %d", _actual_train_batch_size)
     logger.info("  Gradient Accumulation steps = %d", cfg.gradient_accumulation_steps)
     logger.info("  Total optimization steps = %d", t_total)
     logger.info("  Warmup steps = %d", num_warmup_steps)
@@ -173,37 +173,40 @@ def train(cfg, model, tokenizer, continue_from_global_step=0):
 
     for epoch in train_iterator:
         for _file in files:
-            sub_train_dataset = load_and_cache_examples(cfg, tokenizer, _split="train", _file=_file)
-            # sub_train_sampler = RandomSampler(sub_train_dataset) if cfg.local_rank == -1 else DistributedSampler(sub_train_dataset)
-            # sub_train_sampler = RandomSampler(sub_train_dataset)
-            if dp_degree > 1:
-                sub_train_sampler = DistributedSampler(sub_train_dataset, num_replicas=dp_degree, rank=dist.get_rank() // cfg.num_stages)
+            if model.is_first_stage() or model.is_last_stage():
+                sub_train_dataset = load_and_cache_examples(cfg, tokenizer, _split="train", _file=_file)
+
+                if dp_degree > 1:
+                    dp_id = model.grid.get_data_parallel_id()
+                    sub_train_sampler = DistributedSampler(sub_train_dataset, num_replicas=dp_degree, rank=dp_id)
+                else:
+                    sub_train_sampler = RandomSampler(sub_train_dataset)
+                sub_train_collator = hydra.utils.instantiate(cfg.collator) if "collator" in cfg and cfg.collator else None
+
+                sub_train_dataloader = DataLoader(dataset=sub_train_dataset,
+                                                  sampler=sub_train_sampler,
+                                                  # shuffle=True,
+                                                  # shuffle=False,
+                                                  batch_size=cfg.train_batch_size,
+                                                  collate_fn=sub_train_collator,
+                                                  num_workers=cfg.num_workers,
+                                                  pin_memory=True,
+                                                  prefetch_factor=cfg.prefetch_factor,
+                                                  # worker_init_fn=worker_init_fn,
+                                                  # generator=g,
+                                                  drop_last=True,
+                                                  )
             else:
-                sub_train_sampler = RandomSampler(sub_train_dataset)
-            sub_train_collator = hydra.utils.instantiate(cfg.collator) if "collator" in cfg and cfg.collator else None
-            # g = torch.Generator()
-            # g.manual_seed(cfg.seed)
-            sub_train_dataloader = DataLoader(dataset=sub_train_dataset,
-                                              sampler=sub_train_sampler,
-                                              # shuffle=True,
-                                              # shuffle=False,
-                                              batch_size=cfg.train_batch_size,
-                                              collate_fn=sub_train_collator,
-                                              num_workers=cfg.num_workers,
-                                              pin_memory=True,
-                                              prefetch_factor=cfg.prefetch_factor,
-                                              # worker_init_fn=worker_init_fn,
-                                              # generator=g,
-                                              drop_last=True,
-                                              )
-            # print("*********************", os.environ["LOCAL_RANK"], len(sub_train_dataloader))
+                sub_train_dataset, sub_train_collator = load_empty_dataset_and_collator(cfg)
+
+                sub_train_dataloader = DataLoader(dataset=sub_train_dataset,
+                                                  batch_size=cfg.train_batch_size,
+                                                  collate_fn=sub_train_collator,
+                                                  drop_last=True,
+                                                  shuffle=False)
+
             epoch_update_steps = len(sub_train_dataloader) // cfg.gradient_accumulation_steps
             sub_train_dataloader = iter(deepspeed.utils.RepeatingLoader(sub_train_dataloader))
-
-            # epoch_iterator = tqdm(sub_train_dataloader, desc="Iteration", disable=cfg.local_rank not in [-1, 0], dynamic_ncols=True)
-            # if cfg.local_rank != -1:
-            #     sub_train_dataloader.sampler.set_epoch(epoch)
-            # if dist.is_initialized(): dist.barrier()
 
             for step in tqdm(range(epoch_update_steps), desc="Iteration", disable=cfg.local_rank not in [-1, 0], dynamic_ncols=True):
                 # If training is continued from a checkpoint, fast forward
@@ -235,8 +238,8 @@ def train(cfg, model, tokenizer, continue_from_global_step=0):
                         os.makedirs(output_dir, exist_ok=True)
                     save_model(model, cfg, output_dir, tokenizer)
 
-                # if len(log_metrics) > 0 and cfg.local_rank in [-1, 0]:
-                #     wandb.log(log_metrics)
+                if len(log_metrics) > 0 and cfg.local_rank in [-1, 0]:
+                    wandb.log(log_metrics)
 
                 del log_metrics
 
@@ -305,11 +308,11 @@ def main(cfg: DictConfig):
 
     dp_degree = dist.get_world_size() // cfg.num_stages
     # topo = PipeModelDataParallelTopology(num_pp=cfg.num_stages, num_mp=1, num_dp=dp_degree)
-    topo = ProcessTopology(axes=['data', 'pipe'], dims=[dp_degree, cfg.num_stages])
-    print(f"Rank: {dist.get_rank()}, Topo: {topo.get_coord(dist.get_rank())}")
+    # topo = ProcessTopology(axes=['data', 'pipe'], dims=[dp_degree, cfg.num_stages])
+    # print(f"Rank: {dist.get_rank()}, Topo: {topo.get_coord(dist.get_rank())}")
     model_pipe = PipelineModule(layers=layers,
-                                # num_stages=cfg.num_stages,
-                                topology=topo,
+                                num_stages=cfg.num_stages,
+                                # topology=topo,
                                 loss_fn=models.llama_ds_mp_wrap.loss_fn,
                                 # partition_method="uniform",
                                 activation_checkpoint_interval=getattr(cfg, "activation_checkpoint_interval", 0)

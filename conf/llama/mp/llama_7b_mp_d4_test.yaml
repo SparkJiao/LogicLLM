@@ -14,6 +14,7 @@ model:
 #    _target_: general_util.training_utils.return_torch_dtype
 #    dtype: float16
 
+enable_flash_attention: True
 
 get_layers:
     _target_: models.llama_ds_mp_wrap.get_layers_from_config
@@ -97,7 +98,7 @@ num_train_epochs: 1
 max_steps: -1
 warmup_proportion: 0
 warmup_steps: 50
-#total_dataset_len: 10000
+total_dataset_len: 2122936
 
 # Optimizer
 optimizer:
