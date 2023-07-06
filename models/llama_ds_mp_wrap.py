@@ -121,6 +121,7 @@ class LossFNRatio:
     def __init__(self, ignore_index: int = -100, merit_ratio: float = 0.5):
         self.ignore_index = ignore_index
         self.merit_ratio = merit_ratio
+        logger.info(f"LossFNRatio: ignore_index={ignore_index}, merit_ratio={merit_ratio}")
 
     def __call__(self, outputs, labels):
         logits = outputs
