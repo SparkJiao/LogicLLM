@@ -29,6 +29,7 @@ import hydra
 import torch
 import wandb
 from deepspeed.pipe import PipelineModule
+from deepspeed.runtime.engine import DeepSpeedEngine
 from omegaconf import DictConfig, OmegaConf
 from torch import distributed as dist
 from torch.utils.data import (DataLoader, RandomSampler, DistributedSampler)
@@ -42,6 +43,82 @@ from general_util.training_utils import set_seed, load_and_cache_examples
 logger: logging.Logger
 
 torch.backends.cuda.matmul.allow_tf32 = True
+
+
+# Hack here to process the loading checkpoint bug.
+def load_checkpoint(self,
+                    load_dir,
+                    tag=None,
+                    load_module_strict=True,
+                    load_optimizer_states=True,
+                    load_lr_scheduler_states=True,
+                    load_module_only=False,
+                    custom_load_fn=None):
+    """
+    Load training checkpoint
+
+    Arguments:
+        load_dir: Required. Directory to load the checkpoint from
+        tag: Checkpoint tag used as a unique identifier for checkpoint, if not provided will attempt to load tag in 'latest' file
+        load_module_strict: Optional. Boolean to strictly enforce that the keys in state_dict of module and checkpoint match.
+        load_optimizer_states: Optional. Boolean to load the training optimizer states from Checkpoint. Ex. ADAM's momentum and variance
+        load_lr_scheduler_states: Optional. Boolean to add the learning rate scheduler states from Checkpoint.
+        load_module_only: Optional. Boolean to load only the model weights from the checkpoint. Ex. warmstarting.
+        custom_load_fn: Optional. Custom model load function.
+
+    Returns:
+        A tuple of ``load_path`` and ``client_state``.
+        *``load_path``: Path of the loaded checkpoint. ``None`` if loading the checkpoint failed.
+        *``client_state``: State dictionary used for loading required training states in the client code.
+
+    Important: under ZeRO3, one cannot load checkpoint with ``engine.load_checkpoint()`` right
+    after ``engine.save_checkpoint()``. It is because ``engine.module`` is partitioned, and
+    ``load_checkpoint()`` wants a pristine model. If insisting to do so, please reinitialize engine
+    before ``load_checkpoint()``.
+
+    """
+
+    if tag is None:
+        latest_tag = "latest_universal" if self.load_universal_checkpoint() else "latest"
+        latest_path = os.path.join(load_dir, latest_tag)
+        if os.path.isfile(latest_path):
+            with open(latest_path, "r") as fd:
+                tag = fd.read().strip()
+        else:
+            if self.load_universal_checkpoint():
+                raise ValueError(f'Invalid for universal checkpoint: {latest_path} does not exist')
+            else:
+                logger.warning(
+                    f"Unable to find latest file at {latest_path}, if trying to load latest "
+                    "checkpoint please ensure this file exists or pass an explicit checkpoint tag when loading a checkpoint."
+                )
+                return None, None
+
+    if self.zero_optimization_partition_weights():
+        # Prepare for checkpoint load by ensuring all parameters are partitioned
+        self.optimizer.checkpoint_event_prologue()
+
+    load_path, client_states = self._load_checkpoint(load_dir,
+                                                     tag,
+                                                     load_module_strict=load_module_strict,
+                                                     load_optimizer_states=load_optimizer_states,
+                                                     load_lr_scheduler_states=load_lr_scheduler_states,
+                                                     load_module_only=load_module_only,
+                                                     custom_load_fn=custom_load_fn)
+
+    load_zero_checkpoint = load_optimizer_states and (self.zero_optimization() or self.bfloat16_enabled())
+    if load_zero_checkpoint and load_path is not None:
+        success = self._load_zero_checkpoint(load_dir, tag, load_optimizer_states=load_optimizer_states)
+        if not success:
+            self.optimizer._restore_from_bit16_weights()
+
+    if self.zero_optimization_partition_weights():
+        self.optimizer.checkpoint_event_epilogue()
+
+    return load_path, client_states
+
+
+DeepSpeedEngine.load_checkpoint = load_checkpoint
 
 
 def load_empty_dataset_and_collator(cfg: DictConfig):
@@ -301,9 +378,14 @@ def main(cfg: DictConfig):
     model_or_config = hydra.utils.call(cfg.model, cfg.model_name_or_path)
 
     layers = hydra.utils.call(cfg.get_layers, model_or_config)
+    if hasattr(cfg, "pp_loss_fn") and cfg.pp_loss_fn is not None:
+        pp_loss_fn = hydra.utils.call(cfg.pp_loss_fn)
+    else:
+        pp_loss_fn = models.llama_ds_mp_wrap.loss_fn
+
     model_pipe = PipelineModule(layers=layers,
                                 num_stages=cfg.num_stages,
-                                loss_fn=models.llama_ds_mp_wrap.loss_fn,
+                                loss_fn=pp_loss_fn,
                                 activation_checkpoint_interval=getattr(cfg, "activation_checkpoint_interval", 0)
                                 )
     logger.info(f"{model_pipe.topology}")
