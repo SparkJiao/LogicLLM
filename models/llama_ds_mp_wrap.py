@@ -130,13 +130,14 @@ class LossFNRatio:
         shift_labels = labels[..., 1:].contiguous()
 
         bsz, seq_len = shift_labels.shape
+        sub_bsz = bsz // 2
 
         loss_fct = CrossEntropyLoss(ignore_index=self.ignore_index)
 
-        sub_logits0 = shift_logits[:bsz]
-        sub_logits1 = shift_logits[bsz:]
-        sub_labels0 = shift_labels[:bsz]
-        sub_labels1 = shift_labels[bsz:]
+        sub_logits0 = shift_logits[:sub_bsz]
+        sub_logits1 = shift_logits[sub_bsz:]
+        sub_labels0 = shift_labels[:sub_bsz]
+        sub_labels1 = shift_labels[sub_bsz:]
         loss0 = loss_fct(sub_logits0.reshape(-1, sub_logits0.size(-1)), sub_labels0.reshape(-1))
         loss1 = loss_fct(sub_logits1.reshape(-1, sub_logits1.size(-1)), sub_labels1.reshape(-1))
         loss = (1 - self.merit_ratio) * loss0 + self.merit_ratio * loss1
