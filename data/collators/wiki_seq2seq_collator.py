@@ -294,11 +294,13 @@ class WikiSeq2SeqCollatorWithCausalLMFixPaddingSide(WikiSeq2SeqCollatorFixPaddin
 
 class WikiSeq2SeqCollatorWithCausalLMCombine(WikiSeq2SeqCollatorFixPaddingSide):
     def __init__(self, max_seq_length: int, tokenizer: str, causal_lm: bool = False, generative_mode: bool = False,
-                 causal_lm_add_eos: bool = False, return_standard_inputs: bool = False, **kwargs):
+                 causal_lm_add_eos: bool = False, return_standard_inputs: bool = False, enable_flash_attention: bool = False,
+                 **kwargs):
         super().__init__(max_seq_length, tokenizer, causal_lm, generative_mode, **kwargs)
         assert self.causal_lm
         self.causal_lm_add_eos = causal_lm_add_eos
         self.return_standard_inputs = return_standard_inputs
+        self.enable_flash_attention = enable_flash_attention
 
     def __call__(self, batch):
         if self.causal_lm_add_eos:
@@ -307,7 +309,6 @@ class WikiSeq2SeqCollatorWithCausalLMCombine(WikiSeq2SeqCollatorFixPaddingSide):
             texts = [b["text"] for b in batch]
         causal_lm_model_inputs = self.tokenizer(texts, padding="max_length", truncation=True, return_tensors="pt",
                                                 max_length=self.max_seq_length)
-        # index = torch.tensor([b["index"] for b in batch], dtype=torch.long)
 
         model_inputs = super().__call__(batch)
 
@@ -321,10 +322,9 @@ class WikiSeq2SeqCollatorWithCausalLMCombine(WikiSeq2SeqCollatorFixPaddingSide):
 
         if self.return_standard_inputs:
             input_ids, attention_mask, position_ids, labels = convert_to_standard_inputs(all_inputs, self.tokenizer)
-            # labels = torch.cat([labels, index.unsqueeze(0).expand(2, -1).reshape(-1, 1)], dim=1)
-            # if os.environ["LOCAL_RANK"] in ["0", "3"]:
-            #     print("==============", os.environ["LOCAL_RANK"], input_ids.size(),
-            #     attention_mask.size(), position_ids.size(), labels.size())
+            if self.enable_flash_attention:
+                # attention_mask = all_inputs["attention_mask"].to(dtype=torch.float32)
+                attention_mask = torch.ones(input_ids.shape, dtype=torch.float32)
 
             return (
                 (input_ids, attention_mask, position_ids),

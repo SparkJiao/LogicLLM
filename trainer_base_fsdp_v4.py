@@ -384,10 +384,12 @@ def main(cfg: DictConfig):
 
         checkpoints = [cfg.output_dir]
         if cfg.save_best:
-            logging.getLogger("transformers.modeling_utils").setLevel(logging.WARN)  # Reduce logging
+            # logging.getLogger("transformers.modeling_utils").setLevel(logging.WARN)  # Reduce logging
+            pass
         elif cfg.prediction_cfg.best_checkpoint and os.path.exists(cfg.prediction_cfg.best_checkpoint):
             checkpoints = [cfg.prediction_cfg.best_checkpoint]
-            logging.getLogger("transformers.modeling_utils").setLevel(logging.WARN)  # Reduce logging
+            # logging.getLogger("transformers.modeling_utils").setLevel(logging.WARN)  # Reduce logging
+            pass
         elif cfg.eval_sub_path:
             checkpoints = list(sorted(list(set(
                 os.path.dirname(c) for c in

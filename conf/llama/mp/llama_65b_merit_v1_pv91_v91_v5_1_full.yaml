@@ -18,7 +18,7 @@ get_layers:
     _target_: models.llama_ds_mp_wrap.get_layers_from_config
     activation_checkpointing: True
 
-enable_flash_attention: True
+enable_flash_attention: False
 
 # Pipeline parallelism specific
 num_stages: 8
@@ -63,7 +63,7 @@ do_preprocess: False
 model_name_or_path: pretrained-models/LLaMA/llama-65b-mp8
 pretrain:
 
-exp_name: llama.65b.merit_v91_v91.seq2seq.v5.0.3aug.pp8.adamw.500steps.NA100.0702
+exp_name: llama.65b.merit_v91_v91.seq2seq.v5.1.3aug.pp8.adamw.500steps.NA100.0702
 exp_notes:
 output_dir: experiments/${exp_name}  # Fix <pad token id>
 
@@ -74,11 +74,11 @@ do_eval: True
 eval_sub_path: checkpoint-*
 
 # Training hyper-parameters
-per_gpu_train_batch_size: 16
+per_gpu_train_batch_size: 8
 per_gpu_eval_batch_size: 1
 #learning_rate: 2e-3
-learning_rate: 1e-6
-gradient_accumulation_steps: 256
+learning_rate: 2e-6
+gradient_accumulation_steps: 512
 weight_decay: 0.001
 adam_epsilon: 1e-6
 adam_betas: "(0.9, 0.99)"
