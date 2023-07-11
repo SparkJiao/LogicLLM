@@ -10,6 +10,12 @@ wandb login d9bc4cccef46949e9fdffb3df442996d803d43d2
 
 chmod +x ./s5cmd
 
+# git clone https://github.com/HazyResearch/flash-attention.git
+
+# cd flash-attention
+# python setup.py install
+# cd ../
+
 # ======================================
 
 #./s5cmd sync $MODEL_S3_BUCKET/* /tmp/llama-7b/
@@ -86,16 +92,38 @@ chmod +x ./s5cmd
 
 # PAD_TOKEN="<unk>" python -m torch.distributed.run --nproc_per_node 8 --nnodes $NNODES --node_rank $NODE_RANK --master_addr $MASTER_ADDR --master_port $MASTER_PORT trainer_base_ds_mul_aws.py aws_output_bucket=$AWS_OUTPUT_BUCKET -cp conf/llama/wiki/ -cn llama_65b_merit_v1_pv91_v91_v5_15_aws
 
-MODEL_S3_BUCKET=s3://sagemaker-us-east-1-107457652907/pretrained-models/llama-65b
-AWS_OUTPUT_BUCKET=s3://sagemaker-us-east-1-107457652907/experiments/llama.65b.q_lora.merit_v91_v91.seq2seq.v5.18.3aug.w16.adamw.500steps.NA100.0617.aws
+# MODEL_S3_BUCKET=s3://sagemaker-us-east-1-107457652907/pretrained-models/llama-65b
+# AWS_OUTPUT_BUCKET=s3://sagemaker-us-east-1-107457652907/experiments/llama.65b.q_lora.merit_v91_v91.seq2seq.v5.18.3aug.w16.adamw.500steps.NA100.0617.aws
 
-./s5cmd sync $MODEL_S3_BUCKET/* /tmp/llama-65b
+# ./s5cmd sync $MODEL_S3_BUCKET/* /tmp/llama-65b
 
-PAD_TOKEN="<unk>" python -m torch.distributed.run --nproc_per_node 8 --nnodes $NNODES --node_rank $NODE_RANK --master_addr $MASTER_ADDR --master_port $MASTER_PORT trainer_base_ds_mul_aws.py aws_output_bucket=$AWS_OUTPUT_BUCKET -cp conf/llama/wiki/ -cn llama_65b_merit_v1_pv91_v91_v5_18_aws
+# PAD_TOKEN="<unk>" python -m torch.distributed.run --nproc_per_node 8 --nnodes $NNODES --node_rank $NODE_RANK --master_addr $MASTER_ADDR --master_port $MASTER_PORT trainer_base_ds_mul_aws.py aws_output_bucket=$AWS_OUTPUT_BUCKET -cp conf/llama/wiki/ -cn llama_65b_merit_v1_pv91_v91_v5_18_aws
+
+
+# ./s5cmd sync /tmp/log_dir/* s3://sagemaker-us-east-1-107457652907/experiments/log_dir/
+
+# ================== llama-65b mp8 dp2 merit pre-train =====================
+
+MODEL_S3_BUCKET=s3://sagemaker-us-east-1-107457652907/pretrained-models/llama-65b-mp8
+# MODEL_S3_BUCKET=s3://sagemaker-us-east-1-107457652907/pretrained-models/llama-65b-mp16
+AWS_OUTPUT_BUCKET=s3://sagemaker-us-east-1-107457652907/experiments/llama.65b.merit_v91_v91.seq2seq.v5.4.3aug.mp8.dp2.adamw.500steps.NA100.0630.aws
+
+./s5cmd sync $MODEL_S3_BUCKET/* /tmp/llama-65b-mp8
+
+# PAD_TOKEN="<unk>" python -m torch.distributed.run --nproc_per_node 8 --nnodes $NNODES --node_rank $NODE_RANK --master_addr $MASTER_ADDR --master_port $MASTER_PORT trainer_base_ds_mp_aws.py aws_output_bucket=$AWS_OUTPUT_BUCKET -cp conf/llama/mp/ -cn llama_65b_merit_v1_pv91_v91_v5_0_full_aws
+
+# PAD_TOKEN="<unk>" python -m torch.distributed.run --nproc_per_node 8 --nnodes $NNODES --node_rank $NODE_RANK --master_addr $MASTER_ADDR --master_port $MASTER_PORT trainer_base_ds_mp_aws.py aws_output_bucket=$AWS_OUTPUT_BUCKET -cp conf/llama/mp/ -cn llama_65b_merit_v1_pv91_v91_v5_2_full_aws
+
+# PAD_TOKEN="<unk>" python -m torch.distributed.run --nproc_per_node 8 --nnodes $NNODES --node_rank $NODE_RANK --master_addr $MASTER_ADDR --master_port $MASTER_PORT trainer_base_ds_mp_aws.py aws_output_bucket=$AWS_OUTPUT_BUCKET -cp conf/llama/mp/ -cn llama_65b_merit_v1_pv91_v91_v5_3_full_aws
+
+PAD_TOKEN="<unk>" python -m torch.distributed.run --nproc_per_node 8 --nnodes $NNODES --node_rank $NODE_RANK --master_addr $MASTER_ADDR --master_port $MASTER_PORT trainer_base_ds_mp_aws.py aws_output_bucket=$AWS_OUTPUT_BUCKET -cp conf/llama/mp/ -cn llama_65b_merit_v1_pv91_v91_v5_4_full_aws
+
+# PAD_TOKEN="<unk>" deepspeed --num_nodes 2  --master_addr $MASTER_ADDR --master_port $MASTER_PORT trainer_base_ds_mp_aws.py aws_output_bucket=$AWS_OUTPUT_BUCKET -cp conf/llama/mp/ -cn llama_65b_merit_v1_pv91_v91_v5_0_full_aws
+
+# PAD_TOKEN="<unk>" python -m torch.distributed.run --nproc_per_node 8 --nnodes $NNODES --node_rank $NODE_RANK --master_addr $MASTER_ADDR --master_port $MASTER_PORT trainer_ds_mp_unify_aws.py aws_output_bucket=$AWS_OUTPUT_BUCKET -cp conf/llama/mp/ -cn llama_65b_merit_v1_pv91_v91_v5_0_full_aws
 
 
 ./s5cmd sync /tmp/log_dir/* s3://sagemaker-us-east-1-107457652907/experiments/log_dir/
-
 
 # ================== falcon-40b merit pre-train =====================
 
