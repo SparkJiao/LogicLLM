@@ -119,9 +119,6 @@ def load_and_cache_examples(cfg, tokenizer: PreTrainedTokenizer, _split="train",
     if getattr(cfg, "dist_load_data_barrier", True) and if_barrier and cfg.local_rank == 0:
         dist.barrier()  # Make sure only the first process in distributed training process the dataset, and the others will use the cache
 
-    if dist.is_initialized():
-        dist.barrier()
-
     return dataset
 
 

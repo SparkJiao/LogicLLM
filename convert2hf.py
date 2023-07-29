@@ -41,9 +41,10 @@ def load_weights(checkpoint_dir, n_layers: int):
     state_dict = {}
     for pt in Path(checkpoint_dir).iterdir():
         print("Processing ", pt.name)
-        sd = torch.load(pt, map_location="cpu")
         if not pt.name.startswith('layer_'):
             continue
+
+        sd = torch.load(pt, map_location="cpu")
 
         if pt.name.startswith("layer_00"):
             print(f"{pt.name} -> model.embed_tokens.weight")

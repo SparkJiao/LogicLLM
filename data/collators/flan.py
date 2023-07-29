@@ -163,11 +163,12 @@ def vanilla_seq2seq_convertor(examples, tokenizer: PreTrainedTokenizer, max_seq_
                              truncation=True, return_tensors="pt")
     if decoder_only:
         input_lens = model_inputs["input_ids"].ne(tokenizer.pad_token_id).sum(dim=1)
-        model_inputs = tokenizer(outputs, max_length=max_seq_length, padding="longest",
-                                 truncation=True, return_tensors="pt")
+        model_inputs = tokenizer(outputs, max_length=max_seq_length, padding="max_length", truncation=True, return_tensors="pt")
         new_input_lens = model_inputs["input_ids"].ne(tokenizer.pad_token_id).sum(dim=1)
         input_lens = input_lens - input_lens.eq(new_input_lens).to(input_lens.dtype) * (input_lens // 2)
         input_lens = input_lens.to(torch.long)
+        if tokenizer.padding_side == "left":
+            input_lens = model_inputs["input_ids"].eq(tokenizer.pad_token_id).to(torch.long).sum(dim=1) + input_lens
         model_inputs["input_lens"] = input_lens
 
     return model_inputs
@@ -302,11 +303,24 @@ class FlanCollatorOverCollator:
         if self.convert_to_standard_inputs:
             input_ids, attention_mask, position_ids, labels = convert_to_standard_inputs(model_inputs, self.tokenizer)
 
-            labels = torch.cat([labels, index.unsqueeze(1)], dim=1)
-
             return (
-                (input_ids, attention_mask, position_ids, index),
+                (input_ids, attention_mask, position_ids),
                 labels,
             )
 
+        return model_inputs
+
+
+class CausalLMCollator:
+    def __init__(self, tokenizer: str, max_seq_length: int, pp_inputs_processor: Callable = None, **kwargs):
+        self.tokenizer: PreTrainedTokenizer = AutoTokenizer.from_pretrained(tokenizer, **kwargs)
+        expand_special_tokenizer(self.tokenizer)
+        self.max_seq_length = max_seq_length
+        self.pp_inputs_processor = pp_inputs_processor
+
+    def __call__(self, batch):
+        model_inputs = self.tokenizer(batch, padding="max_length", truncation=True, max_length=self.max_seq_length, return_tensors="pt")
+        model_inputs["input_lens"] = torch.zeros(len(batch), dtype=torch.long)
+        if self.pp_inputs_processor is not None:
+            return self.pp_inputs_processor(model_inputs, self.tokenizer)
         return model_inputs

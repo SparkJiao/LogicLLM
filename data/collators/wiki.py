@@ -1,9 +1,13 @@
 import collections
+import copy
 import os
 import pickle
 import random
+from tqdm import tqdm
 from collections import Counter, defaultdict
-from typing import Tuple, Optional, List
+from typing import Tuple, Optional, List, Dict, Any
+from multiprocessing import Pool
+import itertools
 
 import torch
 import transformers
@@ -32,6 +36,223 @@ class WikiPathDatasetV5(Dataset):
 
         # cnt = Counter(list(map(lambda x: len(x["negative"]) if "negative" in x else len(x["negative_context"]), examples)))
         # assert len(cnt) == 1, cnt
+
+        self.raw_texts = _aligned_texts
+
+    def __len__(self):
+        return len(self.examples)
+
+    def __getitem__(self, index) -> T_co:
+        example = self.examples[index]
+        text = self.raw_texts[index]
+        return {
+            "example": example,
+            "text": text,
+            "index": index,
+        }
+
+
+def map_counterfactual_data(examples: List[Dict[str, Any]]):
+    exp_orig_id2cate = {}
+    for exp in tqdm(examples, desc="Categorizing examples", total=len(examples)):
+        orig_id = exp["orig_id"]
+        if orig_id not in exp_orig_id2cate:
+            exp_orig_id2cate[orig_id] = {
+                "cf": {
+                    "opt_based": [],
+                    "ctx_based": [],
+                },
+                "non_cf": {
+                    "opt_based": [],
+                    "ctx_based": [],
+                },
+            }
+
+        if "h" in exp:  # counterfactual example
+            assert "t" in exp
+            if "positive" in exp:  # option-based example
+                exp_orig_id2cate[orig_id]["cf"]["opt_based"].append(exp)
+            else:
+                assert "negative_context" in exp
+                exp_orig_id2cate[orig_id]["cf"]["ctx_based"].append(exp)
+        else:  # non-counterfactual example
+            if "positive" in exp:  # option-based example
+                exp_orig_id2cate[orig_id]["non_cf"]["opt_based"].append(exp)
+            else:
+                assert "negative_context" in exp
+                exp_orig_id2cate[orig_id]["non_cf"]["ctx_based"].append(exp)
+
+    # Some mapping relations:
+    #   1. option -> ctx
+    #       1.1. option (non-cf) -> ctx (non-cf)
+    #       1.2. option (cf)     -> ctx (cf)
+    #       1.3. option (cf)     -> ctx (non-cf)
+    #       1.4. option (non-cf) -> ctx (cf)
+    #   2. ctx -> option
+    #       2.1. ctx (non-cf) -> option (non-cf)
+    #       2.2. ctx (cf)     -> option (cf)
+    #       2.3. ctx (cf)     -> option (non-cf)
+    #       2.4. ctx (non-cf) -> option (cf)
+    # For 1.1, 1.2, 2.1, 2.2, these samples can be processed by the original collator by simply transforming into seq2seq format.
+    # For 1.3, 1.4, 2.3, 2.4, we need to add paired examples.
+
+    new_examples = []
+    for orig_id in tqdm(exp_orig_id2cate, desc="Generating paired examples", total=len(exp_orig_id2cate)):
+        if len(exp_orig_id2cate[orig_id]["cf"]["opt_based"]) and len(exp_orig_id2cate[orig_id]["non_cf"]["opt_based"]):
+            # `context` (cf) -> `positive` (non-cf)
+            base_exp = exp_orig_id2cate[orig_id]["cf"]["opt_based"][0]  # since `context` part across different samples are the same.
+            for target_exp in exp_orig_id2cate[orig_id]["non_cf"]["opt_based"]:
+                new_exp = copy.deepcopy(base_exp)
+                new_exp["positive"] = target_exp["positive"]
+                new_exp["negative"] = target_exp["negative"]
+                new_examples.append(new_exp)
+
+            # `context` (non-cf) -> `positive` (cf)
+            base_exp = exp_orig_id2cate[orig_id]["non_cf"]["opt_based"][0]
+            for target_exp in exp_orig_id2cate[orig_id]["cf"]["opt_based"]:
+                new_exp = copy.deepcopy(base_exp)
+                new_exp["positive"] = target_exp["positive"]
+                new_exp["negative"] = target_exp["negative"]
+                new_examples.append(new_exp)
+
+        if len(exp_orig_id2cate[orig_id]["cf"]["ctx_based"]) and len(exp_orig_id2cate[orig_id]["non_cf"]["ctx_based"]):
+            # `option` (cf) -> `context` (non-cf)
+            for base_exp in exp_orig_id2cate[orig_id]["cf"]["ctx_based"]:
+                target_exp = exp_orig_id2cate[orig_id]["non_cf"]["ctx_based"][0]
+                new_exp = copy.deepcopy(base_exp)
+                new_exp["context"] = target_exp["context"]
+                new_exp["negative_context"] = target_exp["negative_context"]
+                new_examples.append(new_exp)
+
+            # `option` (non-cf) -> `context` (cf)
+            for base_exp in exp_orig_id2cate[orig_id]["non_cf"]["ctx_based"]:
+                target_exp = exp_orig_id2cate[orig_id]["cf"]["ctx_based"][0]
+                new_exp = copy.deepcopy(base_exp)
+                new_exp["context"] = target_exp["context"]
+                new_exp["negative_context"] = target_exp["negative_context"]
+                new_examples.append(new_exp)
+
+    return new_examples
+
+
+def _map_counterfactual_data_mp_single_process(sample: Dict):
+    _new_examples = []
+    if len(sample["cf"]["opt_based"]) and len(sample["non_cf"]["opt_based"]):
+        # `context` (cf) -> `positive` (non-cf)
+        base_exp = sample["cf"]["opt_based"][0]  # since `context` part across different samples are the same.
+        for target_exp in sample["non_cf"]["opt_based"]:
+            new_exp = copy.deepcopy(base_exp)
+            new_exp["positive"] = target_exp["positive"]
+            new_exp["negative"] = target_exp["negative"]
+            _new_examples.append(new_exp)
+
+        # `context` (non-cf) -> `positive` (cf)
+        base_exp = sample["non_cf"]["opt_based"][0]
+        for target_exp in sample["cf"]["opt_based"]:
+            new_exp = copy.deepcopy(base_exp)
+            new_exp["positive"] = target_exp["positive"]
+            new_exp["negative"] = target_exp["negative"]
+            _new_examples.append(new_exp)
+
+    if len(sample["cf"]["ctx_based"]) and len(sample["non_cf"]["ctx_based"]):
+        # `option` (cf) -> `context` (non-cf)
+        for base_exp in sample["cf"]["ctx_based"]:
+            target_exp = sample["non_cf"]["ctx_based"][0]
+            new_exp = copy.deepcopy(base_exp)
+            new_exp["context"] = target_exp["context"]
+            new_exp["negative_context"] = target_exp["negative_context"]
+            _new_examples.append(new_exp)
+
+        # `option` (non-cf) -> `context` (cf)
+        for base_exp in sample["non_cf"]["ctx_based"]:
+            target_exp = sample["cf"]["ctx_based"][0]
+            new_exp = copy.deepcopy(base_exp)
+            new_exp["context"] = target_exp["context"]
+            new_exp["negative_context"] = target_exp["negative_context"]
+            _new_examples.append(new_exp)
+
+    return _new_examples
+
+
+def map_counterfactual_data_mp(examples: List[Dict[str, Any]], num_workers: int = 32):
+    exp_orig_id2cate = {}
+    for exp in tqdm(examples, desc="Categorizing examples", total=len(examples)):
+        orig_id = exp["orig_id"]
+        if orig_id not in exp_orig_id2cate:
+            exp_orig_id2cate[orig_id] = {
+                "cf": {
+                    "opt_based": [],
+                    "ctx_based": [],
+                },
+                "non_cf": {
+                    "opt_based": [],
+                    "ctx_based": [],
+                },
+            }
+
+        if "h" in exp:  # counterfactual example
+            assert "t" in exp
+            if "positive" in exp:  # option-based example
+                exp_orig_id2cate[orig_id]["cf"]["opt_based"].append(exp)
+            else:
+                assert "negative_context" in exp
+                exp_orig_id2cate[orig_id]["cf"]["ctx_based"].append(exp)
+        else:  # non-counterfactual example
+            if "positive" in exp:  # option-based example
+                exp_orig_id2cate[orig_id]["non_cf"]["opt_based"].append(exp)
+            else:
+                assert "negative_context" in exp
+                exp_orig_id2cate[orig_id]["non_cf"]["ctx_based"].append(exp)
+
+    # Some mapping relations:
+    #   1. option -> ctx
+    #       1.1. option (non-cf) -> ctx (non-cf)
+    #       1.2. option (cf)     -> ctx (cf)
+    #       1.3. option (cf)     -> ctx (non-cf)
+    #       1.4. option (non-cf) -> ctx (cf)
+    #   2. ctx -> option
+    #       2.1. ctx (non-cf) -> option (non-cf)
+    #       2.2. ctx (cf)     -> option (cf)
+    #       2.3. ctx (cf)     -> option (non-cf)
+    #       2.4. ctx (non-cf) -> option (cf)
+    # For 1.1, 1.2, 2.1, 2.2, these samples can be processed by the original collator by simply transforming into seq2seq format.
+    # For 1.3, 1.4, 2.3, 2.4, we need to add paired examples.
+
+    with Pool(num_workers) as p:
+        new_examples = list(
+            tqdm(
+                p.imap(_map_counterfactual_data_mp_single_process, exp_orig_id2cate.values()),
+                total=len(exp_orig_id2cate),
+            )
+        )
+    new_examples = list(itertools.chain.from_iterable(new_examples))
+
+    return new_examples
+
+
+class WikiPathDatasetV5ComplexMap(Dataset):
+    """
+    We add different mapping relation in this version of Dataset.
+    """
+
+    def __init__(self, examples, raw_texts):
+        self.examples = examples
+        num_orig_examples = len(examples)
+        logger.info(f"Number of original examples: {num_orig_examples}")
+        new_examples = map_counterfactual_data(examples)
+        num_ext_examples = len(new_examples)
+        logger.info(f"Number of extended examples: {num_ext_examples}")
+
+        self.examples.extend(new_examples)
+
+        _aligned_texts = []
+        while len(_aligned_texts) < len(self.examples):
+            diff = len(self.examples) - len(_aligned_texts)
+            if diff < len(raw_texts):
+                _aligned_texts.extend(random.sample(raw_texts, diff))
+            else:
+                _aligned_texts.extend(raw_texts[:])
+        assert len(_aligned_texts) == len(self.examples)
 
         self.raw_texts = _aligned_texts
 
@@ -790,7 +1011,7 @@ class WikiPathDatasetCollatorWithContextAndPair(WikiPathDatasetCollator):
                     paired_input_b = paired_example["context"]
 
         return input_a, input_b, paired_input_a, paired_input_b, item["example"]["orig_id"], paired_example_id, \
-               item["paired_example_orig_ids"]
+            item["paired_example_orig_ids"]
 
     def __call__(self, batch):
         input_a, input_b, texts = [], [], []
@@ -936,8 +1157,8 @@ class WikiPathDatasetCollatorWithContextAndPairComplete(WikiPathDatasetCollator)
         pair_k_input_a, pair_k_input_b = self.prepare_single_example_positive(item["pair_k"])
 
         return input_a, input_b, item["pair_q"]["orig_id"], pair_q_input_a, pair_q_input_b, \
-               item["pair_k"]["orig_id"], pair_k_input_a, pair_k_input_b, \
-               item["pair_k_orig_ids"]
+            item["pair_k"]["orig_id"], pair_k_input_a, pair_k_input_b, \
+            item["pair_k_orig_ids"]
 
     def __call__(self, batch):
         input_a, input_b, texts = [], [], []
@@ -945,8 +1166,8 @@ class WikiPathDatasetCollatorWithContextAndPairComplete(WikiPathDatasetCollator)
         dropped_op_cnt = 0
         for b in batch:
             b_input_a, b_input_b, b_pair_q_orig_id, b_pair_q_a, b_pair_q_b, \
-            b_pair_k_orig_id, b_pair_k_a, b_pair_k_b, \
-            b_pair_k_orig_ids = self.prepare_single_example(b)
+                b_pair_k_orig_id, b_pair_k_a, b_pair_k_b, \
+                b_pair_k_orig_ids = self.prepare_single_example(b)
 
             input_a.extend(b_input_a)
             input_b.extend(b_input_b)
@@ -1516,8 +1737,8 @@ class WikiPathDatasetCollatorWithContextAndPairCompleteDropout(WikiPathDatasetCo
         pair_k_input_a, pair_k_input_b = self.prepare_single_example_positive(item["pair_k"])
 
         return input_a, input_b, item["pair_q"]["orig_id"], pair_q_input_a, pair_q_input_b, \
-               item["pair_k"]["orig_id"], pair_k_input_a, pair_k_input_b, \
-               item["pair_k_orig_ids"]
+            item["pair_k"]["orig_id"], pair_k_input_a, pair_k_input_b, \
+            item["pair_k_orig_ids"]
 
     def __call__(self, batch):
         input_a, input_b, texts = [], [], []

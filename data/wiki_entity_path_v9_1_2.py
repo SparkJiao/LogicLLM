@@ -5,7 +5,9 @@ import pickle
 import random
 from functools import partial
 from multiprocessing import Pool
-from typing import Dict, List
+from typing import Dict, List, Optional
+from omegaconf import DictConfig
+import hydra
 
 import torch
 from torch.distributions.geometric import Geometric
@@ -1891,7 +1893,7 @@ def convert_examples_into_features_raw(file_path: str, tokenizer: PreTrainedToke
                                        max_seq_length: int = 512, geo_p: float = 0.5, min_rep_num: int = 1,
                                        deduct_ratio: float = 1.0, context_ratio: float = 1.0, noise_sent_ratio: float = 0.5,
                                        remove_deduct: bool = False, remove_context: bool = False,
-                                       max_neg_samples_num: int = 8, num_workers=48):
+                                       max_neg_samples_num: int = 8, num_workers=48, dataset_class: Optional[DictConfig] = None):
     tokenizer_name = tokenizer.__class__.__name__
     tokenizer_name = tokenizer_name.replace('TokenizerFast', '')
     tokenizer_name = tokenizer_name.replace('Tokenizer', '').lower()
@@ -1905,6 +1907,9 @@ def convert_examples_into_features_raw(file_path: str, tokenizer: PreTrainedToke
     if os.path.exists(cached_file_path):
         logger.info(f"Loading cached file from {cached_file_path}")
         all_examples, raw_texts = torch.load(cached_file_path)
+
+        if dataset_class is not None:
+            return hydra.utils.call(dataset_class, all_examples, raw_texts)
 
         return all_examples, raw_texts
 
@@ -1921,6 +1926,64 @@ def convert_examples_into_features_raw(file_path: str, tokenizer: PreTrainedToke
     # Save
     logger.info(f"Saving processed features into {cached_file_path}.")
     torch.save((all_examples, raw_texts), cached_file_path)
+
+    if dataset_class is not None:
+        return hydra.utils.call(dataset_class, all_examples, raw_texts)
+
+    return all_examples, raw_texts
+
+
+def convert_examples_into_features_complex_map(file_path: str, tokenizer: PreTrainedTokenizer,
+                                               shuffle_context: bool = False, max_neg_num: int = 3, aug_num: int = 10,
+                                               max_seq_length: int = 512, geo_p: float = 0.5, min_rep_num: int = 1,
+                                               deduct_ratio: float = 1.0, context_ratio: float = 1.0, noise_sent_ratio: float = 0.5,
+                                               remove_deduct: bool = False, remove_context: bool = False,
+                                               max_neg_samples_num: int = 8, num_workers=48, dataset_class: Optional[DictConfig] = None):
+    tokenizer_name = tokenizer.__class__.__name__
+    tokenizer_name = tokenizer_name.replace('TokenizerFast', '')
+    tokenizer_name = tokenizer_name.replace('Tokenizer', '').lower()
+
+    file_suffix = f"{tokenizer_name}_{shuffle_context}_{max_neg_num}_{aug_num}_" \
+                  f"{max_seq_length}_{geo_p}_{min_rep_num}_" \
+                  f"{deduct_ratio}_{context_ratio}_{noise_sent_ratio}_{max_neg_samples_num}_" \
+                  f"{'' if not remove_context else 'no-ctx-ex_'}{'' if not remove_deduct else 'no-duc-ex_'}path_v9.1.2_seq2seq_complex_map"
+
+    cached_file_path = f"{file_path}_{file_suffix}"
+    if os.path.exists(cached_file_path):
+        logger.info(f"Loading cached file from {cached_file_path}")
+        all_examples, raw_texts = torch.load(cached_file_path)
+
+        if dataset_class is not None:
+            return hydra.utils.call(dataset_class, all_examples, raw_texts)
+
+        return all_examples, raw_texts
+
+    if os.path.exists(cached_file_path.replace("seq2seq_complex_map", "seq2seq")):
+        all_examples, raw_texts = torch.load(cached_file_path.replace("seq2seq_complex_map", "seq2seq"))
+    else:
+        examples, context_examples, raw_texts = read_examples(file_path, shuffle_context=shuffle_context, max_neg_num=max_neg_num,
+                                                              aug_num=aug_num, geo_p=geo_p, min_rep_num=min_rep_num,
+                                                              deduct_ratio=deduct_ratio, context_ratio=context_ratio,
+                                                              noise_sent_ratio=noise_sent_ratio,
+                                                              remove_deduct=remove_deduct, remove_context=remove_context,
+                                                              max_neg_samples_num=max_neg_samples_num,
+                                                              num_workers=num_workers)
+
+        all_examples = examples + context_examples
+
+    from data.collators.wiki import map_counterfactual_data_mp
+
+    new_examples = map_counterfactual_data_mp(all_examples, num_workers=num_workers)
+    num_ext_examples = len(new_examples)
+    logger.info(f"Number of extended examples: {num_ext_examples}")
+    all_examples.extend(new_examples)
+
+    # Save
+    logger.info(f"Saving processed features into {cached_file_path}.")
+    torch.save((all_examples, raw_texts), cached_file_path)
+
+    if dataset_class is not None:
+        return hydra.utils.call(dataset_class, all_examples, raw_texts)
 
     return all_examples, raw_texts
 

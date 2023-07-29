@@ -5,6 +5,7 @@ from dataclasses import dataclass, field
 import torch
 import transformers
 from transformers.models.llama.modeling_llama import LlamaConfig
+from transformers.models.llama.tokenization_llama import LlamaTokenizer
 
 from general_util.tokenization_utils import expand_special_tokenizer, PreTrainedTokenizer
 
@@ -14,6 +15,30 @@ class Arguments:
     model_name_or_path: Optional[str] = field(default="/path/to/llama-7b-hf")
     output_dir: str = field(default="./llama-7B-init-ckpt")
     mp_world_size: int = field(default=1)
+
+
+def smart_tokenizer_and_embedding_resize(
+    tokenizer: transformers.PreTrainedTokenizer,
+    model: transformers.PreTrainedModel,
+):
+    """Resize tokenizer and embedding.
+
+    Note: This is the unoptimized version that may make your embedding size not be divisible by 64.
+    """
+    # TODO: padding embedding size for being divisible by 64.
+    original_vocab_size = model.get_input_embeddings().weight.shape[0]
+    num_new_tokens = len(tokenizer) - original_vocab_size
+    model.resize_token_embeddings(len(tokenizer))
+
+    if num_new_tokens > 0:
+        input_embeddings = model.get_input_embeddings().weight.data
+        output_embeddings = model.get_output_embeddings().weight.data
+
+        input_embeddings_avg = input_embeddings[:-num_new_tokens].mean(dim=0, keepdim=True)
+        output_embeddings_avg = output_embeddings[:-num_new_tokens].mean(dim=0, keepdim=True)
+
+        input_embeddings[-num_new_tokens:] = input_embeddings_avg
+        output_embeddings[-num_new_tokens:] = output_embeddings_avg
 
 
 def write_ckpt(outpath: Path, model: torch.nn.Module, model_config: LlamaConfig, mp: int):
@@ -52,15 +77,17 @@ def main():
     parser = transformers.HfArgumentParser((Arguments,))
     args, = parser.parse_args_into_dataclasses()
 
-    tokenizer = transformers.AutoTokenizer.from_pretrained(args.model_name_or_path)
-    model_config = transformers.AutoConfig.from_pretrained(args.model_name_or_path)
+    tokenizer: PreTrainedTokenizer = transformers.AutoTokenizer.from_pretrained(args.model_name_or_path)
     model = transformers.AutoModelForCausalLM.from_pretrained(args.model_name_or_path)
+    model_config = model.config
 
     original_vocab_size = model_config.vocab_size
-    expand_special_tokenizer(tokenizer)
+    tokenizer.add_tokens(["<eot>", "<ext_0>", "<ext_1>", "<ext_2>", "<ext_3>"])
+    tokenizer.pad_token = tokenizer.eos_token
+    tokenizer.pad_token_id = tokenizer.eos_token_id
     if len(tokenizer) > original_vocab_size:
         print(f"expand vocab size from {original_vocab_size} to {len(tokenizer)}")
-        model.resize_token_embeddings(len(tokenizer))
+        smart_tokenizer_and_embedding_resize(tokenizer, model)
 
     outpath = Path(args.output_dir)
     if outpath.exists():

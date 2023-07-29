@@ -121,22 +121,29 @@ def train(cfg, model, tokenizer, continue_from_global_step=0):
         total_dataset_len = cfg.total_dataset_len
     else:
         total_dataset_len = 0
-        for _file in tqdm(files, total=len(files)):
-            sub_train_dataset = load_and_cache_examples(cfg, tokenizer, _split="train", _file=_file)
-            _train_sampler = RandomSampler(sub_train_dataset) if cfg.local_rank == -1 else DistributedSampler(sub_train_dataset)
-            _train_collator = hydra.utils.instantiate(cfg.collator) if "collator" in cfg and cfg.collator else None
-            _train_dataloader = DataLoader(dataset=sub_train_dataset,
-                                           sampler=_train_sampler,
-                                           batch_size=cfg.train_batch_size,
-                                           collate_fn=_train_collator,
-                                           num_workers=cfg.num_workers,
-                                           pin_memory=True,
-                                           prefetch_factor=cfg.prefetch_factor)
-            total_dataset_len += len(_train_dataloader)
-            del _train_dataloader
-            del _train_collator
-            del _train_sampler
-            del sub_train_dataset
+        if dist.is_initialized() and dist.get_rank() != 0:
+            dist.barrier()
+
+        if not dist.is_initialized() or dist.get_rank() == 0:
+            for _file in tqdm(files, total=len(files)):
+                sub_train_dataset = load_and_cache_examples(cfg, tokenizer, _split="train", _file=_file)
+                total_dataset_len += len(sub_train_dataset)
+                del sub_train_dataset
+
+            if dist.is_initialized():
+                dist.barrier()
+
+        if dist.is_initialized():
+            if dist.get_rank() == 0:
+                objects = [total_dataset_len for _ in range(dist.get_world_size())]
+            else:
+                objects = [None for _ in range(dist.get_world_size())]
+            output_list = [None]
+            dist.scatter_object_list(output_list, objects, src=0)
+            if dist.get_rank() != 0:
+                total_dataset_len = output_list[0]
+
+            assert total_dataset_len > 0
 
     if getattr(cfg, "do_preprocess", False):
         return
@@ -145,11 +152,13 @@ def train(cfg, model, tokenizer, continue_from_global_step=0):
         logger.info(f"Extended extra vocab size: {cfg.extended_vocab}")
         model.resize_token_embeddings(model.config.vocab_size + cfg.extended_vocab)
 
+    dp_degree = dist.get_world_size() if cfg.local_rank != -1 else 1
+    _actual_train_batch_size = cfg.train_batch_size * cfg.gradient_accumulation_steps * dp_degree
     if cfg.max_steps > 0:
         t_total = cfg.max_steps
-        cfg.num_train_epochs = cfg.max_steps // (total_dataset_len // cfg.gradient_accumulation_steps) + 1
+        cfg.num_train_epochs = cfg.max_steps // (total_dataset_len // _actual_train_batch_size) + 1
     else:
-        t_total = total_dataset_len // cfg.gradient_accumulation_steps * cfg.num_train_epochs
+        t_total = total_dataset_len // _actual_train_batch_size * cfg.num_train_epochs
 
     num_warmup_steps = int(t_total * cfg.warmup_proportion) if cfg.warmup_proportion else cfg.warmup_steps
 
@@ -159,27 +168,19 @@ def train(cfg, model, tokenizer, continue_from_global_step=0):
     ds_config.scheduler.params.warmup_num_steps = num_warmup_steps
     ds_config = OmegaConf.to_container(ds_config, resolve=True)
 
-    # no_decay = ['bias', 'LayerNorm.weight', 'layer_norm.weight']
-    # optimizer_grouped_parameters = [
-    #     {'params': [p for n, p in model.named_parameters() if not any(nd in n for nd in no_decay)],
-    #      'weight_decay': cfg.weight_decay},
-    #     {'params': [p for n, p in model.named_parameters() if any(nd in n for nd in no_decay)],
-    #      'weight_decay': 0.0}
-    # ]
     if torch.__version__ >= "2" and (getattr(os.environ, "TORCH_COMPILE", False) or getattr(cfg, "compile", False)):
         model = torch.compile(model, mode="max-autotune")
     model, optimizer, _, scheduler = deepspeed.initialize(model=model,
-                                                          model_parameters=model.parameters(),
+                                                          model_parameters=[p for p in model.parameters() if p.requires_grad],
                                                           config=ds_config)
     logger.info(optimizer.optimizer)
 
     # Train!
     logger.info("***** Running training *****")
-    logger.info("  Num examples = %d", total_dataset_len * cfg.train_batch_size * dist.get_world_size() if cfg.local_rank != -1 else 1)
+    logger.info("  Num examples = %d", total_dataset_len)
     logger.info("  Num Epochs = %d", cfg.num_train_epochs)
     logger.info("  Instantaneous batch size per GPU = %d", cfg.per_gpu_train_batch_size)
-    logger.info("  Total train batch size (w. parallel, distributed & accumulation) = %d",
-                cfg.train_batch_size * cfg.gradient_accumulation_steps * (dist.get_world_size() if cfg.local_rank != -1 else 1))
+    logger.info("  Total train batch size (w. parallel, distributed & accumulation) = %d", _actual_train_batch_size)
     logger.info("  Gradient Accumulation steps = %d", cfg.gradient_accumulation_steps)
     logger.info("  Total optimization steps = %d", t_total)
     logger.info("  Warmup steps = %d", num_warmup_steps)
@@ -259,12 +260,10 @@ def train(cfg, model, tokenizer, continue_from_global_step=0):
                                 for key, value in results.items():
                                     log_metrics[f"eval/{key}"] = value
 
-                                sub_path = os.path.join(cfg.output_dir, 'checkpoint-{}'.format(global_step))
-                                flag = note_best_checkpoint(cfg, results, sub_path)
-                                if cfg.save_best and flag:
-                                    # save_model(model, cfg, cfg.output_dir, tokenizer, state_dict)
-                                    # del state_dict
-                                    save_model(model, cfg, cfg.output_dir, tokenizer)
+                            sub_path = os.path.join(cfg.output_dir, 'checkpoint-{}'.format(global_step))
+                            flag = note_best_checkpoint(cfg, results, sub_path)
+                            if cfg.save_best and flag:
+                                save_model(model, cfg, cfg.output_dir, tokenizer)
 
                     if len(log_metrics) > 0 and cfg.local_rank in [-1, 0]:
                         wandb.log(log_metrics)

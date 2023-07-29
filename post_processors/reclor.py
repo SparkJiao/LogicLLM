@@ -685,3 +685,57 @@ class MultiChoiceMetricSelectionSaver(MultiChoiceMetricSaver):
             "label": t,
             "input": src,
         } for idx, p, t, src in zip(index, pred, labels, inputs)])
+
+
+class RewardSaver(DistGatherMixin):
+    def __init__(self, tokenizer: Union[str, PreTrainedTokenizer]):
+        super().__init__()
+        if isinstance(tokenizer, str):
+            tokenizer = AutoTokenizer.from_pretrained(tokenizer, use_fast=False)
+
+        self.tokenizer = tokenizer
+        self.predictions = []
+
+    def __call__(self, meta_data: Dict[str, Any], batch_model_outputs: Dict[str, Any], ddp: bool = False):
+        index = meta_data["index"]
+        if isinstance(index, torch.Tensor):
+            index = index.tolist()
+        inputs = meta_data["input"]
+        labels = meta_data["label"]
+        if isinstance(labels, torch.Tensor):
+            labels = labels.tolist()
+        rewards = batch_model_outputs["logits"].detach().float().tolist()
+
+        if ddp:
+            obj = [rewards, index, labels, inputs]
+            gather_res = self.gather_object(obj)
+            if dist.get_rank() == 0:
+                rewards = []
+                index = []
+                labels = []
+                inputs = []
+                for item in gather_res:
+                    rewards.extend(item[0])
+                    index.extend(item[1])
+                    labels.extend(item[2])
+                    inputs.extend(item[3])
+
+        self.predictions.extend([{
+            "index": idx,
+            "pred": p,
+            "label": t,
+            "input": src,
+        } for idx, p, t, src in zip(index, rewards, labels, inputs)])
+
+    def get_results(self, output_dir: str):
+        # output_file = os.path.join(output_dir, "eval_predictions.npy")
+        if dist.is_initialized():
+            output_file = os.path.join(output_dir, f"eval_predictions_rank{dist.get_rank()}.json")
+        else:
+            output_file = os.path.join(output_dir, "eval_predictions.json")
+
+        self.predictions = sorted(self.predictions, key=lambda x: x["index"])
+
+        if not dist.is_initialized() or dist.get_rank() == 0:
+            json.dump(self.predictions, open(output_file, "w"))
+        return {}, self.predictions

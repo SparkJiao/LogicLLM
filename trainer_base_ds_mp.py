@@ -22,7 +22,7 @@ import glob
 import logging
 import os
 import sys
-from typing import Dict, Union
+from typing import Dict, Union, Optional
 
 import deepspeed
 import hydra
@@ -34,7 +34,7 @@ from omegaconf import DictConfig, OmegaConf
 from torch import distributed as dist
 from torch.utils.data import (DataLoader, RandomSampler, DistributedSampler)
 from tqdm import tqdm, trange
-from transformers import (AutoTokenizer, PreTrainedTokenizer)
+from transformers import (AutoTokenizer, PreTrainedTokenizer, PretrainedConfig)
 
 import models.llama_ds_mp_wrap
 from general_util.logger import setting_logger
@@ -43,6 +43,8 @@ from general_util.training_utils import set_seed, load_and_cache_examples
 logger: logging.Logger
 
 torch.backends.cuda.matmul.allow_tf32 = True
+
+_pretrained_config: Optional[PretrainedConfig] = None
 
 
 # Hack here to process the loading checkpoint bug.
@@ -137,9 +139,6 @@ def load_empty_dataset_and_collator(cfg: DictConfig):
     if getattr(cfg, "dist_load_data_barrier", True):
         dist.barrier()
 
-    if dist.is_initialized():
-        dist.barrier()
-
     return dataset, collator
 
 
@@ -157,6 +156,9 @@ def save_model(model: Union[deepspeed.DeepSpeedEngine, deepspeed.PipelineEngine]
 
         OmegaConf.save(cfg, os.path.join(output_dir, "training_config.yaml"))
         logger.info("Saving model checkpoint to %s", output_dir)
+
+        if _pretrained_config is not None and isinstance(_pretrained_config, PretrainedConfig):
+            _pretrained_config.save_pretrained(output_dir)
 
         if cfg.local_rank == 0:
             dist.barrier()
@@ -187,10 +189,29 @@ def train(cfg, model, tokenizer, continue_from_global_step=0):
         total_dataset_len = cfg.total_dataset_len
     else:
         total_dataset_len = 0
-        for _file in tqdm(files, total=len(files)):
-            sub_train_dataset = load_and_cache_examples(cfg, tokenizer, _split="train", _file=_file)
-            total_dataset_len += len(sub_train_dataset)
-            del sub_train_dataset
+        if dist.is_initialized() and dist.get_rank() != 0:
+            dist.barrier()
+
+        if not dist.is_initialized() or dist.get_rank() == 0:
+            for _file in tqdm(files, total=len(files)):
+                sub_train_dataset = load_and_cache_examples(cfg, tokenizer, _split="train", _file=_file)
+                total_dataset_len += len(sub_train_dataset)
+                del sub_train_dataset
+
+            if dist.is_initialized():
+                dist.barrier()
+
+        if dist.is_initialized():
+            if dist.get_rank() == 0:
+                objects = [total_dataset_len for _ in range(dist.get_world_size())]
+            else:
+                objects = [None for _ in range(dist.get_world_size())]
+            output_list = [None]
+            dist.scatter_object_list(output_list, objects, src=0)
+            if dist.get_rank() != 0:
+                total_dataset_len = output_list[0]
+
+            assert total_dataset_len > 0
 
     if getattr(cfg, "do_preprocess", False):
         return
@@ -254,6 +275,8 @@ def train(cfg, model, tokenizer, continue_from_global_step=0):
                     sub_train_sampler = DistributedSampler(sub_train_dataset, num_replicas=dp_degree, rank=dp_id)
                 else:
                     sub_train_sampler = RandomSampler(sub_train_dataset)
+                    cfg.train_batch_size = cfg.train_batch_size * max(1, dp_degree)
+
                 sub_train_collator = hydra.utils.instantiate(cfg.collator) if "collator" in cfg and cfg.collator else None
 
                 sub_train_dataloader = DataLoader(dataset=sub_train_dataset,
@@ -389,6 +412,12 @@ def main(cfg: DictConfig):
         if not os.path.exists(cfg.output_dir):
             os.makedirs(cfg.output_dir)
         OmegaConf.save(cfg, os.path.join(cfg.output_dir, "training_config.yaml"))
+
+        if isinstance(model_or_config, PretrainedConfig):
+            model_or_config.save_pretrained(cfg.output_dir)
+
+            global _pretrained_config
+            _pretrained_config = model_or_config
 
         wandb.init(
             project="LLaMA-BiFLAN",

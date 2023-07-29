@@ -552,3 +552,113 @@ class ReClorChatDataset(Dataset):
             "prompt_index": "0",
             "label": self.data[index]["label"],
         }
+
+
+class ReClorChatDatasetV2(Dataset):
+
+    def __init__(self, file_path: str, tokenizer: PreTrainedTokenizer, instruction: str, suffix: str):
+        self.data = json.load(open(file_path, "r"))
+        self.instruction = instruction
+        self.suffix = suffix
+
+    def __len__(self):
+        return len(self.data)
+
+    def __getitem__(self, index):
+        """Should note that in chat format, instruction follows original output."""
+        inputs = self.data[index]["text"] + "\n\n" + self.data[index]["response"] + self.instruction + self.suffix
+        return {
+            "input": inputs,
+            "index": index,
+            "prompt_index": "0",
+            "label": self.data[index]["label"],
+        }
+
+
+class ReClorRewardPairDataset(Dataset):
+    def __init__(self, file_path: str, tokenizer: PreTrainedTokenizer, read_func,
+                 prefix1: str = "", prefix2: str = "\n\n", suffix: str = "\n\n", eval_mode: bool = False):
+        super().__init__()
+        all_context, all_question, all_option_list, all_label = read_func(file_path)
+        self.contexts = all_context
+        self.questions = all_question
+        self.option_list = all_option_list
+        self.labels = all_label
+        self.prefix1 = prefix1
+        self.prefix2 = prefix2
+        self.suffix = suffix
+        self.tokenizer = tokenizer
+        self.eval_mode = eval_mode
+
+    def __len__(self):
+        if self.eval_mode:
+            return len(self.contexts) * len(self.option_list[0])
+        return len(self.contexts)
+
+    def __getitem__(self, index):
+        if self.eval_mode:
+            example_index = index // len(self.option_list[0])
+            context = self.contexts[example_index]
+            question = self.questions[example_index]
+            option = self.option_list[example_index][index % len(self.option_list[0])]
+            inputs = self.prefix1 + context + self.prefix2 + question + self.suffix + option + self.tokenizer.eos_token
+
+            label = 1 if index % len(self.option_list[0]) == self.labels[example_index] else 0
+
+            return {
+                "input": inputs,
+                "index": f"{example_index}_{index % len(self.option_list[0])}",
+                "label": label,
+            }
+
+        context = self.contexts[index]
+        question = self.questions[index]
+
+        pos = self.option_list[index][self.labels[index]]
+        neg = random.choice(self.option_list[index][:self.labels[index]] + self.option_list[index][self.labels[index] + 1:])
+
+        pos_inputs = self.prefix1 + context + self.prefix2 + question + self.suffix + pos + self.tokenizer.eos_token
+        neg_inputs = self.prefix1 + context + self.prefix2 + question + self.suffix + neg + self.tokenizer.eos_token
+        return {
+            "pos_input": pos_inputs,
+            "neg_input": neg_inputs,
+            "index": index,
+        }
+
+
+class ReClorRewardPairCollator:
+    def __init__(self, tokenizer: str, max_seq_length: int, **kwargs):
+        self.tokenizer: PreTrainedTokenizer = AutoTokenizer.from_pretrained(tokenizer, **kwargs)
+        expand_special_tokenizer(self.tokenizer)
+        self.max_seq_length = max_seq_length
+
+    def __call__(self, batch):
+        if "pos_input" in batch[0]:
+            pos_inputs = [b["pos_input"] for b in batch]
+            neg_inputs = [b["neg_input"] for b in batch]
+
+            pos_index = torch.arange(len(batch), dtype=torch.long)
+            neg_index = torch.arange(len(batch), 2 * len(batch), dtype=torch.long)
+
+            model_inputs = self.tokenizer(pos_inputs + neg_inputs, padding="longest", truncation=True,
+                                          max_length=self.max_seq_length, return_tensors="pt")
+
+            model_inputs["pos_index"] = pos_index
+            model_inputs["neg_index"] = neg_index
+            model_inputs["meta_data"] = {
+                "pos_index": pos_index,
+                "neg_index": neg_index,
+                "index": [b["index"] for b in batch],
+            }
+        else:
+            inputs = [b["input"] for b in batch]
+            model_inputs = self.tokenizer(inputs, padding="longest", truncation=True,
+                                          max_length=self.max_seq_length, return_tensors="pt")
+
+            model_inputs["meta_data"] = {
+                "index": [b["index"] for b in batch],
+                "input": inputs,
+                "label": [b["label"] for b in batch],
+            }
+
+        return model_inputs

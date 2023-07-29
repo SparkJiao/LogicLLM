@@ -26,44 +26,45 @@ get_layers:
 #      dtype: bfloat16
 
 # Pipeline parallelism specific
-num_stages: 2
+num_stages: 4
 #activation_checkpoint_interval: 1
 
-read_tensor_train:
-  _target_: data.wiki_entity_path_v9_1_2.convert_examples_into_features_seq2seq
-  max_neg_num: 3
-  aug_num: 3
-  max_seq_length: 512
-  shuffle_context: True
-  min_rep_num: 5
-  geo_p: 0.4
-  deduct_ratio: 1.0
-  context_ratio: 1.0
-  noise_sent_ratio: 0.0
-  num_workers: 128
-#read_tensor:
-#  _target_: data.test.TestDataset
+#read_tensor_train:
+#  _target_: data.wiki_entity_path_v9_1_2.convert_examples_into_features_seq2seq
+#  max_neg_num: 3
+#  aug_num: 3
+#  max_seq_length: 512
+#  shuffle_context: True
+#  min_rep_num: 5
+#  geo_p: 0.4
+#  deduct_ratio: 1.0
+#  context_ratio: 1.0
+#  noise_sent_ratio: 0.0
+#  num_workers: 128
+read_tensor:
+  _target_: data.test.TestDataset
 
 extended_vocab:
 
 # Data collator
-collator:
-  _target_: data.collators.wiki_seq2seq_collator.WikiSeq2SeqCollatorWithCausalLMCombine
-  max_seq_length: 512
-  tokenizer: ${model_name_or_path}
-  causal_lm: True
-  causal_lm_add_eos: False
-  generative_mode: True
-  return_standard_inputs: True
-  use_fast: False
-  enable_flash_attention: ${enable_flash_attention}
 #collator:
-#  _target_: data.collators.flan.FlanCollatorOverCollator
-#  collator:
-#  max_seq_length: 1024
+#  _target_: data.collators.wiki_seq2seq_collator.WikiSeq2SeqCollatorWithCausalLMCombine
+#  max_seq_length: 512
 #  tokenizer: ${model_name_or_path}
-#  decoder_only: True
+#  causal_lm: True
+#  causal_lm_add_eos: False
+#  generative_mode: True
 #  return_standard_inputs: True
+#  use_fast: False
+#  enable_flash_attention: ${enable_flash_attention}
+#  padding_size: right
+collator:
+  _target_: data.collators.flan.FlanCollatorOverCollator
+  collator:
+  max_seq_length: 1024
+  tokenizer: ${model_name_or_path}
+  decoder_only: True
+  return_standard_inputs: True
 
 # Dataloader
 num_workers: 4
