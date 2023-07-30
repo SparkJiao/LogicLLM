@@ -739,3 +739,52 @@ class RewardSaver(DistGatherMixin):
         if not dist.is_initialized() or dist.get_rank() == 0:
             json.dump(self.predictions, open(output_file, "w"))
         return {}, self.predictions
+
+
+class VLLMSaver(DistGatherMixin):
+    def __init__(self):
+        self.predictions = []
+
+    def __call__(self, meta_data: Dict[str, Any], batch_model_outputs: List, ddp: bool = False):
+        index = meta_data["index"]
+        if isinstance(index, torch.Tensor):
+            index = index.tolist()
+        prompt = meta_data["prompt"]
+        label = meta_data["label"]
+        if isinstance(label, torch.Tensor):
+            label = label.tolist()
+
+        outputs = [output.outputs[0].text for output in batch_model_outputs]
+
+        if ddp:
+            obj = [outputs, index, label, prompt]
+            gather_res = self.gather_object(obj)
+            if dist.get_rank() == 0:
+                outputs = []
+                index = []
+                label = []
+                prompt = []
+                for item in gather_res:
+                    outputs.extend(item[0])
+                    index.extend(item[1])
+                    label.extend(item[2])
+                    prompt.extend(item[3])
+
+        self.predictions.extend([{
+            "index": idx,
+            "pred": p,
+            "label": t,
+            "prompt": src,
+        } for idx, p, t, src in zip(index, outputs, label, prompt)])
+
+    def get_results(self, output_dir: str):
+        if dist.is_initialized():
+            output_file = os.path.join(output_dir, f"eval_predictions_rank{dist.get_rank()}.json")
+        else:
+            output_file = os.path.join(output_dir, "eval_predictions.json")
+
+        self.predictions = sorted(self.predictions, key=lambda x: x["index"])
+
+        if not dist.is_initialized() or dist.get_rank() == 0:
+            json.dump(self.predictions, open(output_file, "w"))
+        return {}, self.predictions

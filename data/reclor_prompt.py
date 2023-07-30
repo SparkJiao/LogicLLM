@@ -662,3 +662,16 @@ class ReClorRewardPairCollator:
             }
 
         return model_inputs
+
+
+class APICollator:
+    def __call__(self, batch):
+        prompts = [b["input"] for b in batch]
+
+        meta_data = {
+            "index": [b["index"] for b in batch],
+            "prompt": prompts,
+            "label": [b["label"] for b in batch],
+        }
+
+        return {"prompts": prompts, "meta_data": meta_data}
