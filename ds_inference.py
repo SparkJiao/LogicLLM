@@ -21,23 +21,18 @@ import glob
 import logging
 import os
 import sys
-from typing import Dict, Union
 
 import deepspeed
 import hydra
 import torch
-import wandb
-from deepspeed.utils.zero_to_fp32 import get_fp32_state_dict_from_zero_checkpoint
-from omegaconf import DictConfig, OmegaConf
+from omegaconf import DictConfig
 from torch import distributed as dist
-from torch.utils.data import (DataLoader, RandomSampler)
-from torch.utils.data.distributed import DistributedSampler
-from tqdm import tqdm, trange
-from transformers import (AutoTokenizer, PreTrainedTokenizer)
+from transformers import (AutoTokenizer)
 
 from general_util.evaluator import evaluate_fn as evaluate
 from general_util.logger import setting_logger
-from general_util.training_utils import batch_to_device, unwrap_model, set_seed, note_best_checkpoint, load_and_cache_examples, set_seed_int
+from general_util.tokenization_utils import expand_special_tokenizer
+from general_util.training_utils import set_seed
 
 logger: logging.Logger
 
@@ -46,26 +41,8 @@ torch.backends.cuda.matmul.allow_tf32 = True
 
 @hydra.main(config_path="conf", config_name="config", version_base="1.2")
 def main(cfg: DictConfig):
-    # if "LOCAL_RANK" in os.environ and os.environ["LOCAL_RANK"] != -1:
-    #     cfg.local_rank = int(os.environ["LOCAL_RANK"])
-    # if "WORLD_SIZE" in os.environ and os.environ["WORLD_SIZE"]:
-    #     cfg.world_size = int(os.environ["WORLD_SIZE"])
-    # if "WORLD_RANK" in os.environ and os.environ["WORLD_RANK"]:
-    #     cfg.world_rank = int(os.environ["WORLD_RANK"])
-    #
-    # # if cfg.local_rank == -1 or cfg.no_cuda:
-    # device = str(torch.device("cuda" if torch.cuda.is_available() and not cfg.no_cuda else "cpu"))
-    # cfg.n_gpu = torch.cuda.device_count()
-    # # local_rank = int(os.getenv('LOCAL_RANK', '0'))
-    # # world_size = int(os.getenv('WORLD_SIZE', '1'))
-    # # cfg.world_size = world_size
-    # # else:  # Initializes the distributed backend which will take care of synchronizing nodes/GPUs
-    # #     torch.cuda.set_device(cfg.local_rank)
-    # #     device = str(torch.device("cuda", cfg.local_rank))
-    # #     deepspeed.init_distributed()
-    # #     cfg.n_gpu = 1
-    # #     cfg.world_size = dist.get_world_size()
-    # cfg.device = device
+    if "LOCAL_RANK" in os.environ and os.environ["LOCAL_RANK"] != -1:
+        cfg.local_rank = int(os.environ["LOCAL_RANK"])
 
     if cfg.local_rank == -1 or cfg.no_cuda:
         device = str(torch.device("cuda" if torch.cuda.is_available() and not cfg.no_cuda else "cpu"))
@@ -88,18 +65,19 @@ def main(cfg: DictConfig):
     # Set seed
     set_seed(cfg)
 
+    if getattr(cfg, "enable_flash_attention", False):
+        logger.info("⚡⚡⚡ enable flash attention.")
+        from models.patching import replace_llama_attn_with_flash_attn
+        replace_llama_attn_with_flash_attn()
+
     # Test
     results = {}
     if cfg.do_eval:
-        # if not cfg.ddp_eval and cfg.local_rank not in [-1, 0]:
-        #     return results
-
         checkpoints = [cfg.output_dir]
         if cfg.save_best:
-            logging.getLogger("transformers.modeling_utils").setLevel(logging.WARN)  # Reduce logging
+            pass
         elif cfg.prediction_cfg.best_checkpoint and os.path.exists(cfg.prediction_cfg.best_checkpoint):
             checkpoints = [cfg.prediction_cfg.best_checkpoint]
-            logging.getLogger("transformers.modeling_utils").setLevel(logging.WARN)  # Reduce logging
         elif cfg.eval_sub_path:
             checkpoints = list(sorted(list(set(
                 os.path.dirname(c) for c in
@@ -110,7 +88,6 @@ def main(cfg: DictConfig):
                     os.path.dirname(c) for c in
                     glob.glob(cfg.output_dir + f"/{cfg.eval_sub_path}/" + "adapter_model.bin", recursive=True)
                 ))))
-            logging.getLogger("transformers.modeling_utils").setLevel(logging.WARN)  # Reduce logging
         logger.info(" the following checkpoints: %s", checkpoints)
         for checkpoint in checkpoints:
             global_step = checkpoint.split("-")[-1] if len(checkpoints) > 1 else ""
@@ -122,15 +99,6 @@ def main(cfg: DictConfig):
             else:
                 model = hydra.utils.call(cfg.model, checkpoint)
 
-            # if cfg.n_gpu == 1:
-            #     model.to(cfg.device)
-            # else:
-            #     # For model parallel (of mT5)
-            #     if getattr(cfg, "get_device_map", None):
-            #         model.parallelize(hydra.utils.call(cfg.get_device_map))
-            #     else:
-            #         model.parallelize()
-
             model = deepspeed.init_inference(
                 model,
                 mp_size=cfg.world_size,
@@ -138,14 +106,9 @@ def main(cfg: DictConfig):
                 replace_with_kernel_inject=getattr(cfg, "replace_with_kernel_inject", True),
                 injection_policy=hydra.utils.instantiate(cfg.injection_policy) if "injection_policy" in cfg else None,
             )
-            # model = model.module
-            # model.to(device)
-            # print(model.device)
-            # for name, module in model.named_modules():
-            #     if module.device != device:
-            #         module.to(device)
 
             tokenizer = AutoTokenizer.from_pretrained(checkpoint)
+            expand_special_tokenizer(tokenizer)
             cfg.model_name_or_path = checkpoint
 
             if cfg.test_file:
@@ -155,6 +118,9 @@ def main(cfg: DictConfig):
             result = evaluate(cfg, model, tokenizer, prefix=prefix, _split=split)
             result = dict((k + "_{}".format(global_step), v) for k, v in result.items())
             results.update(result)
+
+            del model.module
+            del model
 
     return results
 

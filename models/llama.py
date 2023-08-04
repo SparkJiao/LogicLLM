@@ -7,6 +7,9 @@ import bitsandbytes as bnb
 import hydra.utils
 import omegaconf
 import torch
+import math
+from einops import rearrange
+import torch.nn.functional as F
 from peft import (
     LoraConfig,
     get_peft_model,
@@ -18,7 +21,7 @@ from peft.tuners.lora import LoraLayer
 from torch import nn
 from transformers import AutoTokenizer
 from transformers.models.llama.modeling_llama import LlamaModel, LlamaPreTrainedModel, LlamaConfig, SequenceClassifierOutputWithPast, \
-    LlamaDecoderLayer, LlamaForCausalLM
+    LlamaDecoderLayer, LlamaForCausalLM, apply_rotary_pos_emb, repeat_kv
 
 from general_util.logger import get_child_logger
 from general_util.mixin import LogMixin
@@ -32,6 +35,178 @@ LORA_TARGET_MODULES = [
 ]
 
 PAD_TOKEN_ID = 32000
+
+
+def llama_fast_attention_wrap(attn_layer: nn.Module, vanilla_torch: bool = False, var_len: bool = False):
+    self = attn_layer
+
+    if not vanilla_torch:
+        from flash_attn.flash_attn_interface import flash_attn_qkvpacked_func, flash_attn_kvpacked_func
+
+        if var_len:  # To be honest, I do not know when to use this function.
+            from flash_attn.flash_attn_interface import flash_attn_varlen_func
+            from deepspeed.accelerator import get_accelerator
+
+    def _forward(
+            hidden_states: torch.Tensor,
+            attention_mask: Optional[torch.Tensor] = None,
+            position_ids: Optional[torch.LongTensor] = None,
+            past_key_value: Optional[Tuple[torch.Tensor]] = None,
+            output_attentions: bool = False,
+            use_cache: bool = False,
+    ) -> Tuple[torch.Tensor, Optional[torch.Tensor], Optional[Tuple[torch.Tensor]]]:
+        bsz, q_len, _ = hidden_states.size()
+
+        if self.pretraining_tp > 1:
+            key_value_slicing = (self.num_key_value_heads * self.head_dim) // self.pretraining_tp
+            query_slices = self.q_proj.weight.split((self.num_heads * self.head_dim) // self.pretraining_tp, dim=0)
+            key_slices = self.k_proj.weight.split(key_value_slicing, dim=0)
+            value_slices = self.v_proj.weight.split(key_value_slicing, dim=0)
+
+            query_states = [F.linear(hidden_states, query_slices[i]) for i in range(self.pretraining_tp)]
+            query_states = torch.cat(query_states, dim=-1)
+
+            key_states = [F.linear(hidden_states, key_slices[i]) for i in range(self.pretraining_tp)]
+            key_states = torch.cat(key_states, dim=-1)
+
+            value_states = [F.linear(hidden_states, value_slices[i]) for i in range(self.pretraining_tp)]
+            value_states = torch.cat(value_states, dim=-1)
+
+        else:
+            query_states = self.q_proj(hidden_states)
+            key_states = self.k_proj(hidden_states)
+            value_states = self.v_proj(hidden_states)
+
+        query_states = query_states.view(bsz, q_len, self.num_heads, self.head_dim).transpose(1, 2)
+        key_states = key_states.view(bsz, q_len, self.num_key_value_heads, self.head_dim).transpose(1, 2)
+        value_states = value_states.view(bsz, q_len, self.num_key_value_heads, self.head_dim).transpose(1, 2)
+
+        kv_seq_len = key_states.shape[-2]
+        if past_key_value is not None:
+            kv_seq_len += past_key_value[0].shape[-2]
+        cos, sin = self.rotary_emb(value_states, seq_len=kv_seq_len)
+        query_states, key_states = apply_rotary_pos_emb(query_states, key_states, cos, sin, position_ids)
+
+        if past_key_value is not None:
+            # reuse k, v, self_attention
+            key_states = torch.cat([past_key_value[0], key_states], dim=2)
+            value_states = torch.cat([past_key_value[1], value_states], dim=2)
+
+        past_key_value = (key_states, value_states) if use_cache else None
+
+        if vanilla_torch:
+            # repeat k/v heads if n_kv_heads < n_heads
+            key_states = repeat_kv(key_states, self.num_key_value_groups)
+            value_states = repeat_kv(value_states, self.num_key_value_groups)
+
+            with torch.backends.cuda.sdp_kernel(
+                    enable_flash=True,
+                    enable_math=False,
+                    enable_mem_efficient=False
+            ):
+                attn_output = F.scaled_dot_product_attention(
+                    query_states, key_states, value_states,
+                    is_causal=True,
+                )
+            attn_output = attn_output.transpose(1, 2).contiguous()
+        else:
+            if var_len:
+                # Copied from https://github.com/microsoft/Megatron-DeepSpeed/blob/main/megatron/model/transformer.py#L400-L429
+                if get_accelerator().device_name() == 'cuda':
+                    # goes for cuda device
+                    query_states, key_states, value_states = [rearrange(x, 'b h s d -> (b s) h d')
+                                                              for x in [query_states, key_states, value_states]]
+                    cu_seqlens_q = torch.arange(0, (bsz + 1) * q_len, step=q_len, dtype=torch.int32,
+                                                device=query_states.device)
+                else:
+                    # goes for other device
+                    # q, k, v = [rearrange(x, 'b s h d -> b h s d').contiguous() for x in [q, k, v]]
+                    pass
+
+                if self.training:
+                    # during training q,k,v always have same seqlen
+                    assert q_len == kv_seq_len
+
+                    is_causal = True
+                    cu_seqlens_k = cu_seqlens_q if get_accelerator().device_name() == 'cuda' else None
+                else:
+                    # turn off FA causal mask after first inference autoregressive iteration
+                    # only on first autoregressive step q,k,v have same seqlen
+                    is_causal = q_len == kv_seq_len
+                    cu_seqlens_k = torch.arange(0, (bsz + 1) * kv_seq_len, step=kv_seq_len, dtype=torch.int32,
+                                                device=query_states.device) if get_accelerator().device_name() == 'cuda' else None
+                    # self.dropout_p = 0
+
+                attn_output = flash_attn_varlen_func(
+                    query_states, key_states, value_states, cu_seqlens_q, cu_seqlens_k, q_len, kv_seq_len,
+                    # self.dropout_p,
+                    # softmax_scale=self.softmax_scale,
+                    causal=is_causal
+                )  # if get_accelerator().device_name() == 'cuda' else flash_attn_builder.flash_attn_func(
+                # q, k, v, self.dropout_p, self.softmax_scale, is_causal
+                # )
+                attn_output = rearrange(attn_output, '(b s) ... -> b s ...', b=bsz) if get_accelerator().device_name() == 'cuda' \
+                    else rearrange(attn_output, 'b h s d -> b s h d').contiguous()
+            elif q_len == kv_seq_len:
+                # repeat k/v heads if n_kv_heads < n_heads
+                key_states = repeat_kv(key_states, self.num_key_value_groups)
+                value_states = repeat_kv(value_states, self.num_key_value_groups)
+
+                # transform the data into the format required by flash attention
+                qkv = torch.stack([query_states, key_states, value_states], dim=2)  # [bsz, nh, 3, q_len, hd]
+                qkv = qkv.transpose(1, 3)  # [bsz, q_len, 3, nh, hd]
+
+                attn_output = flash_attn_qkvpacked_func(qkv, causal=True)  # [bsz, q_len, nh, hd]
+            else:
+                kv = torch.stack([key_states, value_states], dim=2)  # [bsz, nh, 2, kv_seq_len, hd]
+                kv = kv.transpose(1, 3)  # [bsz, kv_seq_len, 2, nh, hd]
+                query_states = query_states.transpose(1, 2)  # [bsz, nh, q_len, hd]
+
+                attn_output = flash_attn_kvpacked_func(query_states, kv, causal=True)  # [bsz, q_len, nh, hd]
+
+        # if attn_output.size() != (bsz, self.num_heads, q_len, self.head_dim):
+        #     raise ValueError(
+        #         f"`attn_output` should be of size {(bsz, self.num_heads, q_len, self.head_dim)}, but is"
+        #         f" {attn_output.size()}"
+        #     )
+        if attn_output.size() != (bsz, q_len, self.num_heads, self.head_dim):
+            raise ValueError(
+                f"`attn_output` should be of size {(bsz, q_len, self.num_heads, self.head_dim)}, but is"
+                f" {attn_output.size()}"
+            )
+
+        attn_output = attn_output.reshape(bsz, q_len, self.hidden_size)
+
+        if self.pretraining_tp > 1:
+            attn_output = attn_output.split(self.hidden_size // self.pretraining_tp, dim=2)
+            o_proj_slices = self.o_proj.weight.split(self.hidden_size // self.pretraining_tp, dim=1)
+            attn_output = sum([F.linear(attn_output[i], o_proj_slices[i]) for i in range(self.pretraining_tp)])
+        else:
+            attn_output = self.o_proj(attn_output)
+
+        assert not output_attentions
+        # if not output_attentions:
+        #     attn_weights = None
+
+        return attn_output, None, past_key_value
+
+    self.forward = _forward
+
+
+def wrap_causal_lm_w_flash_attention(pretrained_model_name_or_path,
+                                     enable_flash_attention: bool = False,
+                                     flash_attention_vanilla_torch: bool = False,
+                                     flash_attention_var_len: bool = False,
+                                     **kwargs):
+    model = LlamaForCausalLM.from_pretrained(pretrained_model_name_or_path, **kwargs)
+
+    if enable_flash_attention:
+        logger.info("⚡⚡⚡ enable llama flash attention.")
+
+        for layer in model.model.layers:
+            llama_fast_attention_wrap(layer.self_attn, vanilla_torch=flash_attention_vanilla_torch, var_len=flash_attention_var_len)
+
+    return model
 
 
 def deepspeed_inference_policy():
@@ -110,6 +285,10 @@ class LlamaPreTrainedModelPeftMixin(LlamaPreTrainedModel, ABC):
             vocab_size = None
             pad_token_id = None
 
+        enable_flash_attention = kwargs.pop("enable_flash_attention", False)
+        flash_attention_vanilla_torch = kwargs.pop("flash_attention_vanilla_torch", False)
+        flash_attention_var_len = kwargs.pop("flash_attention_var_len", False)
+
         use_peft = kwargs.pop("use_peft", False)
         lora_config = kwargs.pop("lora_config", None)
         load_in_8bit = kwargs.pop("load_in_8bit", False)
@@ -166,6 +345,12 @@ class LlamaPreTrainedModelPeftMixin(LlamaPreTrainedModel, ABC):
 
             model.print_trainable_parameters()
 
+        if enable_flash_attention:
+            logger.info("⚡⚡⚡ enable llama flash attention.")
+
+            for layer in model.model.layers:
+                llama_fast_attention_wrap(layer.self_attn, vanilla_torch=flash_attention_vanilla_torch, var_len=flash_attention_var_len)
+
         logger.info(f"Config pad token id after loading pre-trained weights: {model.config.pad_token_id}")
         logger.info(model.lm_head.__class__.__name__)
 
@@ -182,11 +367,12 @@ class LlamaPreTrainedModelPeftMixin(LlamaPreTrainedModel, ABC):
         load_in_8bit = kwargs.pop("load_in_8bit", False)
         load_in_4bit = kwargs.pop("load_in_4bit", False)
         quantization_config = kwargs.pop("quantization_config", None)
+        tp_sharded = kwargs.pop("tp_sharded", None)
 
         model = super().from_pretrained(pretrained_model_name_or_path, *model_args, **kwargs)
 
         n_gpus = torch.cuda.device_count()
-        model = tp.tensor_parallel(model, [torch.device(f"cuda:{i}") for i in range(n_gpus)])
+        model = tp.tensor_parallel(model, [torch.device(f"cuda:{i}") for i in range(n_gpus)], sharded=tp_sharded)
 
         if load_in_8bit or load_in_4bit:
             modules_to_not_convert = get_keys_to_not_convert(model)
@@ -880,7 +1066,7 @@ class LlamaCtrAndLMPretrain(LlamaForConditionalGeneration, ABC):
 
 
 class LlamaRewardModel(LlamaPreTrainedModelPeftMixin, LogMixin, ABC):
-    def __init__(self, config: LlamaConfig, gradient_checkpointing=False, lm_alpha: float = 1.0):
+    def __init__(self, config: LlamaConfig, gradient_checkpointing=False, lm_alpha: float = 1.0, split_inputs: bool = False):
         super().__init__(config)
         self.model = LlamaModel(config)
 
@@ -899,6 +1085,7 @@ class LlamaRewardModel(LlamaPreTrainedModelPeftMixin, LogMixin, ABC):
         self.init_metric(*metrics)
 
         self.lm_alpha = lm_alpha
+        self.split_inputs = split_inputs
 
     def get_input_embeddings(self):
         return self.model.embed_tokens
@@ -943,19 +1130,35 @@ class LlamaRewardModel(LlamaPreTrainedModelPeftMixin, LogMixin, ABC):
 
         batch_size = input_ids.shape[0]
 
-        # decoder outputs consists of (dec_features, layer_state, dec_hidden, dec_attn)
-        outputs = self.model(
-            input_ids=input_ids,
-            attention_mask=attention_mask,
-            past_key_values=past_key_values,
-            inputs_embeds=inputs_embeds,
-            use_cache=use_cache,
-            output_attentions=output_attentions,
-            output_hidden_states=output_hidden_states,
-            return_dict=return_dict,
-        )
+        redundant_kwargs = dict(use_cache=use_cache, output_attentions=output_attentions, output_hidden_states=output_hidden_states,
+                                return_dict=return_dict)
+        if self.split_inputs and pos_index is not None and neg_index is not None:
+            pos_input_ids = input_ids[pos_index]
+            pos_attention_mask = attention_mask[pos_index]
+            pos_outputs = self.model(input_ids=pos_input_ids,
+                                     attention_mask=pos_attention_mask,
+                                     **redundant_kwargs)
 
-        hidden_states = outputs[0]
+            neg_input_ids = input_ids[neg_index]
+            neg_attention_mask = attention_mask[neg_index]
+            neg_outputs = self.model(input_ids=neg_input_ids,
+                                     attention_mask=neg_attention_mask,
+                                     **redundant_kwargs)
+
+            hidden_states = torch.cat([pos_outputs[0], neg_outputs[0]], dim=0)
+
+        else:
+            # decoder outputs consists of (dec_features, layer_state, dec_hidden, dec_attn)
+            outputs = self.model(
+                input_ids=input_ids,
+                attention_mask=attention_mask,
+                past_key_values=past_key_values,
+                inputs_embeds=inputs_embeds,
+                **redundant_kwargs
+            )
+
+            hidden_states = outputs[0]
+
         logits = self.lm_head(hidden_states)
         shifted_logits = logits[..., :-1, :].contiguous()
 

@@ -1,12 +1,13 @@
 import json
 import random
-from typing import List
+from typing import List, Dict
 
 import torch
 from torch.utils.data import Dataset, default_collate
 from transformers import PreTrainedTokenizer, AutoTokenizer
 from general_util.tokenization_utils import expand_special_tokenizer, is_seq2seq_tokenizer
 from general_util.logger import get_child_logger
+from data.collators.flan import convert_to_standard_inputs
 
 logger = get_child_logger(__name__)
 
@@ -651,7 +652,10 @@ class ReClorRewardPairCollator:
                 "index": [b["index"] for b in batch],
             }
         else:
-            inputs = [b["input"] for b in batch]
+            if "input" not in batch[0]:
+                inputs = [b["inputs"] + " " + b["targets"] for b in batch]
+            else:
+                inputs = [b["input"] for b in batch]
             model_inputs = self.tokenizer(inputs, padding="longest", truncation=True,
                                           max_length=self.max_seq_length, return_tensors="pt")
 
@@ -675,3 +679,107 @@ class APICollator:
         }
 
         return {"prompts": prompts, "meta_data": meta_data}
+
+
+class ReClorCoTGenerationDataset(Dataset):
+    def __init__(self, file_path: str, tokenizer: PreTrainedTokenizer, read_func, cot: List[Dict],
+                 prefix1: str = "", prefix2: str = "\n\n", prefix3: str = "\n\n", suffix: str = "\n\n"):
+        super().__init__()
+        all_context, all_question, all_option_list, all_label = read_func(file_path)
+        self.contexts = all_context
+        self.questions = all_question
+        self.option_list = all_option_list
+        self.labels = all_label
+        self.cot = cot
+        # assert len(cot) == len(self.contexts)
+        self.prefix1 = prefix1
+        self.prefix2 = prefix2
+        self.prefix3 = prefix3
+        self.suffix = suffix
+        self.tokenizer = tokenizer
+
+    def __len__(self):
+        if isinstance(self.cot[0]["index"], str) and "Step" in self.cot[0]["index"]:
+            return len(self.cot)
+        if len(self.cot) != len(self.contexts):
+            return len(self.cot)
+        return len(self.contexts)
+
+    def __getitem__(self, index):
+        cot_index = index
+        if isinstance(self.cot[0]["index"], str) and "Step" in self.cot[0]["index"]:
+            index = int(self.cot[cot_index]["index"].split("Step")[0])
+        elif len(self.cot) != len(self.contexts):
+            index = self.cot[cot_index]["index"]
+
+        context = self.contexts[index]
+        question = self.questions[index]
+        options = self.option_list[index]
+
+        inputs = self.prefix1 + context + self.prefix2 + question + self.prefix3 + _format_option_list(options) + self.suffix
+        outputs = self.cot[cot_index]["output"]
+
+        return {
+            "inputs": inputs,
+            "targets": outputs,
+            "cot": self.cot[cot_index]["output"],
+            "index": cot_index,
+            "label": self.labels[index],
+        }
+
+
+def vanilla_seq2seq_convertor(examples, tokenizer: PreTrainedTokenizer, max_seq_length, remove_eos_in_step_cot: bool = False,
+                              decoder_only: bool = False):
+    inputs = []
+    outputs = []
+    for exp in examples:
+        inputs.append(exp["inputs"])
+        if decoder_only:
+            if remove_eos_in_step_cot and "answer is" not in exp["targets"]:
+                outputs.append(exp["inputs"] + " " + exp["targets"])
+            else:
+                outputs.append(exp["inputs"] + " " + exp["targets"] + tokenizer.eos_token)
+        else:
+            outputs.append(exp["targets"])
+
+    model_inputs = tokenizer(inputs, text_target=outputs, max_length=max_seq_length, padding="longest",
+                             truncation=True, return_tensors="pt")
+    if decoder_only:
+        input_lens = model_inputs["input_ids"].ne(tokenizer.pad_token_id).sum(dim=1)
+        model_inputs = tokenizer(outputs, max_length=max_seq_length, padding="max_length", truncation=True, return_tensors="pt")
+        new_input_lens = model_inputs["input_ids"].ne(tokenizer.pad_token_id).sum(dim=1)
+        input_lens = input_lens - input_lens.eq(new_input_lens).to(input_lens.dtype) * (input_lens // 2)
+        input_lens = input_lens.to(torch.long)
+        if tokenizer.padding_side == "left":
+            input_lens = model_inputs["input_ids"].eq(tokenizer.pad_token_id).to(torch.long).sum(dim=1) + input_lens
+        model_inputs["input_lens"] = input_lens
+
+    return model_inputs
+
+
+class ConditionalCausalLMCollator:
+    def __init__(self, tokenizer: str, max_seq_length: int, decoder_only: bool = False, return_standard_inputs: bool = False,
+                 remove_eos_in_step_cot: bool = False,
+                 **kwargs):
+        self.tokenizer: PreTrainedTokenizer = AutoTokenizer.from_pretrained(tokenizer, **kwargs)
+        expand_special_tokenizer(self.tokenizer)
+        self.max_seq_length = max_seq_length
+        self.decoder_only = decoder_only
+        self.convert_to_standard_inputs = return_standard_inputs
+        self.remove_eos_in_step_cot = remove_eos_in_step_cot
+
+    def __call__(self, batch):
+        model_inputs = vanilla_seq2seq_convertor(batch, self.tokenizer, self.max_seq_length,
+                                                 self.remove_eos_in_step_cot,
+                                                 self.decoder_only)
+
+        if self.convert_to_standard_inputs:
+            input_ids, attention_mask, position_ids, labels = convert_to_standard_inputs(model_inputs, self.tokenizer)
+
+            return (
+                (input_ids, attention_mask, position_ids),
+                labels,
+            )
+
+        model_inputs["meta_data"] = default_collate(batch)
+        return model_inputs

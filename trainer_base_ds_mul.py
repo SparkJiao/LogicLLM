@@ -234,9 +234,9 @@ def train(cfg, model, tokenizer, continue_from_global_step=0):
 
                     # Log metrics
                     log_metrics = {}
-                    if cfg.local_rank in [-1, 0] and cfg.logging_steps > 0 and global_step % cfg.logging_steps == 0:
+                    if cfg.local_rank in [-1, 0]:
                         log_metrics['lr'] = scheduler.get_lr()[0]
-                        log_metrics['loss'] = (tr_loss - logging_loss) / cfg.logging_steps
+                        log_metrics['loss'] = tr_loss - logging_loss
                         logging_loss = tr_loss
 
                         if tb_helper:
@@ -358,7 +358,12 @@ def main(cfg: DictConfig):
             logger.info("Resuming training from the latest checkpoint: %s", checkpoint)
             continue_from_global_step = int(checkpoint.split('-')[-1])
 
-        global_step, tr_loss = train(cfg, model, tokenizer, continue_from_global_step)
+        # Catch keyboard interrupts
+        try:
+            global_step, tr_loss = train(cfg, model, tokenizer, continue_from_global_step)
+        except KeyboardInterrupt:
+            logger.info("Keyboard interrupt, normally exiting...")
+            exit()
         logger.info(" global_step = %s, average loss = %s", global_step, tr_loss)
 
     # Test

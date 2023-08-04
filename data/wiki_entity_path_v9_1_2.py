@@ -12,7 +12,7 @@ import hydra
 import torch
 from torch.distributions.geometric import Geometric
 from tqdm import tqdm
-from transformers import PreTrainedTokenizer
+from transformers import PreTrainedTokenizer, AutoTokenizer
 
 from data.collators.wiki import WikiPathDatasetV6wPatternPair, WikiPathDatasetRelGenerateV1, WikiPathDatasetRelGenerateV3, \
     WikiPathDatasetV6wPatternPairsKMeans, WikiPathDatasetV5
@@ -20,6 +20,7 @@ from data.collators.wiki_structure_pair import WikiPathDatasetV6wPair
 from data.collators.wiki_tokens_collator import WikiReconstructDataset, WikiReconstructDatasetV2
 from data.data_utils import get_all_permutation, get_sep_tokens
 from general_util.logger import get_child_logger
+from general_util.tokenization_utils import expand_special_tokenizer
 
 """
 Version 6.0:
@@ -1894,6 +1895,10 @@ def convert_examples_into_features_raw(file_path: str, tokenizer: PreTrainedToke
                                        deduct_ratio: float = 1.0, context_ratio: float = 1.0, noise_sent_ratio: float = 0.5,
                                        remove_deduct: bool = False, remove_context: bool = False,
                                        max_neg_samples_num: int = 8, num_workers=48, dataset_class: Optional[DictConfig] = None):
+    if isinstance(tokenizer, str):
+        tokenizer = AutoTokenizer.from_pretrained(tokenizer, use_fast=False)
+        expand_special_tokenizer(tokenizer)
+
     tokenizer_name = tokenizer.__class__.__name__
     tokenizer_name = tokenizer_name.replace('TokenizerFast', '')
     tokenizer_name = tokenizer_name.replace('Tokenizer', '').lower()

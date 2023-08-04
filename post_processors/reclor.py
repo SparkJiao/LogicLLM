@@ -150,8 +150,13 @@ class GeneratorPredictor(DistGatherMixin):
 
     def __call__(self, meta_data: Union[List[Dict[str, Any]], Dict[str, Any]], batch_model_outputs, ddp: bool = False):
         labels = meta_data["label"]
+        if isinstance(labels, torch.Tensor):
+            labels = labels.tolist()
         prompt_index = meta_data["prompt_index"]
-        index = meta_data["index"].tolist()
+        if isinstance(meta_data["index"], torch.Tensor):
+            index = meta_data["index"].tolist()
+        else:
+            index = meta_data["index"]
         inputs = meta_data["input"]
 
         pred_seq = batch_model_outputs["generated_seq"]
@@ -190,7 +195,7 @@ class GeneratorPredictor(DistGatherMixin):
         else:
             output_file = os.path.join(output_dir, "decode_results.json")
 
-        json.dump(self.predictions, open(output_file, "w"))
+        json.dump(self.predictions, open(output_file, "w"), indent=2)
         self.predictions = sorted(self.predictions, key=lambda x: x["index"])
 
         correct = 0

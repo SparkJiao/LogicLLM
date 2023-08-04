@@ -329,9 +329,9 @@ def train(cfg, model, tokenizer, continue_from_global_step=0):
 
                 # Log metrics
                 log_metrics = {}
-                if cfg.local_rank in [-1, 0] and cfg.logging_steps > 0 and global_step % cfg.logging_steps == 0:
+                if cfg.local_rank in [-1, 0]:
                     log_metrics['lr'] = scheduler.get_lr()[0]
-                    log_metrics['loss'] = (tr_loss - logging_loss) / cfg.logging_steps
+                    log_metrics['loss'] = tr_loss - logging_loss
                     logging_loss = tr_loss
 
                 # Save model checkpoint
