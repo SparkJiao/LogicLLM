@@ -20,14 +20,17 @@
 import glob
 import logging
 import os
+import io
+from pathlib import Path
 import sys
 
 import deepspeed
 import hydra
 import torch
-from omegaconf import DictConfig
+import json
+from omegaconf import DictConfig, OmegaConf
 from torch import distributed as dist
-from transformers import (AutoTokenizer)
+from transformers import (AutoTokenizer, AutoConfig, AutoModelForCausalLM, PretrainedConfig)
 
 from general_util.evaluator import evaluate_fn as evaluate
 from general_util.logger import setting_logger
@@ -37,6 +40,21 @@ from general_util.training_utils import set_seed
 logger: logging.Logger
 
 torch.backends.cuda.matmul.allow_tf32 = True
+
+
+def generate_json(checkpoint_path):
+    checkpoints_json = os.path.join(checkpoint_path, "checkpoints.json")
+
+    if os.path.exists(os.path.join(checkpoint_path, "ds_inference_config.json")):  # pre-sharded model.
+        checkpoints_json = os.path.join(checkpoint_path, "ds_inference_config.json")
+    else:
+        with io.open(checkpoints_json, "w", encoding="utf-8") as f:
+            file_list = [str(entry) for entry in Path(checkpoint_path).rglob("*.[bp][it][n]") if entry.is_file()]
+            data = {"type": "ds_model", "checkpoints": file_list, "version": 1.0}
+            print(data)
+            json.dump(data, f)
+
+    return checkpoints_json
 
 
 @hydra.main(config_path="conf", config_name="config", version_base="1.2")
@@ -95,9 +113,21 @@ def main(cfg: DictConfig):
             split = "dev"
 
             if "model_eval" in cfg:
-                model = hydra.utils.call(cfg.model_eval, checkpoint)
+                model_or_config = hydra.utils.call(cfg.model_eval, checkpoint)
             else:
-                model = hydra.utils.call(cfg.model, checkpoint)
+                model_or_config = hydra.utils.call(cfg.model, checkpoint)
+
+            if isinstance(model_or_config, PretrainedConfig):
+                with deepspeed.OnDevice(dtype=torch.float16, device="meta"):
+                    model = AutoModelForCausalLM.from_config(model_or_config)
+                checkpoints_json = generate_json(checkpoint)
+                ds_kwargs = dict(base_dir=checkpoint, checkpoint=checkpoints_json)
+            else:
+                model = model_or_config
+                ds_kwargs = {}
+
+            # ds_inference_config = cfg.ds_infer_cfg
+            # ds_config = OmegaConf.to_container(ds_inference_config, resolve=True)
 
             model = deepspeed.init_inference(
                 model,
@@ -105,6 +135,9 @@ def main(cfg: DictConfig):
                 dtype=hydra.utils.instantiate(cfg.ds_inference_dtype) if "ds_inference_dtype" in cfg else torch.bfloat16,
                 replace_with_kernel_inject=getattr(cfg, "replace_with_kernel_inject", True),
                 injection_policy=hydra.utils.instantiate(cfg.injection_policy) if "injection_policy" in cfg else None,
+                max_tokens=getattr(cfg, "ds_inference_max_tokens", 1024),
+                save_mp_checkpoint_path=getattr(cfg, "ds_inference_save_mp_checkpoint_path", None),
+                **ds_kwargs
             )
 
             tokenizer = AutoTokenizer.from_pretrained(checkpoint)

@@ -7,9 +7,8 @@ import bitsandbytes as bnb
 import hydra.utils
 import omegaconf
 import torch
-import math
-from einops import rearrange
 import torch.nn.functional as F
+from einops import rearrange
 from peft import (
     LoraConfig,
     get_peft_model,
@@ -417,12 +416,14 @@ class LlamaPreTrainedModelPeftMixin(LlamaPreTrainedModel, ABC):
 
 
 def load_model_from_pretrained_tp(pretrained_model_name_or_path: str, *args, **kwargs):
+    tp_sharded = kwargs.pop("tp_sharded", None)
+
     model = LlamaForCausalLM.from_pretrained(pretrained_model_name_or_path, *args, **kwargs)
 
     import tensor_parallel as tp
 
     n_gpus = torch.cuda.device_count()
-    model = tp.tensor_parallel(model, [torch.device(f"cuda:{i}") for i in range(n_gpus)])
+    model = tp.tensor_parallel(model, [torch.device(f"cuda:{i}") for i in range(n_gpus)], sharded=tp_sharded)
     return model
 
 
@@ -1212,6 +1213,167 @@ class LlamaRewardModel(LlamaPreTrainedModelPeftMixin, LogMixin, ABC):
             reward_loss=reward_loss.item() if isinstance(reward_loss, torch.Tensor) else reward_loss,
             mlm_loss=lm_loss.item(),
         )
+
+    def prepare_inputs_for_generation(
+            self, input_ids, past_key_values=None, attention_mask=None, inputs_embeds=None, **kwargs
+    ):
+        if past_key_values:
+            input_ids = input_ids[:, -1:]
+
+        # if `inputs_embeds` are passed, we only want to use them in the 1st generation step
+        if inputs_embeds is not None and past_key_values is None:
+            model_inputs = {"inputs_embeds": inputs_embeds}
+        else:
+            model_inputs = {"input_ids": input_ids}
+
+        model_inputs.update(
+            {
+                "past_key_values": past_key_values,
+                "use_cache": kwargs.get("use_cache"),
+                "attention_mask": attention_mask,
+            }
+        )
+        return model_inputs
+
+    @staticmethod
+    def _reorder_cache(past_key_values, beam_idx):
+        reordered_past = ()
+        for layer_past in past_key_values:
+            reordered_past += (tuple(past_state.index_select(0, beam_idx) for past_state in layer_past),)
+        return reordered_past
+
+
+class LlamaTokenRewardModel(LlamaPreTrainedModelPeftMixin, LogMixin, ABC):
+    def __init__(self, config: LlamaConfig, gradient_checkpointing=False, lm_alpha: float = 1.0, split_inputs: bool = False):
+        super().__init__(config)
+        self.model = LlamaModel(config)
+
+        if gradient_checkpointing:
+            self.config.use_cache = False
+            self.gradient_checkpointing_enable()
+        logger.info(f"gradient_checkpointing: {gradient_checkpointing}")
+
+        self.lm_head = nn.Linear(config.hidden_size, config.vocab_size, bias=False)
+        logger.info(f"LM Head requires grad = {self.lm_head.weight.requires_grad}")
+        self.reward_head = nn.Linear(config.hidden_size, 1, bias=False)
+        logger.info(f"Reward Head requires grad = {self.reward_head.weight.requires_grad}")
+
+        # Initialize weights and apply final processing
+        self.post_init()
+
+        metrics = ["loss", "rw_loss", "lm_loss", "rw_acc"]
+        self.init_metric(*metrics)
+
+        self.lm_alpha = lm_alpha
+        self.split_inputs = split_inputs
+
+    def get_input_embeddings(self):
+        return self.model.embed_tokens
+
+    def set_input_embeddings(self, value):
+        self.model.embed_tokens = value
+
+    def get_output_embeddings(self):
+        return self.lm_head
+
+    def set_output_embeddings(self, new_embeddings):
+        self.lm_head = new_embeddings
+
+    def set_decoder(self, decoder):
+        self.model = decoder
+
+    def get_decoder(self):
+        return self.model
+
+    def forward(
+            self,
+            input_ids: torch.LongTensor = None,
+            attention_mask: Optional[torch.Tensor] = None,
+            input_lens: Optional[torch.Tensor] = None,
+            past_key_values: Optional[List[torch.FloatTensor]] = None,
+            inputs_embeds: Optional[torch.FloatTensor] = None,
+            use_cache: Optional[bool] = None,
+            output_attentions: Optional[bool] = None,
+            output_hidden_states: Optional[bool] = None,
+            return_dict: Optional[bool] = None,
+            **kwargs,
+    ) -> Union[Tuple, MultipleChoicePreTrainModelOutput]:
+
+        output_attentions = output_attentions if output_attentions is not None else self.config.output_attentions
+        output_hidden_states = (
+            output_hidden_states if output_hidden_states is not None else self.config.output_hidden_states
+        )
+        return_dict = return_dict if return_dict is not None else self.config.use_return_dict
+
+        batch_size = input_ids.shape[0]
+        half_bsz = batch_size // 2
+
+        redundant_kwargs = dict(use_cache=use_cache, output_attentions=output_attentions, output_hidden_states=output_hidden_states,
+                                return_dict=return_dict)
+
+        outputs = self.model(
+            input_ids=input_ids,
+            attention_mask=attention_mask,
+            past_key_values=past_key_values,
+            inputs_embeds=inputs_embeds,
+            **redundant_kwargs
+        )
+
+        hidden_states = outputs[0]
+
+        logits = self.lm_head(hidden_states)
+        shifted_logits = logits[..., :-1, :].contiguous()
+        shifted_logits = shifted_logits[:half_bsz]
+
+        label_mask = input_ids.ne(self.config.pad_token_id)
+        # keep only logits after the end of the condition part in each item of the batch
+        # [batch_size * num_choices, input_lens]
+        if input_lens is not None:
+            lens_mask = torch.arange(input_ids.size(1), device=label_mask.device)[None, :] >= input_lens[:, None]
+            label_mask = label_mask & lens_mask
+
+        lm_labels = input_ids.masked_fill(~label_mask, -1).contiguous()
+        lm_labels = lm_labels[:half_bsz]
+        shifted_lm_labels = lm_labels[..., 1:].contiguous()
+
+        if shifted_logits.device != shifted_lm_labels.device:
+            shifted_logits = shifted_logits.to(shifted_lm_labels.device)
+
+        loss_fct = nn.CrossEntropyLoss(ignore_index=-1)
+
+        # Calculate reward
+        label_mask = label_mask.to(torch.float)
+        rewards = self.reward_head(hidden_states).squeeze(-1)
+        rewards = (rewards * label_mask).sum(-1) / label_mask.sum(-1)
+        pos_scores = rewards[:half_bsz]
+        neg_scores = rewards[half_bsz:]
+
+        reward_loss = -nn.LogSigmoid()(pos_scores - neg_scores).mean()
+
+        lm_loss = loss_fct(shifted_logits.view(-1, logits.size(-1)), shifted_lm_labels.view(-1))
+        loss = self.lm_alpha * lm_loss + reward_loss
+
+        if not self.training:
+            self.eval_metrics.update("loss", val=loss.item(), n=half_bsz)
+            self.eval_metrics.update("lm_loss", val=lm_loss.item(), n=half_bsz)
+
+            rw_acc = torch.sum((pos_scores - neg_scores) > 0) / half_bsz
+            self.eval_metrics.update("rw_acc", val=rw_acc, n=half_bsz)
+            self.eval_metrics.update("rw_loss", val=reward_loss.item(), n=half_bsz)
+
+        return MultipleChoicePreTrainModelOutput(
+            loss=loss,
+            logits=rewards,
+            reward_loss=reward_loss.item() if isinstance(reward_loss, torch.Tensor) else reward_loss,
+            mlm_loss=lm_loss.item(),
+        )
+
+    @staticmethod
+    def find_lora_modules(model: LlamaPreTrainedModel, **kwargs):
+        modules = find_all_linear_names(model, **kwargs)
+        if "reward_head" in modules:
+            modules.remove("reward_head")
+        return modules
 
     def prepare_inputs_for_generation(
             self, input_ids, past_key_values=None, attention_mask=None, inputs_embeds=None, **kwargs

@@ -54,7 +54,8 @@ collator:
   _target_: data.reclor_prompt.ReClorRewardPairCollator
   tokenizer: ${model_name_or_path}
   max_seq_length: 1024
-  padding_side: "right"
+  padding_side: "right"   # THere is an important error that since you have specified that padding side as "right", then the last token for reward calculating is not <eos>.
+                          # Should rerun and modify the model architecture to enable flash-attention.
 
 # Dataloader
 num_workers: 4

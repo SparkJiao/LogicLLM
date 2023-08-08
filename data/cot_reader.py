@@ -1,27 +1,37 @@
 import json
 
 
+class CoTPredictionReader:
+    def __init__(self, clean_input: bool = True, answer_trigger: str = "", split_index: int = -1):
+        self.clean_input = clean_input
+        self.answer_trigger = answer_trigger
+        self.split_index = split_index
+
+    def __call__(self, file: str):
+        predictions = json.load(open(file))
+
+        items = []
+        for pred in predictions:
+            output = pred["output"]
+
+            if self.clean_input:
+                output = pred["output"].replace(pred["input"], "").strip()
+
+            if self.answer_trigger:
+                output = output.split(self.answer_trigger)[self.split_index].strip()
+
+            items.append({
+                "input": pred["input"],
+                "index": pred["index"],
+                "label": pred["label"],
+                "output": output,
+            })
+
+        return sorted(items, key=lambda x: x["index"])
+
+
 def read_model_cot_prediction(file: str, clean_input: bool = True, answer_trigger: str = "", split_index: int = -1):
-    predictions = json.load(open(file))
-
-    items = []
-    for pred in predictions:
-        output = pred["output"]
-
-        if clean_input:
-            output = pred["output"].replace(pred["input"], "").strip()
-
-        if answer_trigger:
-            output = output.split(answer_trigger)[split_index].strip()
-
-        items.append({
-            "input": pred["input"],
-            "index": pred["index"],
-            "label": pred["label"],
-            "output": output,
-        })
-
-    return sorted(items, key=lambda x: x["index"])
+    return CoTPredictionReader(clean_input, answer_trigger, split_index)(file)
 
 
 def read_model_cot_prediction_sentence_split(file: str, clean_input: bool = True, answer_trigger: str = "", split_index: int = -1):
@@ -74,4 +84,3 @@ def entailment_bank_reader_v1(file: str):
             "output": full_text_proof,
             "label": item["label"],
         })
-

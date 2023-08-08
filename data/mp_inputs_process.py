@@ -131,3 +131,36 @@ class MPTPpInputsProcess:
             (input_ids, attention_mask, self.attn_bias),
             labels,
         )
+
+
+def convert_to_standard_inputs_w_token_mask(model_inputs: Dict, tokenizer: PreTrainedTokenizer, ignored_index: int = -100):
+    input_ids = model_inputs["input_ids"]
+    attention_mask = model_inputs["attention_mask"]
+    input_lens = model_inputs["input_lens"]
+
+    # labels = get_lm_labels(input_lens, input_ids, tokenizer.pad_token_id, ignored_index)
+    labels = input_ids.clone()
+
+    label_mask = labels.ne(tokenizer.pad_token_id)
+    lens_mask = torch.arange(labels.size(1))[None, :] >= input_lens[:, None]
+    label_mask = label_mask & lens_mask
+
+    labels = labels.masked_fill(~label_mask, ignored_index).contiguous()
+
+    seq_length = input_ids.size(1)
+    position_ids = torch.arange(seq_length, dtype=torch.long)
+    position_ids = position_ids.unsqueeze(0).view(-1, seq_length)
+
+    attention_mask = _prepare_decoder_attention_mask(attention_mask, input_ids.shape, 0)
+
+    return input_ids, attention_mask, position_ids, label_mask.to(dtype=attention_mask.dtype), labels
+
+
+class LlamaDoubleHeadPpInputsProcess:
+    def __call__(self, model_inputs:  Union[Dict, BatchEncoding], tokenizer: PreTrainedTokenizer):
+        input_ids, attention_mask, position_ids, label_mask, labels = convert_to_standard_inputs_w_token_mask(model_inputs, tokenizer)
+        return (
+            (input_ids, attention_mask, position_ids, label_mask),
+            labels
+        )
+

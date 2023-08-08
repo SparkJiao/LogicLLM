@@ -2,7 +2,7 @@ hydra:
   run:
     dir: ./
 
-train_file: ../research.data/cot-boosting-fangkai/cot-criticccb_v1_0_enb_lqv2.json
+train_file: experiments/llama2.7b.rw.logiqav2.A40.v1.1/logiqav2_train_zs_cot_2k_llama2_chat_70b_rewards.v1.0/test/filter_v1_0/filtered_data.json
 dev_file: ../research.data/cot-boosting-fangkai/cot-critic-devccb_v1_0_enb_lqv2.json
 test_file:
 
@@ -13,13 +13,17 @@ model:
     dtype: bfloat16
   gradient_checkpointing: True
   pad_token_id: 0
-  lm_alpha: 0.5
-  enable_flash_attention: True
-#  split_inputs: True
+  lm_alpha: 0.1
+  enable_flash_attention: False  # Since padding side is `left`
+
 
 
 # Data loading
-read_tensor:
+read_tensor_train:
+  _target_: data.cot_critic.CoTNonPairCriticData
+  negative_data: experiments/llama2.7b.rw.logiqav2.A40.v1.1/logiqav2_train_zs_cot_2k_llama2_chat_70b_rewards.v1.0/test/filter_v1_0/neg.json
+
+read_tensor_dev:
   _target_: data.cot_critic.CoTPairData
   flat_mode: True
 
@@ -32,8 +36,8 @@ extended_vocab:
 collator:
   _target_: data.reclor_prompt.ReClorRewardPairCollator
   tokenizer: ${model_name_or_path}
-  max_seq_length: 1024
-  padding_side: "right"
+  max_seq_length: 4096
+  padding_side: "left"
 
 # Dataloader
 num_workers: 4
@@ -43,11 +47,10 @@ prefetch_factor: 2
 model_name_or_path: pretrained-models/Llama-2-7b-hf
 pretrain:
 
-#exp_name: llama2.7b.rw.enb_lqv2.w4.A40.v1.0
-exp_name: llama2.7b.rw.emb_lqv2.w8.A100.v1.0
+exp_name: llama2.7b.rw.lqv2cot.w4.A100.v1.0
 exp_notes:
 output_dir: experiments/${exp_name}  # Fix <pad token id>
-resume: ${output_dir}/checkpoint-1000
+resume:
 
 
 do_train: True
@@ -59,8 +62,7 @@ eval_sub_path: checkpoint-100
 # Training hyper-parameters
 per_gpu_train_batch_size: 4
 per_gpu_eval_batch_size: 1
-learning_rate: 1e-5
-#learning_rate: 5e-6
+learning_rate: 5e-6
 gradient_accumulation_steps: 1
 weight_decay: 0.00
 adam_epsilon: 1e-6
@@ -68,9 +70,9 @@ adam_betas: "(0.9, 0.98)"
 #adam_betas: "(0.9, 0.999)"
 #max_grad_norm: 0.0
 max_grad_norm: 1.0
-num_train_epochs: 5
+num_train_epochs: 10
 max_steps: 0
-warmup_proportion: 0.1
+warmup_proportion: 0.01
 warmup_steps: 0
 
 # Optimizer

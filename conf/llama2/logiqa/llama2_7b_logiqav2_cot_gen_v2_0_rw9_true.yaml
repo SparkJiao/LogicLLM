@@ -2,27 +2,55 @@ hydra:
   run:
     dir: ./
 
-train_file: ../research.data/cot-boosting-fangkai/cot-criticccb_v1_0_enb_lqv2.json
-dev_file: ../research.data/cot-boosting-fangkai/cot-critic-devccb_v1_0_enb_lqv2.json
-test_file:
+train_file: logiqa-v2/train.txt
+dev_file: logiqa-v2/dev.txt
+#test_file: logiqa-v2/test.txt
+test_file: logiqa-v2/dev.txt
+
 
 model:
-  _target_: models.llama.LlamaRewardModel.from_pretrained
+  _target_: models.llama.LlamaForConditionalGeneration.from_pretrained
   torch_dtype:
     _target_: general_util.training_utils.return_torch_dtype
     dtype: bfloat16
-  gradient_checkpointing: True
-  pad_token_id: 0
-  lm_alpha: 0.5
   enable_flash_attention: True
-#  split_inputs: True
-
+  pad_token_id: 0
+  gradient_checkpointing: True
 
 # Data loading
-read_tensor:
-  _target_: data.cot_critic.CoTPairData
-  flat_mode: True
+read_tensor_train:
+  _target_: data.reclor_prompt.ReClorCoTGenerationDataset
+  read_func:
+    _target_: data.readers.LogiQAReaderV2
+  cot:
+    _target_: data.cot_reader.read_model_cot_prediction
+    file: experiments/llama2.7b.rw.emb_lqv2.w8.A100.v1.0/enb_lqv2_merit_train_zs_cot_2k_llama2_chat_70b_rewards.v1.0/test-checkpoint-5000/filter_v1_0/filtered_data.json
+    # Reward prediction based model: llama2-7b-enb-lqv2-rw-v1-0
+    # Reward filter score: >= 9.0
+    # If filter based on correctness: True
+    # Total data num: 1698
+    clean_input: True
+    answer_trigger: ""
+    split_index: -1
+  prefix1: "Context: "
+  prefix2: "\n\nQuestion: "
+  prefix3: "\n\nOptions:\n"
+  suffix: "\n\n"
 
+read_tensor_dev:
+  _target_: data.reclor_prompt.ReClorCoTGenerationDataset
+  read_func:
+    _target_: data.readers.LogiQAReaderV2
+  cot:
+    _target_: data.cot_reader.read_model_cot_prediction
+    file: pretrained-models/Llama-2-70b-chat-hf/logiqav2_dev_cot_2k.v1.0/test/eval_predictions_rank0.json
+    clean_input: True
+    answer_trigger: ""
+    split_index: -1
+  prefix1: "Context: "
+  prefix2: "\n\nQuestion: "
+  prefix3: "\n\nOptions:\n"
+  suffix: "\n\n"
 
 dist_load_data_barrier: False
 
@@ -30,10 +58,12 @@ extended_vocab:
 
 # Data collator
 collator:
-  _target_: data.reclor_prompt.ReClorRewardPairCollator
+  _target_: data.reclor_prompt.ConditionalCausalLMCollator
   tokenizer: ${model_name_or_path}
-  max_seq_length: 1024
-  padding_side: "right"
+  max_seq_length: 2048
+  decoder_only: True
+  padding_side: right  # to enable flash-attention
+
 
 # Dataloader
 num_workers: 4
@@ -43,25 +73,23 @@ prefetch_factor: 2
 model_name_or_path: pretrained-models/Llama-2-7b-hf
 pretrain:
 
-#exp_name: llama2.7b.rw.enb_lqv2.w4.A40.v1.0
-exp_name: llama2.7b.rw.emb_lqv2.w8.A100.v1.0
+exp_name: llama2.7b.logiqav2.cot-gen.enb_lqv2_filter_rw9.0_true.w1.A100.v1.0
 exp_notes:
-output_dir: experiments/${exp_name}  # Fix <pad token id>
-resume: ${output_dir}/checkpoint-1000
+output_dir: experiments/${exp_name}
 
 
 do_train: True
 evaluate_during_training: True
 
-do_eval: False
-eval_sub_path: checkpoint-100
+do_eval: True
+eval_sub_path:
 
 # Training hyper-parameters
 per_gpu_train_batch_size: 4
 per_gpu_eval_batch_size: 1
 learning_rate: 1e-5
 #learning_rate: 5e-6
-gradient_accumulation_steps: 1
+gradient_accumulation_steps: 8
 weight_decay: 0.00
 adam_epsilon: 1e-6
 adam_betas: "(0.9, 0.98)"
@@ -69,7 +97,7 @@ adam_betas: "(0.9, 0.98)"
 #max_grad_norm: 0.0
 max_grad_norm: 1.0
 num_train_epochs: 5
-max_steps: 0
+max_steps: 550
 warmup_proportion: 0.1
 warmup_steps: 0
 
@@ -79,9 +107,9 @@ use_nvlamb:
 bit_training:
 
 logging_steps: 5
-save_steps: 500
+save_steps: 100
 save_best: False
-eval_steps: 500
+eval_steps: 100
 ddp_eval: True
 no_cuda: False
 seed: 42
@@ -99,9 +127,9 @@ prediction_cfg:
 eval_forward_fn:
   _target_: general_util.evaluator.DefaultForwardFn
 post_process:
-#  _target_: post_processors.reclor.MultiChoiceMetricFlatSaver
-#  tokenizer: ${model_name_or_path}
-#predict_dir: ${output_dir}/logiqav2_test_mc_0shot.v1.0
+#  _target_: post_processors.reclor.RewardSaver
+#  tokenizer: ${output_dir}
+#predict_dir: ${output_dir}/logiqav2_dev_zs_cot_rewards.v1.0
 
 #dist_init:
 #  _target_: general_util.dist_utils.setup_slurm_distributed
@@ -134,18 +162,19 @@ ds_cfg:
       warmup_num_steps:
       warmup_type: linear
   gradient_clipping: ${max_grad_norm}
-#  fp16:
-#    enabled: ${fp16}
-#    initial_scale_power: 12
+  #  fp16:
+  #    enabled: ${fp16}
+  #    initial_scale_power: 12
   bf16:
     enabled: ${fp16}
   zero_optimization:
-    stage: 1
+    stage: 1  # I don't know why this script is not compatible with stage 2. Maybe because newer version of deepspeed.
+              # Yes. The problem is caused by deepspeed git commit 94c7233a8bb51e068ff8dd5d3e03f2e9b5ab248e
+              # Deepspeed==0.9.5 is ok with stage-2.
     contiguous_gradients: True
     overlap_comm: True
     reduce_scatter: True
     reduce_bucket_size: 5e8
-    allgather_partitions: True
     allgather_bucket_size: 5e8
     offload_optimizer:
       device: cpu
@@ -165,13 +194,13 @@ ds_cfg:
 summary_helper:
   _target_: general_util.tensorboard_helper.WandbWriter
   batch_index_or_keys:
-#    "train/pair_value_num": pair_value_num
-#    "train/pair_label_num": pair_label_num
-#    "train/dropped_op_cnt": dropped_op_cnt
-#    "train/invalid_path": invalid_path
+  #    "train/pair_value_num": pair_value_num
+  #    "train/pair_label_num": pair_label_num
+  #    "train/dropped_op_cnt": dropped_op_cnt
+  #    "train/invalid_path": invalid_path
   outputs_index_or_keys:
-    "train/lm_loss": mlm_loss
-    "train/reward_loss": reward_loss
+#    "train/lm_loss": mlm_loss
+#    "train/reward_loss": reward_loss
 
 # Temporary variables
 n_gpu:

@@ -164,7 +164,8 @@ class GeneratorPredictor(DistGatherMixin):
         if len(pred_seq) == len(labels):
             pass
         elif len(pred_seq) % len(labels) == 0:
-            pass
+            mod = len(pred_seq) // len(labels)
+            pred_seq = [pred_seq[i * mod: (i + 1) * mod] for i in range(len(labels))]
         else:
             raise ValueError((len(pred_seq), len(labels)))
 
@@ -174,7 +175,8 @@ class GeneratorPredictor(DistGatherMixin):
                 "index": idx,
                 "prompt_index": prompt_idx,
                 "output": res,
-                "cleaned_output": answer_clean(res, self.reverse, self.answer_trigger),
+                "cleaned_output": [answer_clean(item, self.reverse, self.answer_trigger) for item in res]
+                if isinstance(res, list) else answer_clean(res, self.reverse, self.answer_trigger),
                 "input": src,
             } for label, idx, prompt_idx, res, src in zip(labels, index, prompt_index, pred_seq, inputs)
         ]
@@ -207,7 +209,10 @@ class GeneratorPredictor(DistGatherMixin):
             existing_ids.add(pred["index"])
             if pred["label"] == pred["cleaned_output"]:
                 correct += 1
-            if pred["cleaned_output"]:
+
+            if isinstance(pred["cleaned_output"], list) and len(pred["cleaned_output"]) > 0:
+                npy_outputs.append(ord(pred["cleaned_output"][0]) - ord("A"))
+            elif pred["cleaned_output"]:
                 npy_outputs.append(ord(pred["cleaned_output"]) - ord("A"))
             else:
                 npy_outputs.append(0)
