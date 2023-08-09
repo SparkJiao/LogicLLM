@@ -282,7 +282,8 @@ def train(cfg, model, tokenizer, continue_from_global_step=0):
                     sub_train_sampler = DistributedSampler(sub_train_dataset, num_replicas=dp_degree, rank=dp_id)
                 else:
                     sub_train_sampler = RandomSampler(sub_train_dataset)
-                    cfg.train_batch_size = cfg.train_batch_size * max(1, dp_degree)
+                    cfg.train_batch_size = cfg.per_gpu_train_batch_size * max(1, dp_degree)
+
                 sub_train_collator = hydra.utils.instantiate(cfg.collator) if "collator" in cfg and cfg.collator else None
 
                 sub_train_dataloader = DataLoader(dataset=sub_train_dataset,

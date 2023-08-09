@@ -79,8 +79,8 @@ collator:
   tokenizer: ${model_name_or_path}
   max_seq_length: 1024
   padding: "longest"
-  pp_inputs_processor:
-    _target_: data.mp_inputs_process.LlamaDoubleHeadPpInputsProcess
+#  pp_inputs_processor:
+#    _target_: data.mp_inputs_process.LlamaDoubleHeadPpInputsProcess
   padding_side: "right"
 
 # Dataloader
