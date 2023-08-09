@@ -92,6 +92,14 @@ class LMAndTokenClsDoubleHeadPipe(nn.Module):
         rw_logits = (rw_logits * condition_mask).sum(dim=1) / condition_mask.sum(dim=1)
         assert rw_logits.shape == (hidden_states.shape[0],)
         return lm_logits, rw_logits
+    
+    def load_state_dict(self, state_dict, strict: bool = True):  # Hack here to avoid weights mismatch.
+        if "weight" in state_dict and "lm_head.weight" not in state_dict:
+            tmp = state_dict.pop("weight")
+            state_dict["lm_head.weight"] = tmp
+        
+        return super().load_state_dict(state_dict, strict=False)
+            
 
 
 class LMAndRewardLoss:
@@ -106,13 +114,15 @@ class LMAndRewardLoss:
 
         lm_logits = lm_logits[:batch_size]
         shifted_lm_logits = lm_logits[..., :-1, :].contiguous()
+        
+        labels = labels[:batch_size]
         shifted_labels = labels[..., 1:].contiguous()
 
         pos_rw_logits = rw_logits[:batch_size]
         neg_rw_logits = rw_logits[batch_size:]
 
         loss_fct = CrossEntropyLoss(ignore_index=self.ignore_index)
-        lm_loss = loss_fct(lm_logits.reshape(-1, shifted_lm_logits.size(-1)), shifted_labels.reshape(-1))
+        lm_loss = loss_fct(shifted_lm_logits.reshape(-1, shifted_lm_logits.size(-1)), shifted_labels.reshape(-1))
 
         rw_loss = -torch.nn.LogSigmoid()(pos_rw_logits - neg_rw_logits).mean()
         loss = self.lm_ratio * lm_loss + (1 - self.lm_ratio) * rw_loss

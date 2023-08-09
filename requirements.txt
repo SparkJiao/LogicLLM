@@ -5,11 +5,11 @@ sentencepiece
 https://download.pytorch.org/whl/cu117/torch-2.0.1%2Bcu117-cp39-cp39-linux_x86_64.whl
 hydra-core
 fairscale
-deepspeed==0.9.5
+deepspeed==0.10.0
 datasets
 bitsandbytes
 transformers
-git+https://github.com/huggingface/peft.git
-git+https://github.com/huggingface/accelerate.git
+peft
+accelerate
 einops
 tensor-parallel

@@ -245,7 +245,8 @@ def train(cfg, model, tokenizer, continue_from_global_step=0):
                                                           model_parameters=[p for p in model.parameters() if p.requires_grad],
                                                           config=ds_config)
 
-    model.load_checkpoint(cfg.model_name_or_path, load_module_only=True, load_optimizer_states=False, load_lr_scheduler_states=False)
+    model.load_checkpoint(cfg.model_name_or_path, load_module_only=True, load_optimizer_states=False, load_lr_scheduler_states=False,
+                          load_module_strict=getattr(cfg, "ds_load_module_strict", True))
     logger.info(optimizer.optimizer)
 
     # Train!

@@ -15,14 +15,20 @@ model:
   torch_dtype:
     _target_: general_util.training_utils.return_torch_dtype
     dtype: bfloat16
-  pad_token_id: 0
+  pad_token_id: 2
 
 
 get_layers:
-    _target_: models.llama_token_reward_pp_wrap.get_layers_from_config
-    activation_checkpointing: True
-    enable_flash_attention: True
+  _target_: models.llama_token_reward_pp_wrap.get_layers_from_config
+  activation_checkpointing: True
+  enable_flash_attention: False
+  flash_attention_vanilla_torch: False
 
+num_stages: 8
+ds_load_module_strict: False
+pp_loss_fn:
+  _target_: models.llama_token_reward_pp_wrap.LMAndRewardLoss
+  lm_ratio: 0.1
 
 # Data loading
 read_tensor_train:
@@ -30,11 +36,11 @@ read_tensor_train:
   original_data: /tmp/data-train/logiqa-v2/train.txt
   read_func:
     _target_: data.readers.LogiQAReaderV2
-  margin: 1.0
+  margin: 5.0
   prefix1: "Context: "
   prefix2: "\n\nQuestion: "
   prefix3: "\n\nOptions:\n"
-  suffix: "\n\n"
+  suffix: "\n\nLet's think step by step:"
 
 
 read_tensor_dev:
@@ -42,11 +48,11 @@ read_tensor_dev:
   original_data: /tmp/data-train/logiqa-v2/dev.txt
   read_func:
     _target_: data.readers.LogiQAReaderV2
-  margin: 1.0
+  margin: 5.0
   prefix1: "Context: "
   prefix2: "\n\nQuestion: "
   prefix3: "\n\nOptions:\n"
-  suffix: "\n\n"
+  suffix: "\n\nLet's think step by step:"
 
 
 
@@ -56,11 +62,11 @@ extended_vocab:
 collator:
   _target_: data.cot_critic.CoTActorRankingCollator
   tokenizer: ${model_name_or_path}
-  max_seq_length: 2048
-  padding: "longest"
+  max_seq_length: 1024
+  padding: "max_length"
   pp_inputs_processor:
     _target_: data.mp_inputs_process.LlamaDoubleHeadPpInputsProcess
-  padding_side: "left"
+  padding_side: "right"
 
 # Dataloader
 num_workers: 4
@@ -72,7 +78,7 @@ pretrain:
 
 exp_name: llama2.70b.act.cot.pp8.dp2.A100.v1.0.0808
 exp_notes:
-output_dir: experiments/${exp_name}  # Fix <pad token id>
+output_dir: /tmp/${exp_name}  # Fix <pad token id>
 resume:
 
 
@@ -83,17 +89,17 @@ do_eval: False
 eval_sub_path: checkpoint-100
 
 # Training hyper-parameters
-per_gpu_train_batch_size: 8
+per_gpu_train_batch_size: 4
 per_gpu_eval_batch_size: 1
-learning_rate: 1e-7
-gradient_accumulation_steps: 2
-weight_decay: 0.00
+learning_rate: 1e-6
+gradient_accumulation_steps: 16
+weight_decay: 0.01
 adam_epsilon: 1e-6
 adam_betas: "(0.9, 0.98)"
 #adam_betas: "(0.9, 0.999)"
 #max_grad_norm: 0.0
 max_grad_norm: 1.0
-num_train_epochs: 10
+num_train_epochs: 1
 max_steps: 0
 warmup_proportion: 0.01
 warmup_steps: 0
@@ -104,9 +110,9 @@ use_nvlamb:
 bit_training:
 
 logging_steps: 5
-save_steps: 500
+save_steps: 1000
 save_best: False
-eval_steps: 500
+eval_steps: 1000
 ddp_eval: True
 no_cuda: False
 seed: 42
@@ -214,3 +220,4 @@ device:
 train_batch_size:
 eval_batch_size:
 world_size:
+topology:

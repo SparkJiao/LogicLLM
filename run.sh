@@ -104,26 +104,26 @@ chmod +x ./s5cmd
 
 # ================== llama-65b mp8 dp2 merit pre-train =====================
 
-MODEL_S3_BUCKET=s3://sagemaker-us-east-1-107457652907/pretrained-models/llama-65b-mp8
-# MODEL_S3_BUCKET=s3://sagemaker-us-east-1-107457652907/pretrained-models/llama-65b-mp16
-AWS_OUTPUT_BUCKET=s3://sagemaker-us-east-1-107457652907/experiments/llama.65b.merit_v91_v91.seq2seq.v5.4.3aug.mp8.dp2.adamw.500steps.NA100.0630.aws
+# MODEL_S3_BUCKET=s3://sagemaker-us-east-1-107457652907/pretrained-models/llama-65b-mp8
+# # MODEL_S3_BUCKET=s3://sagemaker-us-east-1-107457652907/pretrained-models/llama-65b-mp16
+# AWS_OUTPUT_BUCKET=s3://sagemaker-us-east-1-107457652907/experiments/llama.65b.merit_v91_v91.seq2seq.v5.4.3aug.mp8.dp2.adamw.500steps.NA100.0630.aws
 
-./s5cmd sync $MODEL_S3_BUCKET/* /tmp/llama-65b-mp8
+# ./s5cmd sync $MODEL_S3_BUCKET/* /tmp/llama-65b-mp8
 
-# PAD_TOKEN="<unk>" python -m torch.distributed.run --nproc_per_node 8 --nnodes $NNODES --node_rank $NODE_RANK --master_addr $MASTER_ADDR --master_port $MASTER_PORT trainer_base_ds_mp_aws.py aws_output_bucket=$AWS_OUTPUT_BUCKET -cp conf/llama/mp/ -cn llama_65b_merit_v1_pv91_v91_v5_0_full_aws
+# # PAD_TOKEN="<unk>" python -m torch.distributed.run --nproc_per_node 8 --nnodes $NNODES --node_rank $NODE_RANK --master_addr $MASTER_ADDR --master_port $MASTER_PORT trainer_base_ds_mp_aws.py aws_output_bucket=$AWS_OUTPUT_BUCKET -cp conf/llama/mp/ -cn llama_65b_merit_v1_pv91_v91_v5_0_full_aws
 
-# PAD_TOKEN="<unk>" python -m torch.distributed.run --nproc_per_node 8 --nnodes $NNODES --node_rank $NODE_RANK --master_addr $MASTER_ADDR --master_port $MASTER_PORT trainer_base_ds_mp_aws.py aws_output_bucket=$AWS_OUTPUT_BUCKET -cp conf/llama/mp/ -cn llama_65b_merit_v1_pv91_v91_v5_2_full_aws
+# # PAD_TOKEN="<unk>" python -m torch.distributed.run --nproc_per_node 8 --nnodes $NNODES --node_rank $NODE_RANK --master_addr $MASTER_ADDR --master_port $MASTER_PORT trainer_base_ds_mp_aws.py aws_output_bucket=$AWS_OUTPUT_BUCKET -cp conf/llama/mp/ -cn llama_65b_merit_v1_pv91_v91_v5_2_full_aws
 
-# PAD_TOKEN="<unk>" python -m torch.distributed.run --nproc_per_node 8 --nnodes $NNODES --node_rank $NODE_RANK --master_addr $MASTER_ADDR --master_port $MASTER_PORT trainer_base_ds_mp_aws.py aws_output_bucket=$AWS_OUTPUT_BUCKET -cp conf/llama/mp/ -cn llama_65b_merit_v1_pv91_v91_v5_3_full_aws
+# # PAD_TOKEN="<unk>" python -m torch.distributed.run --nproc_per_node 8 --nnodes $NNODES --node_rank $NODE_RANK --master_addr $MASTER_ADDR --master_port $MASTER_PORT trainer_base_ds_mp_aws.py aws_output_bucket=$AWS_OUTPUT_BUCKET -cp conf/llama/mp/ -cn llama_65b_merit_v1_pv91_v91_v5_3_full_aws
 
-PAD_TOKEN="<unk>" python -m torch.distributed.run --nproc_per_node 8 --nnodes $NNODES --node_rank $NODE_RANK --master_addr $MASTER_ADDR --master_port $MASTER_PORT trainer_base_ds_mp_aws.py aws_output_bucket=$AWS_OUTPUT_BUCKET -cp conf/llama/mp/ -cn llama_65b_merit_v1_pv91_v91_v5_4_full_aws
+# PAD_TOKEN="<unk>" python -m torch.distributed.run --nproc_per_node 8 --nnodes $NNODES --node_rank $NODE_RANK --master_addr $MASTER_ADDR --master_port $MASTER_PORT trainer_base_ds_mp_aws.py aws_output_bucket=$AWS_OUTPUT_BUCKET -cp conf/llama/mp/ -cn llama_65b_merit_v1_pv91_v91_v5_4_full_aws
 
-# PAD_TOKEN="<unk>" deepspeed --num_nodes 2  --master_addr $MASTER_ADDR --master_port $MASTER_PORT trainer_base_ds_mp_aws.py aws_output_bucket=$AWS_OUTPUT_BUCKET -cp conf/llama/mp/ -cn llama_65b_merit_v1_pv91_v91_v5_0_full_aws
+# # PAD_TOKEN="<unk>" deepspeed --num_nodes 2  --master_addr $MASTER_ADDR --master_port $MASTER_PORT trainer_base_ds_mp_aws.py aws_output_bucket=$AWS_OUTPUT_BUCKET -cp conf/llama/mp/ -cn llama_65b_merit_v1_pv91_v91_v5_0_full_aws
 
-# PAD_TOKEN="<unk>" python -m torch.distributed.run --nproc_per_node 8 --nnodes $NNODES --node_rank $NODE_RANK --master_addr $MASTER_ADDR --master_port $MASTER_PORT trainer_ds_mp_unify_aws.py aws_output_bucket=$AWS_OUTPUT_BUCKET -cp conf/llama/mp/ -cn llama_65b_merit_v1_pv91_v91_v5_0_full_aws
+# # PAD_TOKEN="<unk>" python -m torch.distributed.run --nproc_per_node 8 --nnodes $NNODES --node_rank $NODE_RANK --master_addr $MASTER_ADDR --master_port $MASTER_PORT trainer_ds_mp_unify_aws.py aws_output_bucket=$AWS_OUTPUT_BUCKET -cp conf/llama/mp/ -cn llama_65b_merit_v1_pv91_v91_v5_0_full_aws
 
 
-./s5cmd sync /tmp/log_dir/* s3://sagemaker-us-east-1-107457652907/experiments/log_dir/
+# ./s5cmd sync /tmp/log_dir/* s3://sagemaker-us-east-1-107457652907/experiments/log_dir/
 
 # ================== falcon-40b merit pre-train =====================
 
@@ -135,3 +135,16 @@ PAD_TOKEN="<unk>" python -m torch.distributed.run --nproc_per_node 8 --nnodes $N
 # python -m torch.distributed.run --nproc_per_node 8 --nnodes $NNODES --node_rank $NODE_RANK --master_addr $MASTER_ADDR --master_port $MASTER_PORT trainer_base_ds_mul_aws.py aws_output_bucket=$AWS_OUTPUT_BUCKET -cp conf/rw/ -cn falcon_40b_merit_v1_pv91_v91_v5_0_aws
 
 # ./s5cmd sync /tmp/log_dir/* s3://sagemaker-us-east-1-107457652907/experiments/log_dir/
+
+
+# ========================= Llama2-70b-CoT
+
+MODEL_S3_BUCKET=s3://sagemaker-us-east-1-107457652907/pretrained-models/Llama-2-70b-mp
+AWS_OUTPUT_BUCKET=s3://sagemaker-us-east-1-107457652907/experiments/llama2.70b.act.cot.pp8.dp2.A100.v1.0.0808
+
+./s5cmd sync $MODEL_S3_BUCKET/* /tmp/Llama-2-70b-mp
+./s5cmd sync s3://sagemaker-us-east-1-107457652907/fangkai/cot-data/* /tmp/data-train
+
+python -m torch.distributed.run --nproc_per_node 8 --nnodes $NNODES --node_rank $NODE_RANK --master_addr $MASTER_ADDR --master_port $MASTER_PORT trainer_base_ds_mp_aws.py aws_output_bucket=$AWS_OUTPUT_BUCKET -cp conf/llama2/cot_actor -cn llama2_70b_cot_tk_rank_v1_0_aws
+
+./s5cmd sync /tmp/log_dir/* s3://sagemaker-us-east-1-107457652907/experiments/log_dir/
