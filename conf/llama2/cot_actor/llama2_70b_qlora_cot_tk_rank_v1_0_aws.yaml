@@ -11,11 +11,11 @@ dev_file: /tmp/data-train/llama2.7b.rw.lqv2cot.w4.A100.v1.0/lqv2cot_dev_zs_cot_2
 test_file:
 
 model:
-  _target_: models.llama_token_reward_pp_wrap.LlamaConfig.from_pretrained
+  _target_: models.llama.LlamaTokenRewardModel.from_pretrained
   torch_dtype:
     _target_: general_util.training_utils.return_torch_dtype
     dtype: bfloat16
-  pad_token_id: 0
+  pad_token_id: 2
   gradient_checkpointing: True
   use_peft: True
   lora_config:
@@ -26,10 +26,9 @@ model:
     target_modules:
       _target_: models.llama.LlamaTokenRewardModel.find_lora_modules
       bits: 4
-
     r: 64
     lora_alpha: 16
-    lora_dropout: 0.1
+    lora_dropout: 0.05
   modules_to_save: ["reward_head"]
   quantization_config:
     _target_: transformers.utils.quantization_config.BitsAndBytesConfig
@@ -43,6 +42,7 @@ model:
     _target_: models.llama.return_single_device_map
   load_in_4bit: True
   max_memory: True
+  enable_flash_attention: True
 
 
 # Data loading
@@ -51,11 +51,11 @@ read_tensor_train:
   original_data: /tmp/data-train/logiqa-v2/train.txt
   read_func:
     _target_: data.readers.LogiQAReaderV2
-  margin: 1.0
+  margin: 5.0
   prefix1: "Context: "
   prefix2: "\n\nQuestion: "
   prefix3: "\n\nOptions:\n"
-  suffix: "\n\n"
+  suffix: "\n\nLet's think step by step:"
 
 
 read_tensor_dev:
@@ -63,11 +63,11 @@ read_tensor_dev:
   original_data: /tmp/data-train/logiqa-v2/dev.txt
   read_func:
     _target_: data.readers.LogiQAReaderV2
-  margin: 1.0
+  margin: 5.0
   prefix1: "Context: "
   prefix2: "\n\nQuestion: "
   prefix3: "\n\nOptions:\n"
-  suffix: "\n\n"
+  suffix: "\n\nLet's think step by step:"
 
 
 
@@ -77,23 +77,23 @@ extended_vocab:
 collator:
   _target_: data.cot_critic.CoTActorRankingCollator
   tokenizer: ${model_name_or_path}
-  max_seq_length: 2048
+  max_seq_length: 1024
   padding: "longest"
   pp_inputs_processor:
     _target_: data.mp_inputs_process.LlamaDoubleHeadPpInputsProcess
-  padding_side: "left"
+  padding_side: "right"
 
 # Dataloader
 num_workers: 4
 prefetch_factor: 2
 
 # Wiki path pretrain v8.2
-model_name_or_path: /tmp/Llama-2-70b-mp/
+model_name_or_path: /tmp/Llama-2-70b-hf/
 pretrain:
 
-exp_name: llama2.70b.act.cot.pp8.dp2.A100.v1.0.0808
+exp_name: llama2.70b.q_lora.act.cot.pp8.dp2.A100.v1.0.0808
 exp_notes:
-output_dir: experiments/${exp_name}  # Fix <pad token id>
+output_dir: /tmp/${exp_name}  # Fix <pad token id>
 resume:
 
 
@@ -106,15 +106,15 @@ eval_sub_path: checkpoint-100
 # Training hyper-parameters
 per_gpu_train_batch_size: 8
 per_gpu_eval_batch_size: 1
-learning_rate: 1e-7
-gradient_accumulation_steps: 2
+learning_rate: 1e-4
+gradient_accumulation_steps: 1
 weight_decay: 0.00
 adam_epsilon: 1e-6
 adam_betas: "(0.9, 0.98)"
 #adam_betas: "(0.9, 0.999)"
 #max_grad_norm: 0.0
 max_grad_norm: 1.0
-num_train_epochs: 10
+num_train_epochs: 1
 max_steps: 0
 warmup_proportion: 0.01
 warmup_steps: 0
@@ -235,3 +235,4 @@ device:
 train_batch_size:
 eval_batch_size:
 world_size:
+topology:
