@@ -211,7 +211,7 @@ class CoTActorRankingDataset(Dataset):
                 for j, y in enumerate(right):
                     if i == j and pat[0] == pat[1]:
                         continue
-                    if x["pred"] - y["pred"] > self.margin:
+                    if x["reward"] - y["reward"] > self.margin:
                         pairs.append((x, y))
         # else:
         #     raise NotImplementedError("Not implemented yet.")
