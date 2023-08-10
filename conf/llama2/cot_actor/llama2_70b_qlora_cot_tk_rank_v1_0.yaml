@@ -6,8 +6,8 @@ hydra:
 aws_output_bucket:
 dist_load_data_barrier: False
 
-train_file: /tmp/data-train/llama2.7b.rw.lqv2cot.w4.A100.v1.0/lqv2cot_train_zs_cot_2k_llama2_chat_70b_rewards.v1.0/test-checkpoint-1000/cot_w_feedback/cot_feedback.json
-dev_file: /tmp/data-train/llama2.7b.rw.lqv2cot.w4.A100.v1.0/lqv2cot_dev_zs_cot_2k_llama2_chat_70b_rewards.v1.0/test-checkpoint-1000/cot_w_feedback/cot_feedback.json
+train_file: experiments/llama2.7b.rw.lqv2cot.w4.A100.v1.0/lqv2cot_train_zs_cot_2k_llama2_chat_70b_rewards.v1.0/test-checkpoint-1000/cot_w_feedback/cot_feedback.json
+dev_file: experiments/llama2.7b.rw.lqv2cot.w4.A100.v1.0/lqv2cot_dev_zs_cot_2k_llama2_chat_70b_rewards.v1.0/test-checkpoint-1000/cot_w_feedback/cot_feedback.json
 test_file:
 
 model:
@@ -15,7 +15,7 @@ model:
   torch_dtype:
     _target_: general_util.training_utils.return_torch_dtype
     dtype: bfloat16
-  pad_token_id: 2
+  pad_token_id: 0
   gradient_checkpointing: True
   use_peft: True
   lora_config:
@@ -48,7 +48,7 @@ model:
 # Data loading
 read_tensor_train:
   _target_: data.cot_critic.CoTActorRankingDataset
-  original_data: /tmp/data-train/logiqa-v2/train.txt
+  original_data: logiqa-v2/train.txt
   read_func:
     _target_: data.readers.LogiQAReaderV2
   margin: 5.0
@@ -60,7 +60,7 @@ read_tensor_train:
 
 read_tensor_dev:
   _target_: data.cot_critic.CoTActorRankingDataset
-  original_data: /tmp/data-train/logiqa-v2/dev.txt
+  original_data: logiqa-v2/dev.txt
   read_func:
     _target_: data.readers.LogiQAReaderV2
   margin: 5.0
@@ -88,12 +88,13 @@ num_workers: 4
 prefetch_factor: 2
 
 # Wiki path pretrain v8.2
-model_name_or_path: /tmp/Llama-2-70b-hf/
+model_name_or_path: pretrained-models/Llama-2-70b-hf
 pretrain:
 
-exp_name: llama2.70b.q_lora.act.cot.w16.A100.v1.0.0810
+#exp_name: llama2.70b.q_lora.act.cot.pp8.dp2.A100.v1.0.0808
+exp_name: llama2.70b.q_lora.act.cot.w3.A100.v1.0.0808
 exp_notes:
-output_dir: /tmp/${exp_name}  # Fix <pad token id>
+output_dir: experiments/${exp_name}  # Fix <pad token id>
 resume:
 
 
@@ -107,7 +108,7 @@ eval_sub_path: checkpoint-100
 per_gpu_train_batch_size: 2
 per_gpu_eval_batch_size: 1
 learning_rate: 1e-4
-gradient_accumulation_steps: 1
+gradient_accumulation_steps: 4
 weight_decay: 0.00
 adam_epsilon: 1e-6
 adam_betas: "(0.9, 0.98)"

@@ -305,6 +305,13 @@ class LlamaPreTrainedModelPeftMixin(LlamaPreTrainedModel, ABC):
                 model.resize_token_embeddings(vocab_size)
             model.config.pad_token_id = pad_token_id
 
+        if enable_flash_attention:
+            logger.info("⚡⚡⚡ enable llama flash attention.")
+
+            layers = model.model.layers
+            for layer in layers:
+                llama_fast_attention_wrap(layer.self_attn, vanilla_torch=flash_attention_vanilla_torch, var_len=flash_attention_var_len)
+
         if use_peft:
             if lora_config is None:
                 lora_config = LoraConfig(task_type=TaskType.SEQ_CLS, inference_mode=False, r=8, lora_alpha=32, lora_dropout=0.1)
@@ -343,12 +350,6 @@ class LlamaPreTrainedModelPeftMixin(LlamaPreTrainedModel, ABC):
                             module = module.to(torch.bfloat16)
 
             model.print_trainable_parameters()
-
-        if enable_flash_attention:
-            logger.info("⚡⚡⚡ enable llama flash attention.")
-
-            for layer in model.model.layers:
-                llama_fast_attention_wrap(layer.self_attn, vanilla_torch=flash_attention_vanilla_torch, var_len=flash_attention_var_len)
 
         logger.info(f"Config pad token id after loading pre-trained weights: {model.config.pad_token_id}")
         logger.info(model.lm_head.__class__.__name__)

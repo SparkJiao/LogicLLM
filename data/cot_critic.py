@@ -8,6 +8,12 @@ from tqdm import tqdm
 from transformers import PreTrainedTokenizer, AutoTokenizer
 import re
 
+# Add the directory of this file into pythonpath
+import sys
+import os
+
+sys.path.append(os.path.dirname(os.path.dirname(os.path.abspath(__file__))))
+
 from data.collators.wiki_seq2seq_collator import construct_seq2seq
 from data.reclor_prompt import _format_option_list
 from general_util.tokenization_utils import expand_special_tokenizer
@@ -271,8 +277,33 @@ class CoTActorRankingCollator:
 
 
 if __name__ == '__main__':
-    # Add the directory of this file into pythonpath
-    import sys
-    import os
 
-    sys.path.append(os.path.dirname(os.path.dirname(os.path.abspath(__file__))))
+    from data.readers import LogiQAReaderV2
+    from data.mp_inputs_process import LlamaDoubleHeadPpInputsProcess
+
+    tokenizer = AutoTokenizer.from_pretrained("/export/home2/fangkai/pretrained-models/Llama-2-70b-hf")
+
+    dataset = CoTActorRankingDataset("experiments/llama2.7b.rw.lqv2cot.w4.A100.v1.0/lqv2cot_dev_zs_cot_2k_llama2_chat_70b_rewards.v1.0/test-checkpoint-1000/cot_w_feedback/cot_feedback.json",
+                                     tokenizer=tokenizer,
+                                     original_data="logiqa-v2/dev.txt",
+                                     read_func=LogiQAReaderV2(),
+                                     margin=8.0)
+
+    inputs_process = LlamaDoubleHeadPpInputsProcess()
+
+    collator = CoTActorRankingCollator(tokenizer="/export/home2/fangkai/pretrained-models/Llama-2-70b-hf", max_seq_length=1024,
+                                       padding="longest",
+                                       pp_inputs_processor=inputs_process)
+
+    batch = [dataset[0], dataset[1]]
+    print(batch[0])
+    print(batch[1])
+
+    res = collator(batch)
+
+    # print(res)
+    print(res[0][0])
+    print(res[0][1])
+    print(res[0][2])
+    print(res[0][3])
+    print(res[1])
