@@ -36,6 +36,8 @@ from general_util.evaluator import evaluate_fn as evaluate
 from general_util.logger import setting_logger
 from general_util.tokenization_utils import expand_special_tokenizer
 from general_util.training_utils import set_seed
+from transformers.pipelines import pipeline, Pipeline
+from deepspeed.inference.config import QuantizationConfig
 
 logger: logging.Logger
 
@@ -137,8 +139,12 @@ def main(cfg: DictConfig):
                 injection_policy=hydra.utils.instantiate(cfg.injection_policy) if "injection_policy" in cfg else None,
                 max_tokens=getattr(cfg, "ds_inference_max_tokens", 1024),
                 save_mp_checkpoint_path=getattr(cfg, "ds_inference_save_mp_checkpoint_path", None),
+                quant=hydra.utils.instantiate(cfg.ds_inference_quant) if getattr(cfg, "ds_inference_quant", False
+                                                                                 ) else QuantizationConfig(enabled=False),
                 **ds_kwargs
             )
+
+            logger.info(f"DS inference config: {model._config}")
 
             tokenizer = AutoTokenizer.from_pretrained(checkpoint)
             expand_special_tokenizer(tokenizer)

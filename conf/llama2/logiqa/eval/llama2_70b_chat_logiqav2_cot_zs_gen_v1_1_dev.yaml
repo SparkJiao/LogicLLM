@@ -9,7 +9,7 @@ test_file: logiqa-v2/dev.txt
 
 model:
   _target_: transformers.models.llama.modeling_llama.LlamaForCausalLM.from_pretrained
-#  _target_: models.llama.load_model_from_pretrained_tp
+  #  _target_: models.llama.load_model_from_pretrained_tp
   device_map: "auto"
   torch_dtype:
     _target_: general_util.training_utils.return_torch_dtype
@@ -17,7 +17,18 @@ model:
   use_cache: True
 #  tp_sharded: False
 
+model_eval:
+  _target_: models.llama.wrap_causal_lm_w_flash_attention
+  enable_flash_attention: True
+  torch_dtype:
+    _target_: general_util.training_utils.return_torch_dtype
+    dtype: bfloat16
+
 replace_with_kernel_inject: False
+ds_inference_max_tokens: 1024
+ds_inference_quant:
+  _target_: deepspeed.inference.config.DeepSpeedInferenceConfig
+  enabled: False
 #injection_policy:
 #  _target_: models.llama.deepspeed_inference_policy
 enable_flash_attention: False
@@ -36,7 +47,7 @@ read_tensor:
   #    instruct: "Read the following dialogue, answer the question by selecting the correct option:"
   #    instruct: "Answer the following question with the given context through logical reasoning:"
   #    instruct: "Answer the following question with the given context and options: "
-#      instruct: "Answer the following question with the given context and options. Let's think step by step: "
+  #      instruct: "Answer the following question with the given context and options. Let's think step by step: "
   read_func:
     _target_: data.readers.LogiQAReaderV2
   suffix: "Let's think step by step:"
@@ -48,7 +59,7 @@ extended_vocab:
 collator:
   _target_: data.reclor_prompt.ReClorGenerativeCollator
   tokenizer: ${output_dir}
-  max_seq_length: 2048
+  max_seq_length: 1024
   use_fast: False
 
 # Dataloader
@@ -111,7 +122,7 @@ eval_forward_fn:
   _target_: general_util.evaluator.GeneratorForwardFn
   generation_config:
     _target_: transformers.generation.configuration_utils.GenerationConfig
-    max_new_tokens: 4096
+    max_new_tokens: 1024
     num_beams: 1
     num_return_sequences: 5
     output_scores: False
@@ -121,7 +132,7 @@ post_process:
   _target_: post_processors.reclor.GeneratorPredictor
   answer_trigger: ""
   reverse: False
-predict_dir: ${output_dir}/logiqav2_dev_cot_4k.5seq.v1.1
+predict_dir: ${output_dir}/logiqav2_dev_cot_1k.5seq.v2.0
 
 #dist_init:
 #  _target_: general_util.dist_utils.setup_slurm_distributed
