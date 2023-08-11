@@ -37,7 +37,7 @@ from general_util.logger import setting_logger
 from general_util.tokenization_utils import expand_special_tokenizer
 from general_util.training_utils import set_seed
 from transformers.pipelines import pipeline, Pipeline
-from deepspeed.inference.config import QuantizationConfig
+from deepspeed.inference.config import QuantizationConfig, DeepSpeedInferenceConfig
 
 logger: logging.Logger
 
@@ -131,16 +131,18 @@ def main(cfg: DictConfig):
             # ds_inference_config = cfg.ds_infer_cfg
             # ds_config = OmegaConf.to_container(ds_inference_config, resolve=True)
 
+            # quant_config = QuantizationConfig({"enabled": False})
+            # inference_config = DeepSpeedInferenceConfig()
+            inference_config = {"quant": {"enabled": False}}
             model = deepspeed.init_inference(
                 model,
+                config=inference_config,
                 mp_size=cfg.world_size,
                 dtype=hydra.utils.instantiate(cfg.ds_inference_dtype) if "ds_inference_dtype" in cfg else torch.bfloat16,
                 replace_with_kernel_inject=getattr(cfg, "replace_with_kernel_inject", True),
                 injection_policy=hydra.utils.instantiate(cfg.injection_policy) if "injection_policy" in cfg else None,
                 max_tokens=getattr(cfg, "ds_inference_max_tokens", 1024),
                 save_mp_checkpoint_path=getattr(cfg, "ds_inference_save_mp_checkpoint_path", None),
-                quant=hydra.utils.instantiate(cfg.ds_inference_quant) if getattr(cfg, "ds_inference_quant", False
-                                                                                 ) else QuantizationConfig(enabled=False),
                 **ds_kwargs
             )
 
