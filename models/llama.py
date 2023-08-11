@@ -1343,13 +1343,14 @@ class LlamaTokenRewardModel(LlamaPreTrainedModelPeftMixin, LogMixin, ABC):
         loss_fct = nn.CrossEntropyLoss(ignore_index=-1)
 
         # Calculate reward
-        label_mask = label_mask.to(torch.float)
+        label_mask = label_mask.to(dtype=shifted_logits.dtype)
         rewards = self.reward_head(hidden_states).squeeze(-1)
         rewards = (rewards * label_mask).sum(-1) / label_mask.sum(-1)
         pos_scores = rewards[:half_bsz]
         neg_scores = rewards[half_bsz:]
 
-        reward_loss = -nn.LogSigmoid()(pos_scores - neg_scores).mean()
+        # reward_loss = -nn.LogSigmoid()(pos_scores - neg_scores).mean()
+        reward_loss = -torch.log(torch.sigmoid(pos_scores - neg_scores)).mean()
 
         lm_loss = loss_fct(shifted_logits.view(-1, logits.size(-1)), shifted_lm_labels.view(-1))
         loss = self.lm_alpha * lm_loss + reward_loss

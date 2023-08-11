@@ -5,6 +5,7 @@ NNODES="$NODE_NUMBER"
 NODE_RANK="$NODE_INDEX"
 
 MODEL_S3_BUCKET=s3://sagemaker-us-east-1-107457652907/pretrained-models/llama-7b
+BASE_BUCKET=s3://panda-us-west-2
 
 wandb login d9bc4cccef46949e9fdffb3df442996d803d43d2
 
@@ -139,15 +140,28 @@ chmod +x ./s5cmd
 
 # ========================= Llama2-70b-CoT
 
-# MODEL_S3_BUCKET=s3://sagemaker-us-east-1-107457652907/pretrained-models/Llama-2-70b-mp
-MODEL_S3_BUCKET=s3://sagemaker-us-east-1-107457652907/pretrained-models/Llama-2-70b-hf
-AWS_OUTPUT_BUCKET=s3://sagemaker-us-east-1-107457652907/experiments/llama2.70b.act.cot.pp8.dp2.A100.v1.0.0808
+# # MODEL_S3_BUCKET=s3://sagemaker-us-east-1-107457652907/pretrained-models/Llama-2-70b-mp
+# MODEL_S3_BUCKET=s3://sagemaker-us-east-1-107457652907/pretrained-models/Llama-2-70b-hf
+# AWS_OUTPUT_BUCKET=s3://sagemaker-us-east-1-107457652907/experiments/llama2.70b.act.cot.pp8.dp2.A100.v1.0.0808
 
-# ./s5cmd sync $MODEL_S3_BUCKET/* /tmp/Llama-2-70b-mp
+# # ./s5cmd sync $MODEL_S3_BUCKET/* /tmp/Llama-2-70b-mp
+# ./s5cmd sync $MODEL_S3_BUCKET/* /tmp/Llama-2-70b-hf
+# ./s5cmd sync s3://sagemaker-us-east-1-107457652907/fangkai/cot-data/* /tmp/data-train
+
+# # python -m torch.distributed.run --nproc_per_node 8 --nnodes $NNODES --node_rank $NODE_RANK --master_addr $MASTER_ADDR --master_port $MASTER_PORT trainer_base_ds_mp_aws.py aws_output_bucket=$AWS_OUTPUT_BUCKET -cp conf/llama2/cot_actor -cn llama2_70b_cot_tk_rank_v1_0_aws
+# python -m torch.distributed.run --nproc_per_node 8 --nnodes $NNODES --node_rank $NODE_RANK --master_addr $MASTER_ADDR --master_port $MASTER_PORT trainer_base_ds_mul_aws.py aws_output_bucket=$AWS_OUTPUT_BUCKET -cp conf/llama2/cot_actor -cn llama2_70b_qlora_cot_tk_rank_v1_0_aws
+
+# ./s5cmd sync /tmp/log_dir/* s3://sagemaker-us-east-1-107457652907/experiments/log_dir/
+
+# ============================ Llama2-70b-CoT-QLoRA
+
+MODEL_S3_BUCKET=$BASE_BUCKET/pretrained-models/Llama-2-70b-hf
+AWS_OUTPUT_BUCKET=$BASE_BUCKET/experiments/llama2.70b.q_lora.act.cot.w16.A100.v1.0.0810
+
 ./s5cmd sync $MODEL_S3_BUCKET/* /tmp/Llama-2-70b-hf
-./s5cmd sync s3://sagemaker-us-east-1-107457652907/fangkai/cot-data/* /tmp/data-train
+./s5cmd sync $BASE_BUCKET/fangkai/cot-data/* /tmp/data-train
 
 # python -m torch.distributed.run --nproc_per_node 8 --nnodes $NNODES --node_rank $NODE_RANK --master_addr $MASTER_ADDR --master_port $MASTER_PORT trainer_base_ds_mp_aws.py aws_output_bucket=$AWS_OUTPUT_BUCKET -cp conf/llama2/cot_actor -cn llama2_70b_cot_tk_rank_v1_0_aws
 python -m torch.distributed.run --nproc_per_node 8 --nnodes $NNODES --node_rank $NODE_RANK --master_addr $MASTER_ADDR --master_port $MASTER_PORT trainer_base_ds_mul_aws.py aws_output_bucket=$AWS_OUTPUT_BUCKET -cp conf/llama2/cot_actor -cn llama2_70b_qlora_cot_tk_rank_v1_0_aws
 
-./s5cmd sync /tmp/log_dir/* s3://sagemaker-us-east-1-107457652907/experiments/log_dir/
+./s5cmd sync /tmp/log_dir/* $BASE_BUCKET/experiments/log_dir/
