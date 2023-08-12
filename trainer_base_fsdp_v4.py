@@ -379,8 +379,8 @@ def main(cfg: DictConfig):
     # Test
     results = {}
     if cfg.do_eval:
-        if not cfg.ddp_eval and cfg.local_rank not in [-1, 0]:
-            return results
+        # if not cfg.ddp_eval and cfg.local_rank not in [-1, 0]:
+        #     return results
 
         checkpoints = [cfg.output_dir]
         if cfg.save_best:
@@ -414,7 +414,8 @@ def main(cfg: DictConfig):
 
             tokenizer = AutoTokenizer.from_pretrained(checkpoint)
 
-            if cfg.n_gpu == 1 and not model.is_loaded_in_8bit and not model.is_loaded_in_4bit:
+            if cfg.n_gpu == 1 and not getattr(model, "is_loaded_in_8bit", False) and not getattr(model, "is_loaded_in_4bit", False
+                                                                                                 ) and getattr(cfg, "move_to_gpu", True):
                 model.to(cfg.device)
             # else:  # use device map
             #     # For model parallel (of mT5)
@@ -425,6 +426,8 @@ def main(cfg: DictConfig):
 
             # logger.info(tokenizer)
             # cfg.model_name_or_path = checkpoint
+
+            # print(model)
 
             if cfg.test_file:
                 prefix = f'test' + (f'-{prefix}' if prefix != "" else "")

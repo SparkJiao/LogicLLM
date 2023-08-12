@@ -18,14 +18,17 @@ model:
 #  tp_sharded: False
 
 model_eval:
-  _target_: models.llama.wrap_causal_lm_w_flash_attention
+#  _target_: models.llama.wrap_causal_lm_w_flash_attention
+  _target_: models.llama.load_model_from_pretrained_tp
   enable_flash_attention: True
   torch_dtype:
     _target_: general_util.training_utils.return_torch_dtype
-    dtype: bfloat16
+    dtype: float16
   device_map:
     _target_: models.llama.return_cpu_device_map
   low_cpu_mem_usage: True
+  tp_sharded: False
+move_to_gpu: False
 
 replace_with_kernel_inject: False
 ds_inference_max_tokens: 1024

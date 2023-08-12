@@ -207,9 +207,6 @@ def evaluate_fn(cfg: DictConfig, model: torch.nn.Module, tokenizer: PreTrainedTo
 
     eval_forward_fn = hydra.utils.instantiate(cfg.eval_forward_fn, cfg, model, tokenizer)
 
-    # logger.info(f"If model is an instance of FSDP: {isinstance(model, FSDP)}")
-    # logger.info(f"If encoder is an instance of FSDP: {isinstance(model.module.encoder, FSDP)}")
-
     torch.cuda.empty_cache()
     for batch in tqdm(eval_dataloader, desc="Evaluating", disable=cfg.local_rank not in [-1, 0], dynamic_ncols=True):
         if "meta_data" in batch:
@@ -219,6 +216,7 @@ def evaluate_fn(cfg: DictConfig, model: torch.nn.Module, tokenizer: PreTrainedTo
         if "index" in batch:
             indices_list.extend(batch.pop("index").tolist())
 
+        # if getattr(cfg, "move_to_gpu", True):
         batch = batch_to_device(batch, cfg.device)
         auto_cast_param_dict = {
             "enabled": cfg.fp16,

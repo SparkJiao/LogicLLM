@@ -101,17 +101,23 @@ class CoTPairData(Dataset):
 
 def vanilla_seq2seq_convertor(inputs, outputs, tokenizer: PreTrainedTokenizer, max_seq_length, padding="longest",
                               decoder_only: bool = False):
-    model_inputs = tokenizer(inputs, text_target=outputs, max_length=max_seq_length, padding=padding,
-                             truncation=True, return_tensors="pt")
     if decoder_only:
+        outputs = [inputs[b] + " " + o for b, o in enumerate(outputs)]
+
+        model_inputs = tokenizer(inputs, max_length=max_seq_length, padding=padding, truncation=True, return_tensors="pt")
         input_lens = model_inputs["input_ids"].ne(tokenizer.pad_token_id).sum(dim=1)
+
         model_inputs = tokenizer(outputs, max_length=max_seq_length, padding="max_length", truncation=True, return_tensors="pt")
         new_input_lens = model_inputs["input_ids"].ne(tokenizer.pad_token_id).sum(dim=1)
+
         input_lens = input_lens - input_lens.eq(new_input_lens).to(input_lens.dtype) * (input_lens // 2)
         input_lens = input_lens.to(torch.long)
         if tokenizer.padding_side == "left":
             input_lens = model_inputs["input_ids"].eq(tokenizer.pad_token_id).to(torch.long).sum(dim=1) + input_lens
         model_inputs["input_lens"] = input_lens
+    else:
+        model_inputs = tokenizer(inputs, text_target=outputs, max_length=max_seq_length, padding=padding,
+                                 truncation=True, return_tensors="pt")
 
     return model_inputs
 
@@ -250,18 +256,25 @@ class CoTActorRankingDataset(Dataset):
 
 
 class CoTActorRankingCollator:
-    def __init__(self, tokenizer: str, max_seq_length: int, padding: str = "longest", pp_inputs_processor: Callable = None, **kwargs):
+    def __init__(self, tokenizer: str, max_seq_length: int, padding: str = "longest", pos_lm_only: bool = False,
+                 pp_inputs_processor: Callable = None, **kwargs):
         self.tokenizer: PreTrainedTokenizer = AutoTokenizer.from_pretrained(tokenizer, **kwargs)
         expand_special_tokenizer(self.tokenizer)
 
         self.max_seq_length = max_seq_length
         self.padding = padding
+        self.pos_lm_only = pos_lm_only
         self.pp_inputs_processor = pp_inputs_processor
 
     def __call__(self, batch):
-        inputs = [b["pos_input"] for b in batch] + [b["neg_input"] for b in batch]
-        outputs = [b["pos_output"] for b in batch] + [b["neg_output"] for b in batch]
-        index = [b["index"] for b in batch]
+        if self.pos_lm_only:
+            inputs = [b["pos_input"] for b in batch]
+            outputs = [b["pos_output"] for b in batch]
+            index = [b["index"] for b in batch]
+        else:
+            inputs = [b["pos_input"] for b in batch] + [b["neg_input"] for b in batch]
+            outputs = [b["pos_output"] for b in batch] + [b["neg_output"] for b in batch]
+            index = [b["index"] for b in batch]
 
         model_inputs = vanilla_seq2seq_convertor(inputs, outputs, self.tokenizer, self.max_seq_length, self.padding, decoder_only=True)
 
@@ -275,35 +288,34 @@ class CoTActorRankingCollator:
         }
         return model_inputs
 
-
-if __name__ == '__main__':
-
-    from data.readers import LogiQAReaderV2
-    from data.mp_inputs_process import LlamaDoubleHeadPpInputsProcess
-
-    tokenizer = AutoTokenizer.from_pretrained("/export/home2/fangkai/pretrained-models/Llama-2-70b-hf")
-
-    dataset = CoTActorRankingDataset("experiments/llama2.7b.rw.lqv2cot.w4.A100.v1.0/lqv2cot_dev_zs_cot_2k_llama2_chat_70b_rewards.v1.0/test-checkpoint-1000/cot_w_feedback/cot_feedback.json",
-                                     tokenizer=tokenizer,
-                                     original_data="logiqa-v2/dev.txt",
-                                     read_func=LogiQAReaderV2(),
-                                     margin=8.0)
-
-    inputs_process = LlamaDoubleHeadPpInputsProcess()
-
-    collator = CoTActorRankingCollator(tokenizer="/export/home2/fangkai/pretrained-models/Llama-2-70b-hf", max_seq_length=1024,
-                                       padding="longest",
-                                       pp_inputs_processor=inputs_process)
-
-    batch = [dataset[0], dataset[1]]
-    print(batch[0])
-    print(batch[1])
-
-    res = collator(batch)
-
-    # print(res)
-    print(res[0][0])
-    print(res[0][1])
-    print(res[0][2])
-    print(res[0][3])
-    print(res[1])
+# if __name__ == '__main__':
+#     from data.readers import LogiQAReaderV2
+#     from data.mp_inputs_process import LlamaDoubleHeadPpInputsProcess
+#
+#     tokenizer = AutoTokenizer.from_pretrained("/export/home2/fangkai/pretrained-models/Llama-2-70b-hf")
+#
+#     dataset = CoTActorRankingDataset(
+#         "experiments/llama2.7b.rw.lqv2cot.w4.A100.v1.0/lqv2cot_dev_zs_cot_2k_llama2_chat_70b_rewards.v1.0/test-checkpoint-1000/cot_w_feedback/cot_feedback.json",
+#         tokenizer=tokenizer,
+#         original_data="logiqa-v2/dev.txt",
+#         read_func=LogiQAReaderV2(),
+#         margin=8.0)
+#
+#     inputs_process = LlamaDoubleHeadPpInputsProcess()
+#
+#     collator = CoTActorRankingCollator(tokenizer="/export/home2/fangkai/pretrained-models/Llama-2-70b-hf", max_seq_length=1024,
+#                                        padding="longest",
+#                                        pp_inputs_processor=inputs_process)
+#
+#     batch = [dataset[0], dataset[1]]
+#     print(batch[0])
+#     print(batch[1])
+#
+#     res = collator(batch)
+#
+#     # print(res)
+#     print(res[0][0])
+#     print(res[0][1])
+#     print(res[0][2])
+#     print(res[0][3])
+#     print(res[1])

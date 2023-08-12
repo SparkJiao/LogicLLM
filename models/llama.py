@@ -418,13 +418,28 @@ class LlamaPreTrainedModelPeftMixin(LlamaPreTrainedModel, ABC):
 
 def load_model_from_pretrained_tp(pretrained_model_name_or_path: str, *args, **kwargs):
     tp_sharded = kwargs.pop("tp_sharded", None)
+    enable_flash_attention = kwargs.pop("enable_flash_attention", False)
+    flash_attention_vanilla_torch = kwargs.pop("flash_attention_vanilla_torch", False)
+    flash_attention_var_len = kwargs.pop("flash_attention_var_len", False)
 
     model = LlamaForCausalLM.from_pretrained(pretrained_model_name_or_path, *args, **kwargs)
 
     import tensor_parallel as tp
+    import torch.distributed as dist
 
     n_gpus = torch.cuda.device_count()
-    model = tp.tensor_parallel(model, [torch.device(f"cuda:{i}") for i in range(n_gpus)], sharded=tp_sharded)
+    if not dist.is_initialized():
+        model = tp.tensor_parallel(model, [torch.device(f"cuda:{i}") for i in range(n_gpus)], sharded=tp_sharded)
+    else:
+        model = tp.tensor_parallel(model, sharded=False)[0]
+
+    if enable_flash_attention:
+        logger.info("⚡⚡⚡ enable llama flash attention.")
+
+        layers = model.model.layers
+        for layer in layers:
+            llama_fast_attention_wrap(layer.self_attn, vanilla_torch=flash_attention_vanilla_torch, var_len=flash_attention_var_len)
+
     return model
 
 
