@@ -126,9 +126,9 @@ use_nvlamb:
 bit_training:
 
 logging_steps: 5
-save_steps: 500
+save_steps: 250
 save_best: False
-eval_steps: 500
+eval_steps: 250
 ddp_eval: True
 no_cuda: False
 seed: 42

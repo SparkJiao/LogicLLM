@@ -52,7 +52,7 @@ read_tensor_train:
   original_data: /tmp/data-train/logiqa-v2/train.txt
   read_func:
     _target_: data.readers.LogiQAReaderV2
-  pair_pattern: ("pn",)
+  pair_pattern: ["pn"]
   margin: 5.0
   prefix1: "Context: "
   prefix2: "\n\nQuestion: "
@@ -65,7 +65,7 @@ read_tensor_dev:
   original_data: /tmp/data-train/logiqa-v2/dev.txt
   read_func:
     _target_: data.readers.LogiQAReaderV2
-  pair_pattern: ("pn",)
+  pair_pattern: ["pn"]
   margin: 5.0
   prefix1: "Context: "
   prefix2: "\n\nQuestion: "
@@ -94,7 +94,7 @@ prefetch_factor: 2
 model_name_or_path: /tmp/Llama-2-70b-hf/
 pretrain:
 
-exp_name: llama2.70b.q_lora.act.cot.w16.A100.v1.1.0811
+exp_name: llama2.70b.q_lora.act.cot.w16.A100.v1.1.0812
 exp_notes:
 output_dir: /tmp/${exp_name}  # Fix <pad token id>
 resume:
@@ -128,9 +128,9 @@ use_nvlamb:
 bit_training:
 
 logging_steps: 5
-save_steps: 100
+save_steps: 250
 save_best: False
-eval_steps: 100
+eval_steps: 250
 ddp_eval: True
 no_cuda: False
 seed: 42
