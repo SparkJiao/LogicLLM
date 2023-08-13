@@ -329,6 +329,9 @@ class LlamaPreTrainedModelPeftMixin(LlamaPreTrainedModel, ABC):
             else:
                 raise ValueError(f"Unsupported type of target modules: {lora_config.target_modules.__class__}")
 
+            if isinstance(lora_config.modules_to_save, omegaconf.listconfig.ListConfig):
+                lora_config.modules_to_save = list(lora_config.modules_to_save)
+
             logger.info(lora_config.target_modules.__class__)
             logger.info(lora_config.target_modules)
             gradient_checkpointing = model.model.gradient_checkpointing
