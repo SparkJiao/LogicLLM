@@ -41,6 +41,7 @@ from general_util.evaluator import evaluate_fn as evaluate
 from general_util.logger import setting_logger
 from general_util.training_utils import batch_to_device, unwrap_model, set_seed, note_best_checkpoint, initialize_optimizer, \
     load_and_cache_examples, if_cancel_sync, initialize_lr_scheduler, set_seed_int
+from general_util.tokenization_utils import expand_special_tokenizer
 
 from deepspeed.pipe import PipelineModule
 
@@ -413,6 +414,7 @@ def main(cfg: DictConfig):
                 model = hydra.utils.call(cfg.model, checkpoint)
 
             tokenizer = AutoTokenizer.from_pretrained(checkpoint)
+            expand_special_tokenizer(tokenizer)
 
             if cfg.n_gpu == 1 and not getattr(model, "is_loaded_in_8bit", False) and not getattr(model, "is_loaded_in_4bit", False
                                                                                                  ) and getattr(cfg, "move_to_gpu", True):

@@ -479,9 +479,15 @@ class GeneratorForwardFn:
 
         # Clean the inputs from the generated sequences if the model is decoder only model.
         if self.clean_input:
-            outputs["generated_seq"] = [seq.replace(self.tokenizer.decode(batch["input_ids"][i],
-                                                                          skip_special_tokens=self.skip_special_tokens), "")
-                                        for i, seq in enumerate(outputs["generated_seq"])]
+            if self.generation_config.num_return_sequences > 1:
+                outputs["generated_seq"] = [seq.replace(self.tokenizer.decode(
+                    batch["input_ids"][i // self.generation_config.num_return_sequences],
+                    skip_special_tokens=self.skip_special_tokens), "")
+                    for i, seq in enumerate(outputs["generated_seq"])]
+            else:
+                outputs["generated_seq"] = [seq.replace(self.tokenizer.decode(batch["input_ids"][i],
+                                                                              skip_special_tokens=self.skip_special_tokens), "")
+                                            for i, seq in enumerate(outputs["generated_seq"])]
 
         return outputs, []
 

@@ -1,0 +1,192 @@
+hydra:
+  run:
+    dir: ./
+
+train_file: logiqa-v2/train.txt
+dev_file: logiqa-v2/dev.txt
+#test_file: logiqa-v2/test.txt
+test_file: logiqa-v2/train.txt
+
+model:
+  _target_: transformers.models.llama.modeling_llama.LlamaForCausalLM.from_pretrained
+#  _target_: transformers.models.llama.modeling_llama.LlamaConfig.from_pretrained
+#  _target_: models.llama.load_model_from_pretrained_tp
+#  device_map: "auto"
+  torch_dtype:
+    _target_: general_util.training_utils.return_torch_dtype
+    dtype: bfloat16
+  use_cache: True
+#  tp_sharded: False
+
+replace_with_kernel_inject: False
+ds_inference_max_tokens: 1024
+#ds_inference_save_mp_checkpoint_path: ${model_name_or_path}/tp_sharded_4
+#injection_policy:
+#  _target_: models.llama.deepspeed_inference_policy
+enable_flash_attention: False
+
+
+# Data loading
+read_tensor:
+  _target_: data.reclor_prompt.ReClorGenerativeDataset
+  prompt_generator:
+    _target_: data.reclor_prompt.ReClorExemplarGenerator
+    file_path: ${train_file}
+    shot: 0
+    random_sampling: False
+    read_func:
+      _target_: data.readers.LogiQAReaderV2
+  #    instruct: "Read the following dialogue, answer the question by selecting the correct option:"
+  #    instruct: "Answer the following question with the given context through logical reasoning:"
+  #    instruct: "Answer the following question with the given context and options: "
+#      instruct: "Answer the following question with the given context and options. Let's think step by step: "
+  read_func:
+    _target_: data.readers.LogiQAReaderV2
+  suffix: "Let's think step by step:"
+
+
+extended_vocab:
+
+# Data collator
+collator:
+  _target_: data.reclor_prompt.ReClorGenerativeCollator
+  tokenizer: ${output_dir}
+  max_seq_length: 1024
+  use_fast: False
+  padding_side: "left"
+
+# Dataloader
+num_workers: 8
+prefetch_factor: 2
+
+# Wiki path pretrain v8.2
+model_name_or_path: pretrained-models/Llama-2-13b-chat-hf
+pretrain:
+
+exp_name:
+exp_notes:
+output_dir: ${model_name_or_path}
+
+
+do_train: False
+evaluate_during_training: True
+
+do_eval: True
+eval_sub_path: checkpoint-*
+
+# Training hyper-parameters
+per_gpu_train_batch_size: 4
+per_gpu_eval_batch_size: 1  # 4 * 80G A100 deepspeed inference.
+learning_rate: 1e-5
+gradient_accumulation_steps: 2
+weight_decay: 0.01
+adam_epsilon: 1e-6
+adam_betas: "(0.9, 0.98)"
+max_grad_norm: 0.0
+num_train_epochs: 10
+max_steps: 0
+warmup_proportion: 0.1
+warmup_steps: 0
+
+# Optimizer
+optimizer:
+use_nvlamb:
+bit_training:
+
+logging_steps: 5
+save_steps: -1
+save_best: True
+eval_steps: 100
+ddp_eval: True
+no_cuda: False
+seed: 42
+local_rank: -1
+fp16: True
+fp16_opt_level: O1
+fp16_bfloat16: True
+
+# Prediction config
+prediction_cfg:
+  metric: "acc"
+  measure: 1
+  best_checkpoint:
+  best_result:
+eval_forward_fn:
+  _target_: general_util.evaluator.GeneratorForwardFn
+  generation_config:
+    _target_: transformers.generation.configuration_utils.GenerationConfig
+    max_new_tokens: 1024
+    num_beams: 1
+    num_return_sequences: 5
+    output_scores: False
+    do_sample: True
+    temperature: 0.5
+  clean_input: True
+post_process:
+  _target_: post_processors.reclor.GeneratorPredictor
+  answer_trigger: ""
+  reverse: False
+predict_dir: ${output_dir}/logiqav2_train_cot_1k.5seq.tem0.5.v1.2  # v1.1 is running on 40G A100 and v1.2 is runing on 80G A100
+
+#dist_init:
+#  _target_: general_util.dist_utils.setup_slurm_distributed
+
+
+# fairscale.FullyShardedDP
+fairscale_config:
+  _target_: general_util.fsdp_utils.default_initialize
+  fp16: ${fp16}
+  reshard_after_forward: False
+  move_grads_to_cpu: False
+  move_params_to_cpu: False
+
+# Deepspeed config
+ds_cfg:
+  train_micro_batch_size_per_gpu: ${per_gpu_train_batch_size}
+  gradient_accumulation_steps: ${gradient_accumulation_steps}
+  optimizer:
+    type: AdamW
+    params:
+      lr: ${learning_rate}
+      betas: [ 0.9, 0.999 ]
+      eps: ${adam_epsilon}
+      weight_decay: ${weight_decay}
+  scheduler:
+    type: WarmupDecayLR
+    params:
+      total_num_steps:
+      warmup_max_lr: ${learning_rate}
+      warmup_num_steps:
+      warmup_type: linear
+  gradient_clipping: ${max_grad_norm}
+  fp16:
+    enabled: ${fp16}
+    initial_scale_power: 12
+  zero_optimization:
+    stage: 3
+  #    offload_optimizer:
+  #      device: cpu
+  #      pin_memory: True
+  #    offload_param:
+  #      device: cpu
+  #      pin_memory: True
+  #  activation_checkpointing:
+  #    partition_activations: True
+  #    cpu_checkpointing: True
+  #    contiguous_memory_optimization: False
+  #    number_checkpoints: False
+  #    synchronize_checkpoint_boundary: False
+  #    profile: False
+  steps_per_print: 1024
+
+summary_helper:
+  _target_: general_util.tensorboard_helper.SummaryWriterHelper
+  batch_index_or_keys:
+  outputs_index_or_keys:
+
+# Temporary variables
+n_gpu:
+device:
+train_batch_size:
+eval_batch_size:
+world_size:
