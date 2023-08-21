@@ -372,7 +372,7 @@ class LlamaPreTrainedModelPeftMixin(LlamaPreTrainedModel, ABC):
         quantization_config = kwargs.pop("quantization_config", None)
         tp_sharded = kwargs.pop("tp_sharded", None)
 
-        model = super().from_pretrained(pretrained_model_name_or_path, *model_args, **kwargs)
+        model = cls.from_pretrained(pretrained_model_name_or_path, *model_args, **kwargs)
 
         n_gpus = torch.cuda.device_count()
         model = tp.tensor_parallel(model, [torch.device(f"cuda:{i}") for i in range(n_gpus)], sharded=tp_sharded)
