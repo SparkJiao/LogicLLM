@@ -149,7 +149,7 @@ class FlanCollectionGroupDataset(Dataset):
         }
 
 
-def vanilla_seq2seq_convertor(examples, tokenizer: PreTrainedTokenizer, max_seq_length, decoder_only: bool = False):
+def vanilla_seq2seq_convertor(examples, tokenizer: PreTrainedTokenizer, max_seq_length, decoder_only: bool = False, padding: str = "longest"):
     inputs = []
     outputs = []
     for exp in examples:
@@ -159,11 +159,11 @@ def vanilla_seq2seq_convertor(examples, tokenizer: PreTrainedTokenizer, max_seq_
         else:
             outputs.append(exp["targets"])
 
-    model_inputs = tokenizer(inputs, text_target=outputs, max_length=max_seq_length, padding="longest",
+    model_inputs = tokenizer(inputs, text_target=outputs, max_length=max_seq_length, padding=padding,
                              truncation=True, return_tensors="pt")
     if decoder_only:
         input_lens = model_inputs["input_ids"].ne(tokenizer.pad_token_id).sum(dim=1)
-        model_inputs = tokenizer(outputs, max_length=max_seq_length, padding="max_length", truncation=True, return_tensors="pt")
+        model_inputs = tokenizer(outputs, max_length=max_seq_length, padding=padding, truncation=True, return_tensors="pt")
         new_input_lens = model_inputs["input_ids"].ne(tokenizer.pad_token_id).sum(dim=1)
         input_lens = input_lens - input_lens.eq(new_input_lens).to(input_lens.dtype) * (input_lens // 2)
         input_lens = input_lens.to(torch.long)
@@ -265,25 +265,27 @@ def convert_to_standard_inputs(model_inputs: Dict, tokenizer: PreTrainedTokenize
 
 
 class FlanCollatorOverCollator:
-    def __init__(self, collator, tokenizer: str, max_seq_length: int, decoder_only: bool = False, return_standard_inputs: bool = False):
+    def __init__(self, collator, tokenizer: str, max_seq_length: int, decoder_only: bool = False, return_standard_inputs: bool = False,
+                 padding: str = "longest", **kwargs):
         self.collator = collator
-        self.tokenizer: PreTrainedTokenizer = AutoTokenizer.from_pretrained(tokenizer, use_fast=False)
+        self.tokenizer: PreTrainedTokenizer = AutoTokenizer.from_pretrained(tokenizer, **kwargs)
         expand_special_tokenizer(self.tokenizer)
         self.max_seq_length = max_seq_length
         self.decoder_only = decoder_only
         self.convert_to_standard_inputs = return_standard_inputs
+        self.padding = padding
 
     def __call__(self, batch):
         flan_batch = []
         for item in batch:
             flan_batch.append(item.pop("flan"))
 
-        index = torch.tensor([b["index"] for b in batch], dtype=torch.long)
-
         if self.collator is not None:
+            index = torch.tensor([b["index"] for b in batch], dtype=torch.long)
+
             model_inputs = self.collator(batch)
             orig_batch_size = model_inputs["input_ids"].size(0)
-            flan_inputs = vanilla_seq2seq_convertor(flan_batch, self.tokenizer, self.max_seq_length, self.decoder_only)
+            flan_inputs = vanilla_seq2seq_convertor(flan_batch, self.tokenizer, self.max_seq_length, self.decoder_only, self.padding)
             for k, v in flan_inputs.items():
                 if k == "input_lens":
                     if "flan_input_lens" in model_inputs:
@@ -297,8 +299,12 @@ class FlanCollatorOverCollator:
                     model_inputs[f"flan_{k}"] = combine_tensor_on_length(model_inputs[f"flan_{k}"], v, self.tokenizer.pad_token_id)
                 else:
                     model_inputs[f"flan_{k}"] = v
+
+            model_inputs["meta_data"] = {
+                "index": index
+            }
         else:
-            model_inputs = vanilla_seq2seq_convertor(flan_batch, self.tokenizer, self.max_seq_length, self.decoder_only)
+            model_inputs = vanilla_seq2seq_convertor(flan_batch, self.tokenizer, self.max_seq_length, self.decoder_only, self.padding)
 
         if self.convert_to_standard_inputs:
             input_ids, attention_mask, position_ids, labels = convert_to_standard_inputs(model_inputs, self.tokenizer)
@@ -312,14 +318,15 @@ class FlanCollatorOverCollator:
 
 
 class CausalLMCollator:
-    def __init__(self, tokenizer: str, max_seq_length: int, pp_inputs_processor: Callable = None, **kwargs):
+    def __init__(self, tokenizer: str, max_seq_length: int, pp_inputs_processor: Callable = None, padding: str = "longest", **kwargs):
         self.tokenizer: PreTrainedTokenizer = AutoTokenizer.from_pretrained(tokenizer, **kwargs)
         expand_special_tokenizer(self.tokenizer)
         self.max_seq_length = max_seq_length
         self.pp_inputs_processor = pp_inputs_processor
+        self.padding = padding
 
     def __call__(self, batch):
-        model_inputs = self.tokenizer(batch, padding="max_length", truncation=True, max_length=self.max_seq_length, return_tensors="pt")
+        model_inputs = self.tokenizer(batch, padding=self.padding, truncation=True, max_length=self.max_seq_length, return_tensors="pt")
         model_inputs["input_lens"] = torch.zeros(len(batch), dtype=torch.long)
         if self.pp_inputs_processor is not None:
             return self.pp_inputs_processor(model_inputs, self.tokenizer)
