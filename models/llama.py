@@ -19,7 +19,8 @@ from peft import (
 from peft.tuners.lora import LoraLayer
 from torch import nn
 from transformers import AutoTokenizer
-from transformers.models.llama.modeling_llama import LlamaModel, LlamaPreTrainedModel, LlamaConfig, SequenceClassifierOutputWithPast, \
+from transformers.models.llama.modeling_llama import LlamaModel, LlamaPreTrainedModel, LlamaConfig, \
+    SequenceClassifierOutputWithPast, \
     LlamaDecoderLayer, LlamaForCausalLM, apply_rotary_pos_emb, repeat_kv
 
 from general_util.logger import get_child_logger
@@ -144,7 +145,8 @@ def llama_fast_attention_wrap(attn_layer: nn.Module, vanilla_torch: bool = False
                 )  # if get_accelerator().device_name() == 'cuda' else flash_attn_builder.flash_attn_func(
                 # q, k, v, self.dropout_p, self.softmax_scale, is_causal
                 # )
-                attn_output = rearrange(attn_output, '(b s) ... -> b s ...', b=bsz) if get_accelerator().device_name() == 'cuda' \
+                attn_output = rearrange(attn_output, '(b s) ... -> b s ...',
+                                        b=bsz) if get_accelerator().device_name() == 'cuda' \
                     else rearrange(attn_output, 'b h s d -> b s h d').contiguous()
             elif q_len == kv_seq_len:
                 # repeat k/v heads if n_kv_heads < n_heads
@@ -203,7 +205,8 @@ def wrap_causal_lm_w_flash_attention(pretrained_model_name_or_path,
         logger.info("⚡⚡⚡ enable llama flash attention.")
 
         for layer in model.model.layers:
-            llama_fast_attention_wrap(layer.self_attn, vanilla_torch=flash_attention_vanilla_torch, var_len=flash_attention_var_len)
+            llama_fast_attention_wrap(layer.self_attn, vanilla_torch=flash_attention_vanilla_torch,
+                                      var_len=flash_attention_var_len)
 
     return model
 
@@ -310,11 +313,13 @@ class LlamaPreTrainedModelPeftMixin(LlamaPreTrainedModel, ABC):
 
             layers = model.model.layers
             for layer in layers:
-                llama_fast_attention_wrap(layer.self_attn, vanilla_torch=flash_attention_vanilla_torch, var_len=flash_attention_var_len)
+                llama_fast_attention_wrap(layer.self_attn, vanilla_torch=flash_attention_vanilla_torch,
+                                          var_len=flash_attention_var_len)
 
         if use_peft:
             if lora_config is None:
-                lora_config = LoraConfig(task_type=TaskType.SEQ_CLS, inference_mode=False, r=8, lora_alpha=32, lora_dropout=0.1)
+                lora_config = LoraConfig(task_type=TaskType.SEQ_CLS, inference_mode=False, r=8, lora_alpha=32,
+                                         lora_dropout=0.1)
 
             # logger.info(*model_args)
             # logger.info(kwargs)
@@ -360,7 +365,8 @@ class LlamaPreTrainedModelPeftMixin(LlamaPreTrainedModel, ABC):
         return model
 
     @classmethod
-    def from_pretrained_eval_tp(cls, pretrained_model_name_or_path: Optional[Union[str, os.PathLike]], *model_args, **kwargs):
+    def from_pretrained_eval_tp(cls, pretrained_model_name_or_path: Optional[Union[str, os.PathLike]], *model_args,
+                                **kwargs):
         import tensor_parallel as tp
         from transformers.utils.bitsandbytes import replace_with_bnb_linear, get_keys_to_not_convert
         from transformers.utils.quantization_config import BitsAndBytesConfig
@@ -392,7 +398,8 @@ class LlamaPreTrainedModelPeftMixin(LlamaPreTrainedModel, ABC):
         return model
 
     @classmethod
-    def from_pretrained_peft_eval(cls, pretrained_model_name_or_path: Optional[Union[str, os.PathLike]], *model_args, **kwargs):
+    def from_pretrained_peft_eval(cls, pretrained_model_name_or_path: Optional[Union[str, os.PathLike]], *model_args,
+                                  **kwargs):
         base_model_name_or_path = kwargs.pop("base_model_name_or_path", pretrained_model_name_or_path)
 
         model = super().from_pretrained(base_model_name_or_path, *model_args, **kwargs)
@@ -400,17 +407,13 @@ class LlamaPreTrainedModelPeftMixin(LlamaPreTrainedModel, ABC):
         return model
 
     @classmethod
-    def from_pretrained_peft_eval_tp(cls, pretrained_model_name_or_path: Optional[Union[str, os.PathLike]], *model_args, **kwargs):
+    def from_pretrained_peft_eval_tp(cls, pretrained_model_name_or_path: Optional[Union[str, os.PathLike]], *model_args,
+                                     **kwargs):
         import tensor_parallel as tp
 
         base_model_name_or_path = kwargs.pop("base_model_name_or_path", pretrained_model_name_or_path)
 
         model = super().from_pretrained(base_model_name_or_path, *model_args, **kwargs)
-        #
-        # n_gpus = torch.cuda.device_count()
-        # model = tp.tensor_parallel(model, [torch.device(f"cuda:{i}") for i in range(n_gpus)])
-        # model = cls.from_pretrained_eval_tp(base_model_name_or_path, *model_args, **kwargs)
-
         model = PeftModel.from_pretrained(model, pretrained_model_name_or_path, *model_args, **kwargs)
 
         n_gpus = torch.cuda.device_count()
@@ -441,22 +444,30 @@ def load_model_from_pretrained_tp(pretrained_model_name_or_path: str, *args, **k
 
         layers = model.model.layers
         for layer in layers:
-            llama_fast_attention_wrap(layer.self_attn, vanilla_torch=flash_attention_vanilla_torch, var_len=flash_attention_var_len)
+            llama_fast_attention_wrap(layer.self_attn, vanilla_torch=flash_attention_vanilla_torch,
+                                      var_len=flash_attention_var_len)
 
     return model
 
 
-def load_peft_model_from_pretrained(pretrained_model_name_or_path: str, model: LlamaPreTrainedModel, *model_args, **kwargs):
+def load_peft_model_from_pretrained(pretrained_model_name_or_path: str, model: LlamaPreTrainedModel, *model_args,
+                                    **kwargs):
     model = PeftModel.from_pretrained(model, pretrained_model_name_or_path, *model_args, **kwargs)
     return model
 
 
-def load_peft_model_from_pretrained_tp(pretrained_model_name_or_path: str, model: LlamaPreTrainedModel, *model_args, **kwargs):
+def load_peft_model_from_pretrained_tp(pretrained_model_name_or_path: str, model: LlamaPreTrainedModel, *model_args,
+                                       **kwargs):
+    tp_sharded = kwargs.pop("tp_sharded", None)
+
     import tensor_parallel as tp
+    import torch.distributed as dist
 
     n_gpus = torch.cuda.device_count()
-    # tp.tensor_parallel(model, [torch.device("cuda:" + str(int(os.environ.get("LOCAL_RANK") or 0)))])
-    model = tp.tensor_parallel(model, [torch.device(f"cuda:{i}") for i in range(n_gpus)])
+    if not dist.is_initialized():
+        model = tp.tensor_parallel(model, [torch.device(f"cuda:{i}") for i in range(n_gpus)], sharded=tp_sharded)
+    else:
+        model = tp.tensor_parallel(model, sharded=False)[0]
 
     model = PeftModel.from_pretrained(model, pretrained_model_name_or_path, *model_args, **kwargs)
     return model
@@ -535,7 +546,8 @@ class LlamaForMultipleChoiceCLS(LlamaPreTrainedModelPeftMixin, LogMixin, ABC):
         if self.config.pad_token_id is None:
             sequence_lengths = torch.zeros(batch_size, 1).fill_(-1).to(hidden_states.device)
         else:
-            sequence_lengths = (torch.ne(input_ids, self.config.pad_token_id).sum(-1, keepdim=True) - 1).to(hidden_states.device)
+            sequence_lengths = (torch.ne(input_ids, self.config.pad_token_id).sum(-1, keepdim=True) - 1).to(
+                hidden_states.device)
         length_index = sequence_lengths.unsqueeze(-1).expand(-1, -1, hidden_states.size(-1)).contiguous()
 
         sentence_representation = torch.gather(hidden_states, 1, length_index).squeeze(1)
@@ -1004,12 +1016,13 @@ class LlamaForConditionalGenerationFlan(LlamaForConditionalGeneration, LogMixin,
         )
 
 
-def mask_according_lens(input_ids, input_lens, pad_token_id):
+def mask_according_lens(input_ids: torch.Tensor, input_lens, pad_token_id):
     label_mask = input_ids.ne(pad_token_id)
-    # keep only logits after the end of the condition part in each item of the batch
-    # [batch_size * num_choices, input_lens]
-    lens_mask = torch.arange(input_ids.size(1), device=label_mask.device)[None, :] >= input_lens[:, None]
-    label_mask = label_mask & lens_mask
+    if input_lens is not None:
+        # keep only logits after the end of the condition part in each item of the batch
+        # [batch_size * num_choices, input_lens]
+        lens_mask = torch.arange(input_ids.size(1), device=label_mask.device)[None, :] >= input_lens[:, None]
+        label_mask = label_mask & lens_mask
     return label_mask
 
 
@@ -1021,10 +1034,15 @@ def token_wise_ctr_forward(
         input_lens: Optional[torch.Tensor] = None,
         pad_token_id: int = 0,
 ):
-    batch_size, num_choice = input_ids.size()[:2]
-    input_ids = fold_tensor(input_ids)
-    attention_mask = fold_tensor(attention_mask)
-
+    if len(input_ids.shape) == 3:
+        batch_size, num_choice = input_ids.size()[:2]
+        input_ids = fold_tensor(input_ids)
+        attention_mask = fold_tensor(attention_mask)
+    elif len(input_ids.shape) == 2:
+        batch_size = input_ids.size(0)
+        num_choice = -1
+    else:
+        raise ValueError(f"input_ids shape {input_ids.shape} is not supported")
     outputs = model(input_ids=input_ids,
                     attention_mask=attention_mask,
                     return_dict=True)
@@ -1034,7 +1052,10 @@ def token_wise_ctr_forward(
     # [batch_size * num_choices, seq_len]
     token_logits = linear_layer(hidden_states).squeeze(-1)
     logits = token_logits.masked_fill(~label_mask, 0).sum(dim=1) / label_mask.sum(dim=1)
-    logits = logits.view(batch_size, num_choice)
+
+    if num_choice != -1:
+        logits = logits.view(batch_size, num_choice)
+
     return logits
 
 
@@ -1065,28 +1086,41 @@ class LlamaCtrAndLMPretrain(LlamaForConditionalGeneration, ABC):
     ) -> Union[Tuple, MultipleChoicePreTrainModelOutput]:
         return_dict = return_dict if return_dict is not None else self.config.use_return_dict
 
-        ctr_logits = token_wise_ctr_forward(self.model, self.linear, input_ids, attention_mask, input_lens, self.config.pad_token_id)
-        ctr_loss = nn.CrossEntropyLoss()(ctr_logits, labels)
+        ctr_logits = token_wise_ctr_forward(self.model, self.linear, input_ids, attention_mask, input_lens,
+                                            self.config.pad_token_id)
 
-        lm_outputs = super().forward(input_ids=flan_input_ids,
-                                     attention_mask=flan_attention_mask,
-                                     input_lens=flan_input_lens,
-                                     return_dict=return_dict)
-        lm_loss = lm_outputs.loss
-        loss = ctr_loss + lm_loss
+        if flan_input_ids is not None:
+            lm_outputs = super().forward(input_ids=flan_input_ids,
+                                         attention_mask=flan_attention_mask,
+                                         input_lens=flan_input_lens,
+                                         return_dict=return_dict)
+            lm_loss = lm_outputs.loss
+        else:
+            lm_loss = 0.
 
-        ctr_acc = get_accuracy(ctr_logits, labels)
+        if labels is not None:
+            ctr_loss = nn.CrossEntropyLoss()(ctr_logits, labels)
+            ctr_acc = get_accuracy(ctr_logits, labels)
+            loss = ctr_loss + lm_loss
+
+            return MultipleChoicePreTrainModelOutput(
+                loss=loss,
+                logits=ctr_logits,
+                mlm_loss=lm_loss,
+                cls_loss=ctr_loss,
+                cls_acc=ctr_acc,
+            )
+
         return MultipleChoicePreTrainModelOutput(
-            loss=loss,
+            loss=lm_loss,
             logits=ctr_logits,
             mlm_loss=lm_loss,
-            cls_loss=ctr_loss,
-            cls_acc=ctr_acc,
         )
 
 
 class LlamaRewardModel(LlamaPreTrainedModelPeftMixin, LogMixin, ABC):
-    def __init__(self, config: LlamaConfig, gradient_checkpointing=False, lm_alpha: float = 1.0, split_inputs: bool = False):
+    def __init__(self, config: LlamaConfig, gradient_checkpointing=False, lm_alpha: float = 1.0,
+                 split_inputs: bool = False):
         super().__init__(config)
         self.model = LlamaModel(config)
 
@@ -1150,7 +1184,8 @@ class LlamaRewardModel(LlamaPreTrainedModelPeftMixin, LogMixin, ABC):
 
         batch_size = input_ids.shape[0]
 
-        redundant_kwargs = dict(use_cache=use_cache, output_attentions=output_attentions, output_hidden_states=output_hidden_states,
+        redundant_kwargs = dict(use_cache=use_cache, output_attentions=output_attentions,
+                                output_hidden_states=output_hidden_states,
                                 return_dict=return_dict)
         if self.split_inputs and pos_index is not None and neg_index is not None:
             pos_input_ids = input_ids[pos_index]
@@ -1263,7 +1298,8 @@ class LlamaRewardModel(LlamaPreTrainedModelPeftMixin, LogMixin, ABC):
 
 
 class LlamaTokenRewardModel(LlamaPreTrainedModelPeftMixin, LogMixin, ABC):
-    def __init__(self, config: LlamaConfig, gradient_checkpointing=False, lm_alpha: float = 1.0, split_inputs: bool = False):
+    def __init__(self, config: LlamaConfig, gradient_checkpointing=False, lm_alpha: float = 1.0,
+                 split_inputs: bool = False):
         super().__init__(config)
         self.model = LlamaModel(config)
 
@@ -1327,7 +1363,8 @@ class LlamaTokenRewardModel(LlamaPreTrainedModelPeftMixin, LogMixin, ABC):
         batch_size = input_ids.shape[0]
         half_bsz = batch_size // 2
 
-        redundant_kwargs = dict(use_cache=use_cache, output_attentions=output_attentions, output_hidden_states=output_hidden_states,
+        redundant_kwargs = dict(use_cache=use_cache, output_attentions=output_attentions,
+                                output_hidden_states=output_hidden_states,
                                 return_dict=return_dict)
 
         outputs = self.model(

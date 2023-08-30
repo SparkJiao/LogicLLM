@@ -5,9 +5,11 @@ from typing import List, Dict
 import torch
 from torch.utils.data import Dataset, default_collate
 from transformers import PreTrainedTokenizer, AutoTokenizer
-from general_util.tokenization_utils import expand_special_tokenizer, is_seq2seq_tokenizer
-from general_util.logger import get_child_logger
+
 from data.collators.flan import convert_to_standard_inputs
+from data.cot_critic import vanilla_seq2seq_convertor as vanilla_seq2seq_converter_text
+from general_util.logger import get_child_logger
+from general_util.tokenization_utils import expand_special_tokenizer, is_seq2seq_tokenizer
 
 logger = get_child_logger(__name__)
 
@@ -530,6 +532,28 @@ class ReClorGenerativeCollator:
         return model_inputs
 
 
+class ReClorTrainingGenerativeCollator:
+    def __init__(self, tokenizer: str, max_seq_length: int, padding: str = "longest", **kwargs):
+        self.tokenizer: PreTrainedTokenizer = AutoTokenizer.from_pretrained(tokenizer, **kwargs)
+        expand_special_tokenizer(self.tokenizer)
+        self.max_seq_length = max_seq_length
+        self.padding = padding
+
+    def __call__(self, batch):
+
+        inputs = [b["input"] for b in batch]
+        outputs = [b["label"] for b in batch]
+
+        model_inputs = vanilla_seq2seq_converter_text(inputs, outputs, self.tokenizer, self.max_seq_length, self.padding, decoder_only=True)
+
+        model_inputs["meta_data"] = {
+            "input": inputs,
+            "index": [b["index"] for b in batch],
+            "label": [b["label"] for b in batch],
+        }
+        return model_inputs
+
+
 class ReClorChatDataset(Dataset):
     """
     For post-processing by chat.
@@ -628,13 +652,15 @@ class ReClorRewardPairDataset(Dataset):
 
 
 class ReClorRewardPairCollator:
-    def __init__(self, tokenizer: str, max_seq_length: int, **kwargs):
+    def __init__(self, tokenizer: str, max_seq_length: int, add_input_lens: bool = False, **kwargs):
         self.tokenizer: PreTrainedTokenizer = AutoTokenizer.from_pretrained(tokenizer, **kwargs)
         expand_special_tokenizer(self.tokenizer)
         self.max_seq_length = max_seq_length
+        self.add_input_lens = add_input_lens
 
     def __call__(self, batch):
         if "pos_input" in batch[0]:
+            # TODO: Add processing for `input_lens` here, also including the corresponding dataset class.
             pos_inputs = [b["pos_input"] for b in batch]
             neg_inputs = [b["neg_input"] for b in batch]
 
@@ -652,12 +678,18 @@ class ReClorRewardPairCollator:
                 "index": [b["index"] for b in batch],
             }
         else:
-            if "input" not in batch[0]:
-                inputs = [b["inputs"] + " " + b["targets"] for b in batch]
-            else:
-                inputs = [b["input"] for b in batch]
-            model_inputs = self.tokenizer(inputs, padding="longest", truncation=True,
+            if not self.add_input_lens or "targets" not in batch[0]:
+                if "input" not in batch[0]:
+                    inputs = [b["inputs"] + " " + b["targets"] for b in batch]
+                else:
+                    inputs = [b["input"] for b in batch]
+                model_inputs = self.tokenizer(inputs, padding="longest", truncation=True,
                                           max_length=self.max_seq_length, return_tensors="pt")
+            else:
+                inputs = [b["inputs"] for b in batch]
+                outputs = [b["targets"] for b in batch]
+                model_inputs = vanilla_seq2seq_converter_text(inputs, outputs, self.tokenizer, self.max_seq_length, padding="longest",
+                                                              decoder_only=True)
 
             model_inputs["meta_data"] = {
                 "index": [b["index"] for b in batch],

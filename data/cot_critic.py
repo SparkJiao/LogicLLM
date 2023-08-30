@@ -15,8 +15,16 @@ import os
 sys.path.append(os.path.dirname(os.path.dirname(os.path.abspath(__file__))))
 
 from data.collators.wiki_seq2seq_collator import construct_seq2seq
-from data.reclor_prompt import _format_option_list
 from general_util.tokenization_utils import expand_special_tokenizer
+
+_rank2option = ["A", "B", "C", "D", "E"]
+
+
+def _format_option_list(option_list: List[str]) -> str:
+    res = ""
+    for op_id, op in enumerate(option_list):
+        res += f"{_rank2option[op_id]}: {op}\n"
+    return res
 
 
 def merit_pair_data_transform(raw_data, flat_mode: bool = False):
@@ -174,7 +182,8 @@ class CoTActorRankingDataset(Dataset):
     def __init__(self, file_path: str, tokenizer: PreTrainedTokenizer, original_data, read_func: Callable,
                  ans_parser: Callable = None, margin: float = 0.0,
                  pair_pattern: Tuple[str] = ("pn", "pp"),
-                 prefix1: str = "", prefix2: str = "\n\n", prefix3: str = "\n\n", suffix: str = "\n\n"
+                 prefix1: str = "", prefix2: str = "\n\n", prefix3: str = "\n\n", suffix: str = "\n\n",
+                 sample_num: int = 0,
                  ):
         super().__init__()
         self.tokenizer = tokenizer
@@ -230,7 +239,11 @@ class CoTActorRankingDataset(Dataset):
 
         self.data = pairs
 
+        self.sample_num = sample_num
+
     def __len__(self):
+        if self.sample_num > 0:
+            return self.sample_num
         return len(self.data)
 
     def compose_example(self, item: Dict[str, Any]):
@@ -252,6 +265,91 @@ class CoTActorRankingDataset(Dataset):
             "neg_input": y_input,
             "neg_output": y_output,
             "index": f"pos{pair[0]['index']}-{pair[1]['index']}",
+        }
+
+
+class CoTActorRankingDatasetMulti(Dataset):
+    def __init__(self, file_path: str, tokenizer: PreTrainedTokenizer, original_data, read_func: Callable,
+                 ans_parser: Callable = None, margin: float = 0.0,
+                 pair_pattern: Tuple[str] = ("pn", "pp"),
+                 prefix1: str = "", prefix2: str = "\n\n", prefix3: str = "\n\n", suffix: str = "\n\n"
+                 ):
+        super().__init__()
+        self.tokenizer = tokenizer
+        self.margin = margin
+        self.pair_pattern = pair_pattern
+
+        self.prefix1 = prefix1
+        self.prefix2 = prefix2
+        self.prefix3 = prefix3
+        self.suffix = suffix
+
+        self.context, self.question, self.option_list, self.all_labels = read_func(original_data)
+
+        # Read the critic model rewards predictions directly.
+        data: List[Dict[str, Any]] = json.load(open(file_path))
+
+        pairs = []
+        assert len(pair_pattern)
+        for item_id, item in enumerate(data):
+            pos_o_ids = []
+            neg_o_ids = []
+            for o_id, cleaned_output in enumerate(item["cleaned_output"]):
+                if cleaned_output == item["label"]:
+                    pos_o_ids.append(o_id)
+                else:
+                    neg_o_ids.append(o_id)
+
+            for pat in pair_pattern:
+                if pat[0] == "p":
+                    left = pos_o_ids
+                elif pat[0] == "n":
+                    left = neg_o_ids
+                else:
+                    raise ValueError(f"Pattern {pat} is not supported.")
+
+                if pat[1] == "p":
+                    right = pos_o_ids
+                elif pat[1] == "n":
+                    right = neg_o_ids
+                else:
+                    raise ValueError(f"Pattern {pat} is not supported.")
+
+                for i, x in enumerate(left):
+                    for j, y in enumerate(right):
+                        if i == j and pat[0] == pat[1]:
+                            continue
+                        if self.margin == 0 or item["reward"][x] - item["reward"][y] > self.margin:
+                            pairs.append((item_id, x, y))
+
+        self.pairs = pairs
+        self.data = data
+
+    def __len__(self):
+        return len(self.pairs)
+
+    def compose_example(self, item_id: int, output_id: int):
+        item = self.data[item_id]
+        orig_index = item["index"]
+        inputs = self.prefix1 + self.context[orig_index] + self.prefix2 + self.question[orig_index] + self.prefix3 + \
+                 _format_option_list(self.option_list[orig_index]) + self.suffix
+        outputs = item["output"][output_id] + self.tokenizer.eos_token
+        return inputs, outputs
+
+    def __getitem__(self, index):
+        pair = self.pairs[index]
+
+        x_input, x_output = self.compose_example(pair[0], pair[1])
+        y_input, y_output = self.compose_example(pair[0], pair[2])
+
+        item = self.data[pair[0]]
+
+        return {
+            "pos_input": x_input,
+            "pos_output": x_output,
+            "neg_input": y_input,
+            "neg_output": y_output,
+            "index": f"{item['index']}-pos{pair[1]}-neg{pair[2]}",
         }
 
 

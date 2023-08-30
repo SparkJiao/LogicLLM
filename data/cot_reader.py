@@ -10,22 +10,28 @@ class CoTPredictionReader:
     def __call__(self, file: str):
         predictions = json.load(open(file))
 
+        # remove the repeat items according to `index` field and sort by `index`
+        predictions = sorted(list({pred["index"]: pred for pred in predictions}.values()), key=lambda x: x["index"])
+
         items = []
         for pred in predictions:
-            output = pred["output"]
+            outputs = pred["output"]
+            if isinstance(outputs, str):
+                outputs = [outputs]
 
-            if self.clean_input:
-                output = pred["output"].replace(pred["input"], "").strip()
+            for output in outputs:
+                if self.clean_input:
+                    output = output.replace(pred["input"], "").strip()
 
-            if self.answer_trigger:
-                output = output.split(self.answer_trigger)[self.split_index].strip()
+                if self.answer_trigger:
+                    output = output.split(self.answer_trigger)[self.split_index].strip()
 
-            items.append({
-                "input": pred["input"],
-                "index": pred["index"],
-                "label": pred["label"],
-                "output": output,
-            })
+                items.append({
+                    "input": pred["input"],
+                    "index": pred["index"],
+                    "label": pred["label"],
+                    "output": output,
+                })
 
         return sorted(items, key=lambda x: x["index"])
 
