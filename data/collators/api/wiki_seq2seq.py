@@ -4,7 +4,7 @@ import random
 import torch
 from torch.utils.data import Dataset
 
-from data.collators.api.wiki_utils import extract_ending_entity, extract_ending_entity_and_anonymization
+from data.collators.api.wiki_utils import extract_ending_entity, extract_ending_entity_and_anonymization, extract_ending_entity_and_replace
 from data.collators.wiki_seq2seq_collator import construct_seq2seq
 from general_util.logger import get_child_logger
 
@@ -56,6 +56,263 @@ class WikiDatasetUnifyInterface(Dataset):
 
         batch = self.collator([example])
         return batch
+
+
+class WikiDatasetRelDiscBaseline(Dataset):
+    templates = [
+        "Determine whether the relation between \"{}\" and \"{}\" and the relation between \"{}\" and \"{}\" are logically consistent.\n\n"
+        "The paragraph about \"{}\" and \"{}\":\n\n"
+        "{}\n\n"
+        "The paragraph about \"{}\" and \"{}\":\n\n"
+        "{}\n\n"
+        "The output should either be Yes or No.\n"
+        "Output:",
+
+        "Determine whether the relation between \"{}\" and \"{}\" and the relation between \"{}\" and \"{}\" are logically consistent.\n\n"
+        "The paragraph about \"{}\" and \"{}\":\n\n"
+        "{}\n\n"
+        "The paragraph about \"{}\" and \"{}\":\n\n"
+        "{}\n\n"
+        # "The output should either be Yes or No.\n"
+        # "Output:",
+        "First identify the two relations and then output Yes or No."
+    ]
+
+    anonymization_templates = [
+        "Determine whether the relations between [X] and [Y] in the two different paragraphs are logically consistent.\n\n"
+        "Paragraph 1:\n"
+        "{}\n\n"
+        "Paragraph 2:\n"
+        "{}\n\n"
+        "The output should either be Yes or No.\n"
+        "Output:",
+    ]
+
+    def __init__(self, file_path, tokenizer=None, sample_num: int = 1000, template_id: int = 0, anonymization: bool = False,
+                 pp: bool = True, pn: bool = True, nn: bool = True):
+        logger.info(f"Loading examples from {file_path}")
+
+        examples, raw_texts = torch.load(file_path)
+        self.examples = examples
+        self.example_indices = list(range(len(self.examples)))
+        self.sample_num = sample_num
+
+        sub_num = sample_num // 2
+        normal_indices = []
+        counterfactual_indices = []
+        for exp_id, exp in enumerate(self.examples):
+            if "h" in exp:
+                assert "t" in exp
+                counterfactual_indices.append(exp_id)
+            else:
+                normal_indices.append(exp_id)
+
+        logger.info(f"Normal data size: {len(normal_indices)}")
+        logger.info(f"Counterfactual data size: {len(counterfactual_indices)}")
+
+        self.normal_indices = random.sample(normal_indices, sub_num)
+        self.counter_indices = random.sample(counterfactual_indices, sub_num)
+        self.example_indices = self.normal_indices + self.counter_indices
+
+        self.pp, self.pn, self.nn = [], [], []
+        for exp_id_i in self.normal_indices:
+            exp_i = self.examples[exp_id_i]
+
+            while pp:
+                exp_j_id = random.choice(self.normal_indices)
+                exp_j = self.examples[exp_j_id]
+                if exp_j["orig_id"] == exp_i["orig_id"]:
+                    continue
+
+                self.pp.append((exp_id_i, exp_j_id))
+                break
+
+            while pn:
+                exp_j_id = random.choice(self.counter_indices)
+                exp_j = self.examples[exp_j_id]
+                if exp_j["orig_id"] == exp_i["orig_id"]:
+                    continue
+
+                self.pn.append((exp_id_i, exp_j_id))
+                break
+
+        for exp_id_i in self.counter_indices:
+            exp_i = self.examples[exp_id_i]
+
+            while nn:
+                exp_j_id = random.choice(self.counter_indices)
+                exp_j = self.examples[exp_j_id]
+                if exp_j["orig_id"] == exp_i["orig_id"]:
+                    continue
+
+                self.nn.append((exp_id_i, exp_j_id))
+                break
+
+        logger.info(f"Positive data size: {len(self.pp)}")
+        logger.info(f"Negative data size: {len(self.pn)}")
+        logger.info(f"Negative data size: {len(self.nn)}")
+        self.data = self.pp + self.pn + self.nn
+        self.template_id = template_id
+        self.anonymization = anonymization
+
+    def __len__(self):
+        return len(self.data)
+
+    def __getitem__(self, index):
+        exp_id_i, exp_id_j = self.data[index]
+        exp_i = self.examples[exp_id_i]
+        exp_j = self.examples[exp_id_j]
+        if not self.anonymization:
+            exp_i_res = construct_seq2seq(exp_i, generative_mode=True)
+            exp_j_res = construct_seq2seq(exp_j, generative_mode=True)
+
+            _, ent_i_span_a, ent_i_span_b = extract_ending_entity(exp_i)
+            _, ent_j_span_a, ent_j_span_b = extract_ending_entity(exp_j)
+
+            text = self.templates[self.template_id].format(ent_i_span_a, ent_i_span_b, ent_j_span_a, ent_j_span_b,
+                                                           ent_i_span_a, ent_i_span_b, exp_i_res[0][0],
+                                                           ent_j_span_a, ent_j_span_b, exp_j_res[0][0])
+
+        else:
+            exp_i, ent_i_span_a, ent_i_span_b = extract_ending_entity_and_anonymization(exp_i)
+            exp_j, ent_j_span_a, ent_j_span_b = extract_ending_entity_and_anonymization(exp_j)
+
+            exp_i_res = construct_seq2seq(exp_i, generative_mode=True)
+            exp_j_res = construct_seq2seq(exp_j, generative_mode=True)
+
+            text = self.anonymization_templates[self.template_id].format(exp_i_res[0][0], exp_j_res[0][0])
+
+        return {
+            "text": text,
+            "meta_data": {
+                "text": text,
+                "index": f"{exp_id_i}_{exp_id_j}",
+            }
+        }
+
+
+class WikiDatasetRelDiscBaselineV2(Dataset):
+    templates = [
+        "Determine whether the relation between \"{}\" and \"{}\" in the given two sentences are logically consistent.\n\n"
+        "Sentence 1:\n"
+        "{}\n\n"
+        "Sentence 2:\n"
+        "{}\n\n"
+        "The output should either be Yes or No.\n"
+        "Output:",
+    ]
+
+    anonymization_templates = [
+        "Determine whether the relations between [X] and [Y] in the two different paragraphs are logically consistent.\n\n"
+        "Paragraph 1:\n"
+        "{}\n\n"
+        "Paragraph 2:\n"
+        "{}\n\n"
+        "The output should either be Yes or No.\n"
+        "Output:",
+    ]
+
+    def __init__(self, file_path, tokenizer=None, sample_num: int = 1000, template_id: int = 0, anonymization: bool = False,
+                 pp: bool = True, pn: bool = True, nn: bool = True):
+        logger.info(f"Loading examples from {file_path}")
+
+        examples, raw_texts = torch.load(file_path)
+        self.examples = examples
+        self.example_indices = list(range(len(self.examples)))
+        self.sample_num = sample_num
+
+        sub_num = sample_num // 2
+        normal_indices = []
+        counterfactual_indices = []
+        for exp_id, exp in enumerate(self.examples):
+            if "h" in exp:
+                assert "t" in exp
+                counterfactual_indices.append(exp_id)
+            else:
+                normal_indices.append(exp_id)
+
+        logger.info(f"Normal data size: {len(normal_indices)}")
+        logger.info(f"Counterfactual data size: {len(counterfactual_indices)}")
+
+        self.normal_indices = random.sample(normal_indices, sub_num)
+        self.counter_indices = random.sample(counterfactual_indices, sub_num)
+        self.example_indices = self.normal_indices + self.counter_indices
+
+        self.pp, self.pn, self.nn = [], [], []
+        for exp_id_i in self.normal_indices:
+            exp_i = self.examples[exp_id_i]
+
+            while pp:
+                exp_j_id = random.choice(self.normal_indices)
+                exp_j = self.examples[exp_j_id]
+                if exp_j["orig_id"] == exp_i["orig_id"]:
+                    continue
+
+                self.pp.append((exp_id_i, exp_j_id))
+                break
+
+            while pn:
+                exp_j_id = random.choice(self.counter_indices)
+                exp_j = self.examples[exp_j_id]
+                if exp_j["orig_id"] == exp_i["orig_id"]:
+                    continue
+
+                self.pn.append((exp_id_i, exp_j_id))
+                break
+
+        for exp_id_i in self.counter_indices:
+            exp_i = self.examples[exp_id_i]
+
+            while nn:
+                exp_j_id = random.choice(self.counter_indices)
+                exp_j = self.examples[exp_j_id]
+                if exp_j["orig_id"] == exp_i["orig_id"]:
+                    continue
+
+                self.nn.append((exp_id_i, exp_j_id))
+                break
+
+        logger.info(f"Positive data size: {len(self.pp)}")
+        logger.info(f"Negative data size: {len(self.pn)}")
+        logger.info(f"Negative data size: {len(self.nn)}")
+        self.data = self.pp + self.pn + self.nn
+        self.template_id = template_id
+        self.anonymization = anonymization
+
+    def __len__(self):
+        return len(self.data)
+
+    def __getitem__(self, index):
+        exp_id_i, exp_id_j = self.data[index]
+        exp_i = self.examples[exp_id_i]
+        exp_j = self.examples[exp_id_j]
+        if not self.anonymization:
+            exp_i_res = construct_seq2seq(exp_i, generative_mode=True)
+
+            _, ent_i_span_a, ent_i_span_b = extract_ending_entity(exp_i)
+
+            exp_j, _, _ = extract_ending_entity_and_replace(exp_j, ent_i_span_a, ent_i_span_b)
+
+            exp_j_res = construct_seq2seq(exp_j, generative_mode=True)
+
+            text = self.templates[self.template_id].format(ent_i_span_a, ent_i_span_b, exp_i_res[0][0], exp_j_res[0][0])
+
+        else:
+            exp_i, ent_i_span_a, ent_i_span_b = extract_ending_entity_and_anonymization(exp_i)
+            exp_j, ent_j_span_a, ent_j_span_b = extract_ending_entity_and_anonymization(exp_j)
+
+            exp_i_res = construct_seq2seq(exp_i, generative_mode=True)
+            exp_j_res = construct_seq2seq(exp_j, generative_mode=True)
+
+            text = self.anonymization_templates[self.template_id].format(exp_i_res[0][0], exp_j_res[0][0])
+
+        return {
+            "text": text,
+            "meta_data": {
+                "text": text,
+                "index": f"{exp_id_i}_{exp_id_j}",
+            }
+        }
 
 
 class WikiDatasetRelExtractionInterface(Dataset):

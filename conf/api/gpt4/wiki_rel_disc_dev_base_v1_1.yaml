@@ -1,0 +1,62 @@
+hydra:
+  run:
+    dir: ./
+
+train_file:
+dev_file:
+test_file: wiki_erica_path/v9.1_fixed/distant_path_v9.1_fix_no_shuffle.dev.pkl_llama_True_3_3_512_0.4_5_1.0_1.0_0.0_8_path_v9.1.2_seq2seq
+
+num_shot: 5
+
+output_file: openai-api-output/wiki_path_v9.1_fix_dev_llama_True_3_3_512_0.4_5_1.0_1.0_0.0_8_path_v9.1.2_seq2seq.rel_disc_baseline_v1.1.s${seed}.gpt4.json
+flush_file: ${output_file}l
+
+# Model
+model:
+  _target_: open_ai_callers.vanilla_caller.GPTTurbo
+  model: "gpt-4"
+  max_tokens: 2048
+  temperature: 0.0
+  api_time_interval: 1
+
+# Data loading
+read_tensor:
+  _target_: data.collators.api.wiki_seq2seq.WikiDatasetRelDiscBaseline
+  sample_num: 100
+  anonymization: False
+  template_id: 1
+  pn: False
+  nn: False
+
+# Data collator
+
+
+# Dataloader
+num_workers: 0
+prefetch_factor: 2
+
+output_dir:
+
+post_process:
+  _target_: post_processors.openai_api_callback.OpenAICallBack
+  output_file: ${output_file}
+  answer_clean:
+    _target_: post_processors.openai_api_callback.BinaryAnswerClean
+    prompt: zero-shot
+
+
+# Training hyper-parameters
+per_gpu_train_batch_size: 1
+per_gpu_eval_batch_size: 1
+
+ddp_eval: False
+no_cuda: False
+seed: 42
+local_rank: -1
+
+# Temporary variables
+n_gpu: 1
+device:
+train_batch_size:
+eval_batch_size:
+world_size:
