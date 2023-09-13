@@ -1,0 +1,242 @@
+hydra:
+  run:
+    dir: ./
+
+
+aws_output_bucket:
+dist_load_data_barrier: False
+
+train_file: pretrained-models/chitanda/llama.13b.merit_v91_v91.seq2seq.v4.0.3aug.w8.adamw.500steps.NA100.0426/checkpoint-200/lqv2cot_train_zs_cot_1k_llama2_chat_13b_rewards.v1.0/test-checkpoint-200/cot_w_feedback/cot_feedback.json
+dev_file: experiments/llama2.7b.rw.lqv2cot.w4.A100.v1.0/lqv2cot_dev_zs_cot_2k_llama2_chat_70b_rewards.v1.0/test-checkpoint-1000/cot_w_feedback/cot_feedback.json
+test_file:
+
+model:
+  _target_: models.llama.LlamaTokenRewardModel.from_pretrained
+  lm_alpha: 0.1
+  torch_dtype:
+    _target_: general_util.training_utils.return_torch_dtype
+    dtype: bfloat16
+  pad_token_id: 0
+  gradient_checkpointing: True
+  use_peft: True
+  lora_config:
+    _recursive_: False
+    _target_: models.llama.LoraConfig
+    task_type: CAUSAL_LM
+    inference_mode: False
+    target_modules:
+      _target_: models.llama.LlamaTokenRewardModel.find_lora_modules
+      bits: 4
+    r: 64
+    lora_alpha: 16
+    lora_dropout: 0.1
+    modules_to_save: [ "reward_head" ]
+  quantization_config:
+    _target_: transformers.utils.quantization_config.BitsAndBytesConfig
+    load_in_4bit: True
+    bnb_4bit_compute_dtype:
+      _target_: general_util.training_utils.return_torch_dtype
+      dtype: bfloat16
+    bnb_4bit_use_double_quant: True
+    bnb_4bit_quant_type: "nf4"
+  device_map:
+    _target_: models.llama.return_single_device_map
+  load_in_4bit: True
+  max_memory: True
+  enable_flash_attention: True
+  flash_attention_vanilla_torch: False
+
+
+# Data loading
+read_tensor_train:
+  _target_: data.cot_critic.CoTActorRankingDatasetMulti
+  original_data: logiqa-v2/train.txt
+  read_func:
+    _target_: data.readers.LogiQAReaderV2
+  sc_as_label: True
+  margin: 0.75
+  pair_pattern: [ "pn", "pp", "np", "nn" ]
+  prefix1: "Context: "
+  prefix2: "\n\nQuestion: "
+  prefix3: "\n\nOptions:\n"
+  suffix: "\n\nLet's think step by step:"
+
+
+read_tensor_dev:
+  _target_: data.cot_critic.CoTActorRankingDataset
+  original_data: logiqa-v2/dev.txt
+  read_func:
+    _target_: data.readers.LogiQAReaderV2
+  pair_pattern: [ "pn" ]
+  margin: 5.0
+  prefix1: "Context: "
+  prefix2: "\n\nQuestion: "
+  prefix3: "\n\nOptions:\n"
+  suffix: "\n\nLet's think step by step:"
+  sample_num: 10000
+
+
+
+extended_vocab:
+
+# Data collator
+collator:
+  _target_: data.cot_critic.CoTActorRankingCollator
+  tokenizer: ${model_name_or_path}
+  max_seq_length: 1024
+  padding: "longest"
+  padding_side: "right"
+
+# Dataloader
+num_workers: 4
+prefetch_factor: 2
+
+# Wiki path pretrain v8.2
+model_name_or_path: pretrained-models/Llama-2-13b-chat-hf/
+pretrain:
+
+exp_name: llama2.13b.chat.q_lora.act.cot.w2.A100.v2.2.0905
+exp_notes:
+output_dir: experiments/${exp_name}  # Fix <pad token id>
+resume:
+
+
+do_train: True
+evaluate_during_training: True
+
+do_eval: False
+eval_sub_path: checkpoint-100
+
+# Training hyper-parameters
+per_gpu_train_batch_size: 16
+per_gpu_eval_batch_size: 16
+learning_rate: 5e-4
+gradient_accumulation_steps: 2
+weight_decay: 0.00
+adam_epsilon: 1e-6
+adam_betas: "(0.9, 0.98)"
+#adam_betas: "(0.9, 0.999)"
+#max_grad_norm: 0.0
+max_grad_norm: 0.3
+num_train_epochs: 1
+max_steps: 0
+warmup_proportion: 0
+warmup_steps: 100
+
+# Optimizer
+optimizer:
+use_nvlamb:
+bit_training:
+
+logging_steps: 5
+save_steps: 250
+save_best: False
+eval_steps: 250
+ddp_eval: True
+no_cuda: False
+seed: 42
+local_rank: -1
+fp16: True
+fp16_opt_level: O1
+fp16_bfloat16: True
+
+# Prediction config
+prediction_cfg:
+  metric: "loss"
+  measure: -1
+  best_checkpoint:
+  best_result:
+eval_forward_fn:
+  _target_: general_util.evaluator.DefaultForwardFn
+post_process:
+#  _target_: post_processors.reclor.MultiChoiceMetricFlatSaver
+#  tokenizer: ${model_name_or_path}
+#predict_dir: ${output_dir}/logiqav2_test_mc_0shot.v1.0
+
+#dist_init:
+#  _target_: general_util.dist_utils.setup_slurm_distributed
+
+
+# fairscale.FullyShardedDP
+fairscale_config:
+  _target_: general_util.fsdp_utils.default_initialize
+  fp16: ${fp16}
+  reshard_after_forward: False
+  move_grads_to_cpu: False
+  move_params_to_cpu: False
+
+# Deepspeed config
+ds_cfg:
+  train_micro_batch_size_per_gpu: ${per_gpu_train_batch_size}
+  gradient_accumulation_steps: ${gradient_accumulation_steps}
+  optimizer:
+    type: AdamW
+    params:
+      lr: ${learning_rate}
+      betas: [ 0.9, 0.999 ]
+      eps: ${adam_epsilon}
+      weight_decay: ${weight_decay}
+  scheduler:
+    type: WarmupDecayLR
+    params:
+      total_num_steps:
+      warmup_max_lr: ${learning_rate}
+      warmup_num_steps:
+      warmup_type: linear
+  gradient_clipping: ${max_grad_norm}
+  #  fp16:
+  #    enabled: true
+  #    loss_scale: 0
+  #    loss_scale_window: 1000
+  #    initial_scale_power: 12
+  #    hysteresis: 2
+  #    min_loss_scale: 1
+  bf16:
+    enabled: ${fp16}
+  #  autotuning:
+  #    enabled: true
+  #    arg_mappings:
+  #      train_micro_batch_size_per_gpu: "per_gpu_train_batch_size"
+  #      gradient_accumulation_steps: "gradient_accumulation_steps"
+  #      zero_optimization: "ds_cfg.zero_optimization"
+  zero_optimization:
+    stage: 1
+    contiguous_gradients: True
+    overlap_comm: True
+    reduce_scatter: True
+    reduce_bucket_size: 5e8
+    allgather_partitions: True
+    allgather_bucket_size: 5e8
+#    offload_optimizer:
+#      device: cpu
+#      pin_memory: True
+  #    offload_param:
+  #      device: cpu
+  #      pin_memory: True
+  #  activation_checkpointing:
+  #    partition_activations: True
+  #    cpu_checkpointing: True
+  #    contiguous_memory_optimization: False
+  #    number_checkpoints: False
+  #    synchronize_checkpoint_boundary: False
+  #    profile: False
+  steps_per_print: 10
+
+summary_helper:
+  _target_: general_util.tensorboard_helper.WandbWriter
+  batch_index_or_keys:
+  #    "train/pair_value_num": pair_value_num
+  #    "train/pair_label_num": pair_label_num
+  #    "train/dropped_op_cnt": dropped_op_cnt
+  #    "train/invalid_path": invalid_path
+  outputs_index_or_keys:
+#    "train/lm_loss": mlm_loss
+#    "train/reward_loss": reward_loss
+
+# Temporary variables
+n_gpu:
+device:
+train_batch_size:
+eval_batch_size:
+world_size:
+topology:

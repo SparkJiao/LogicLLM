@@ -6,7 +6,10 @@ import torch
 from torch.utils.data import Dataset
 from tqdm import tqdm
 from transformers import PreTrainedTokenizer, AutoTokenizer
+from collections import Counter
 import re
+from omegaconf import DictConfig
+import hydra
 
 # Add the directory of this file into pythonpath
 import sys
@@ -107,6 +110,34 @@ class CoTPairData(Dataset):
             }
 
 
+class CoTPairDataSplit(Dataset):
+    def __init__(self, file_path: str, tokenizer: PreTrainedTokenizer, flat_mode: bool = True):
+        super().__init__()
+        data = json.load(open(file_path))
+
+        self.tokenizer = tokenizer
+        self.flat_mode = flat_mode
+        if self.flat_mode:
+            self.data = []
+            for item in data:
+                for i, (neg_input, neg_output) in enumerate(zip(item["neg_input"], item["neg_output"])):
+                    self.data.append({
+                        "pos_input": item["pos_input"],
+                        "pos_output": item["pos_output"],
+                        "neg_input": neg_input,
+                        "neg_output": neg_output,
+                        "index": f"{item['meta_data']['id']}-{i}",
+                    })
+        else:
+            self.data = data
+
+    def __len__(self):
+        return len(self.data)
+
+    def __getitem__(self, index):
+        return self.data[index]
+
+
 def vanilla_seq2seq_convertor(inputs, outputs, tokenizer: PreTrainedTokenizer, max_seq_length, padding="longest",
                               decoder_only: bool = False):
     if decoder_only:
@@ -166,7 +197,10 @@ def multiple_choice_ans_parser(ans: str):
     mapping = {"A": 0, "B": 1, "C": 2, "D": 3, "E": 4}
 
     x = re.findall(regrex, ans)
-    x = mapping[x[-1]]
+    if len(x):
+        x = mapping[x[-1]]
+    else:
+        x = -1
 
     return x
 
@@ -176,6 +210,31 @@ def get_ans_parser(task_name: str):
         return multiple_choice_ans_parser
     else:
         raise ValueError(f"task_name: {task_name} is not supported.")
+
+
+class CoTSelfConsistMultiChoiceAnsParser:
+    def __call__(self, item: Dict):
+        regrex = "A|B|C|D"
+
+        cnt = Counter()
+        cleaned_output = []
+        for o in item["output"]:
+            if o.find(item["input"]) != -1:
+                o = o.replace(item["input"], "")
+
+            x = re.findall(regrex, o)
+            if x:
+                x = x[-1]
+            else:
+                x = ""
+
+            cnt[x] += 1
+            cleaned_output.append(x)
+
+        assert len(cleaned_output) == len(item["output"])
+        item["cleaned_output"] = cleaned_output
+        item["sc_pred"] = cnt.most_common(1)[0][0]
+        return item
 
 
 class CoTActorRankingDataset(Dataset):
@@ -270,13 +329,14 @@ class CoTActorRankingDataset(Dataset):
 
 class CoTActorRankingDatasetMulti(Dataset):
     def __init__(self, file_path: str, tokenizer: PreTrainedTokenizer, original_data, read_func: Callable,
-                 ans_parser: Callable = None, margin: float = 0.0,
+                 margin: float = 0.0, sc_as_label: bool = False,
                  pair_pattern: Tuple[str] = ("pn", "pp"),
                  prefix1: str = "", prefix2: str = "\n\n", prefix3: str = "\n\n", suffix: str = "\n\n"
                  ):
         super().__init__()
         self.tokenizer = tokenizer
         self.margin = margin
+        self.sc_as_label = sc_as_label
         self.pair_pattern = pair_pattern
 
         self.prefix1 = prefix1
@@ -294,6 +354,12 @@ class CoTActorRankingDatasetMulti(Dataset):
         for item_id, item in enumerate(data):
             pos_o_ids = []
             neg_o_ids = []
+
+            # if self.sc_as_label:   # FIXED: Here is another bug, that we did not really do self-consistency. We only modify the `cleaned_output` label.
+            item = CoTSelfConsistMultiChoiceAnsParser()(item)  # So that this kindly servers as plug-in to do correct the `cleaned_output` labels.
+            if self.sc_as_label:
+                item["label"] = item["sc_pred"]
+
             for o_id, cleaned_output in enumerate(item["cleaned_output"]):
                 if cleaned_output == item["label"]:
                     pos_o_ids.append(o_id)
@@ -351,6 +417,23 @@ class CoTActorRankingDatasetMulti(Dataset):
             "neg_output": y_output,
             "index": f"{item['index']}-pos{pair[1]}-neg{pair[2]}",
         }
+
+
+class CombinedDataset(Dataset):
+    def __init__(self, tokenizer: PreTrainedTokenizer, dataset1: DictConfig, dataset2: DictConfig, **kwargs):
+        super().__init__()
+        self.tokenizer = tokenizer
+        self.dataset1 = hydra.utils.instantiate(dataset1, tokenizer=tokenizer)
+        self.dataset2 = hydra.utils.instantiate(dataset2, tokenizer=tokenizer)
+
+    def __len__(self):
+        return len(self.dataset1) + len(self.dataset2)
+
+    def __getitem__(self, index):
+        if index < len(self.dataset1):
+            return self.dataset1[index]
+        else:
+            return self.dataset2[index - len(self.dataset1)]
 
 
 class CoTActorRankingCollator:

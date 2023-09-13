@@ -58,7 +58,7 @@ def compose_proofs(proofs: List[str], triples: Dict[str, str], inter_conclusions
     return full_text_proof
 
 
-def entailment_bank_reader_v1(file: str, negative_sample_num: int = 5):
+def entailment_bank_reader_v1(file: str, negative_sample_num: int = 5, split_input_output: bool = False):
     data = open(file).readlines()
 
     items = []
@@ -86,7 +86,6 @@ def entailment_bank_reader_v1(file: str, negative_sample_num: int = 5):
         distractors.update(triples)
         distractors.update(inters)
         for _ in range(neg_sample_num):
-
             src = random.choice(list(delete_list.keys()))
             src_fact = delete_list.pop(src)
 
@@ -103,15 +102,28 @@ def entailment_bank_reader_v1(file: str, negative_sample_num: int = 5):
             else:
                 raise ValueError(f"Unknown target type: {tgt}")
 
-        items.append({
-            "pos": prefix + "\n\n" + full_text_proof + "\n\n" + suffix,
-            "neg": negative_proofs,
-            "meta_data": {
-                "source": "entailment_bank",
-                "version": "v1",
-                "id": item["id"],
-            }
-        })
+        if split_input_output:
+            items.append({
+                "pos_input": prefix + "\n\n",
+                "pos_output": full_text_proof + "\n\n" + suffix,
+                "neg_input": [prefix + "\n\n"] * len(negative_proofs),
+                "neg_output": [p + "\n\n" + suffix for p in negative_proofs],
+                "meta_data": {
+                    "source": "entailment_bank",
+                    "version": "v1",
+                    "id": item["id"],
+                }
+            })
+        else:
+            items.append({
+                "pos": prefix + "\n\n" + full_text_proof + "\n\n" + suffix,
+                "neg": negative_proofs,
+                "meta_data": {
+                    "source": "entailment_bank",
+                    "version": "v1",
+                    "id": item["id"],
+                }
+            })
 
     return items
 
@@ -155,6 +167,8 @@ def main():
     parser.add_argument("--entailment_bank", type=str, default=None)
     parser.add_argument("--logiqa_v2", type=str, default=None)
     parser.add_argument("--output_file", type=str, default=None, required=True)
+    parser.add_argument("--negative_sample_num", type=int, default=5)
+    parser.add_argument("--split_input_output", action="store_true")
     args = parser.parse_args()
 
     assert any([args.entailment_bank, args.logiqa_v2]), "Please specify at least one dataset."
@@ -162,8 +176,8 @@ def main():
     file_suffix = "ccb_v1_0"
     items = []
     if args.entailment_bank:
-        items.extend(entailment_bank_reader_v1(args.entailment_bank))
-        file_suffix += "_enb"
+        items.extend(entailment_bank_reader_v1(args.entailment_bank, args.negative_sample_num, args.split_input_output))
+        file_suffix += "_enb" + str(args.negative_sample_num) + "neg" + ("_split" if args.split_input_output else "")
 
     if args.logiqa_v2:
         items.extend(logiqa_v2_reader_v1(args.logiqa_v2))

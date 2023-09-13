@@ -1,3 +1,4 @@
+import json
 import os
 from abc import ABC
 from dataclasses import dataclass
@@ -1459,3 +1460,166 @@ class LlamaTokenRewardModel(LlamaPreTrainedModelPeftMixin, LogMixin, ABC):
         for layer_past in past_key_values:
             reordered_past += (tuple(past_state.index_select(0, beam_idx) for past_state in layer_past),)
         return reordered_past
+
+
+class LlamaTokenRewardModelEval(LlamaTokenRewardModel):
+    def forward(
+            self,
+            input_ids: torch.LongTensor = None,
+            attention_mask: Optional[torch.Tensor] = None,
+            input_lens: Optional[torch.Tensor] = None,
+            past_key_values: Optional[List[torch.FloatTensor]] = None,
+            inputs_embeds: Optional[torch.FloatTensor] = None,
+            use_cache: Optional[bool] = None,
+            output_attentions: Optional[bool] = None,
+            output_hidden_states: Optional[bool] = None,
+            return_dict: Optional[bool] = None,
+            **kwargs,
+    ) -> Union[Tuple, MultipleChoicePreTrainModelOutput]:
+
+        output_attentions = output_attentions if output_attentions is not None else self.config.output_attentions
+        output_hidden_states = (
+            output_hidden_states if output_hidden_states is not None else self.config.output_hidden_states
+        )
+        return_dict = return_dict if return_dict is not None else self.config.use_return_dict
+
+        batch_size = input_ids.shape[0]
+        half_bsz = batch_size // 2
+
+        redundant_kwargs = dict(use_cache=use_cache, output_attentions=output_attentions,
+                                output_hidden_states=output_hidden_states,
+                                return_dict=return_dict)
+
+        outputs = self.model(
+            input_ids=input_ids,
+            attention_mask=attention_mask,
+            past_key_values=past_key_values,
+            inputs_embeds=inputs_embeds,
+            **redundant_kwargs
+        )
+
+        hidden_states = outputs[0]
+
+        logits = self.lm_head(hidden_states)
+        shifted_logits = logits[..., :-1, :].contiguous()
+        shifted_logits = shifted_logits[:half_bsz]
+
+        label_mask = input_ids.ne(self.config.pad_token_id)
+        # keep only logits after the end of the condition part in each item of the batch
+        # [batch_size * num_choices, input_lens]
+        if input_lens is not None:
+            lens_mask = torch.arange(input_ids.size(1), device=label_mask.device)[None, :] >= input_lens[:, None]
+            label_mask = label_mask & lens_mask
+
+        lm_labels = input_ids.masked_fill(~label_mask, -1).contiguous()
+        lm_labels = lm_labels[:half_bsz]
+        shifted_lm_labels = lm_labels[..., 1:].contiguous()
+
+        if shifted_logits.device != shifted_lm_labels.device:
+            shifted_logits = shifted_logits.to(shifted_lm_labels.device)
+
+        loss_fct = nn.CrossEntropyLoss(ignore_index=-1)
+
+        # Calculate reward
+        label_mask = label_mask.to(dtype=shifted_logits.dtype)
+        rewards = self.reward_head(hidden_states).squeeze(-1)
+        rewards = (rewards * label_mask).sum(-1) / label_mask.sum(-1)
+
+        lm_loss = loss_fct(shifted_logits.view(-1, logits.size(-1)), shifted_lm_labels.view(-1))
+        loss = self.lm_alpha * lm_loss
+
+        if not self.training:
+            self.eval_metrics.update("loss", val=loss.item(), n=half_bsz)
+            self.eval_metrics.update("lm_loss", val=lm_loss.item(), n=half_bsz)
+
+        return MultipleChoicePreTrainModelOutput(
+            loss=loss,
+            logits=rewards,
+            reward_loss=0,
+            mlm_loss=lm_loss.item(),
+        )
+
+
+class LlamaForCausalLMWithAssistant(LlamaForCausalLM):
+    """
+    Override `LlamaForCausalLM` with assistant model to call `model.generate` method with `assistant_model`.
+    """
+
+    def __init__(self, config: LlamaConfig, assistant_model_config: LlamaConfig = None):
+        super().__init__(config)
+        if assistant_model_config is not None:
+            self.assistant_model = LlamaForCausalLM(assistant_model_config)
+        else:
+            self.assistant_model = None
+
+    @classmethod
+    def from_pretrained(cls, *model_args, **kwargs):
+        # TODO: How to integrated assistant model into it so that huggingface could automatically handle the device assignment?
+        assistant_model = kwargs.pop("assistant_model", None)
+        assistant_model_state_dict = assistant_model.state_dict() if assistant_model is not None else None
+        model = super().from_pretrained(*model_args, **kwargs)
+
+        if assistant_model_state_dict is not None:
+            model.assistant_model.load_state_dict(assistant_model_state_dict)
+        return model
+
+    @classmethod
+    def from_pretrained_eval_tp(cls, pretrained_model_name_or_path, tp_sharded=False, **kwargs,):
+        import tensor_parallel as tp
+        import accelerate
+        from tqdm import tqdm
+
+        assistant_model = kwargs.pop("assistant_model", None)
+
+        n_gpus = torch.cuda.device_count()
+
+        with accelerate.init_empty_weights():
+            config = LlamaConfig.from_pretrained(pretrained_model_name_or_path)
+            model = cls(config, **kwargs)
+
+            model = tp.TensorParallelPreTrainedModel(  # <- tensor parallelism starts here
+                model,
+                device_ids=[torch.device(f"cuda:{i}") for i in range(n_gpus - 1)],
+                sharded=tp_sharded,
+            )
+
+        device_map = tp.infer_sharded_device_map(model)  # <- The model is on meta device but we can sill deduce
+        #    the target devices for each weight using this helper function
+
+        weight_index_file = os.path.join(pretrained_model_name_or_path, "pytorch_model.bin.index.json")
+        weight_index = json.load(open(weight_index_file, "r"))
+        shard_filenames = set(weight_index["weight_map"].values())
+
+        for shard_filename in tqdm(sorted(shard_filenames), desc=f"loading {pretrained_model_name_or_path}..."):
+            # Download a shard
+            shard_path = os.path.join(pretrained_model_name_or_path, shard_filename)
+
+            # Convert model shard
+            converted_state_dict = tp.convert_state_dict(  # <- tensor_parallel helper function.
+                torch.load(shard_path),  # Creates a tensor_parallel checkpoint form a normal one
+                model.tensor_parallel_config,
+                world_size=len(model.devices),
+                for_pretrained=True,
+            )
+
+            # Dispatch the shard
+            for param_name, param in converted_state_dict.items():
+                module_name = param_name
+
+                while len(module_name) > 0 and module_name not in device_map:
+                    module_name = ".".join(module_name.split(".")[:-1])
+                param_device = device_map[module_name]
+
+                accelerate.utils.set_module_tensor_to_device(model, param_name, param_device, value=param, dtype=torch.bfloat16)
+                converted_state_dict[param_name] = None
+            del converted_state_dict
+
+        assistant_model = assistant_model.to(torch.device(f"cuda:{n_gpus - 1}"))
+
+        model.assistant_model = assistant_model
+
+        return model
+
+    def generate(self, *args, **kwargs):
+        assistant_model = self.assistant_model
+        return super().generate(*args, **kwargs, assistant_model=assistant_model)
