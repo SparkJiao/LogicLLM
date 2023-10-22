@@ -1,0 +1,39 @@
+Four boys—Fred, Juan, Marc, and Paul—and three girls—Nita, Rachel, and Trisha—will be assigned to a row of five adjacent lockers, numbered consecutively 1 through 5, arranged along a straight wall. The following conditions govern the assignment of lockers to the seven children: Each locker must be assigned to either one or two children, and each child must be assigned to exactly one locker. Each shared locker must be assigned to one girl and one boy. Juan must share a locker, but Rachel cannot share a locker. Nita's locker cannot be adjacent to Trisha's locker. Fred must be assigned to locker 3.
+
+Question: Which one of the following is a complete and accurate list of the children who must be among those assigned to shared lockers?
+
+Options:
+A. Fred, Juan
+B. Juan, Paul
+C. Juan, Marc, Paul
+D. Juan, Marc, Trisha
+E. Juan, Nita, Trisha
+
+Let's analyze the given conditions and determine which children must be among those assigned to shared lockers:
+
+1. Each shared locker must be assigned to one girl and one boy.
+2. Juan must share a locker, but Rachel cannot share a locker.
+3. Fred must be assigned to locker 3.
+4. Nita's locker cannot be adjacent to Trisha's locker.
+
+Let's start by considering condition 3. Fred must be assigned to locker 3, which means the assignment for locker 3 is Fred's and no one else's.
+
+Now, let's consider condition 2. Juan must share a locker, so Juan must be one of the children assigned to a shared locker. Since Rachel cannot share a locker, we know Rachel is not part of the shared locker assignment.
+
+Now, let's consider condition 1. Each shared locker must have one girl and one boy. So, if Juan is a boy assigned to a shared locker, there must be a girl assigned to share the locker with him.
+
+Considering condition 4, Nita's locker cannot be adjacent to Trisha's locker. We don't know the specific locker numbers for Nita and Trisha yet, but we can conclude that Nita and Trisha cannot share a locker because if they did, their lockers would be adjacent.
+
+So, based on these conditions:
+- Fred must be assigned to locker 3.
+- Juan must share a locker with a girl.
+- Rachel cannot share a locker.
+- Nita and Trisha cannot share a locker.
+
+The possible combinations for shared lockers are as follows:
+
+1. Juan + Nita (Since Rachel cannot share a locker, and Nita's locker cannot be adjacent to Trisha's, Nita and Juan can share a locker.)
+2. Juan + Trisha (Since Rachel cannot share a locker, and Nita's locker cannot be adjacent to Trisha's, Trisha and Juan can share a locker.)
+
+Therefore, a complete and accurate list of the children who must be among those assigned to shared lockers is:
+E. Juan, Nita

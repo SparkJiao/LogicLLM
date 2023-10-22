@@ -1,0 +1,60 @@
+I will show you a analytical reasoning problem. Please show me the reasoning process to reach the final answer.
+
+You should decompose the task into several steps by searching process to find the answer. For each step, you can either take one pre-defined [ACTION], or summarize current [STATE], or [END] the search process if you have found the answer, or [BACKWARD] to another search branch to continue searching from specific [STATE].
+
+The list of possible [ACTION]s include:
+1. Choose arbitrary amount of known facts to deduce a new fact, and add it to the list of known fact. Remeber to assign a notation to it, like [fact 1] and [fact 2].
+2.  We cannot reach new facts by only combining existing facts. But we can assume some fact to reach a new [STATE]. So we can enumerate each possible [STATE] based on current [STATE].
+
+So, here is the question:
+
+
+Passage:
+Four boys—Fred, Juan, Marc, and Paul—and three girls—Nita, Rachel, and Trisha—will be assigned to a row of five adjacent lockers, numbered consecutively 1 through 5, arranged along a straight wall. The following conditions govern the assignment of lockers to the seven children: Each locker must be assigned to either one or two children, and each child must be assigned to exactly one locker. Each shared locker must be assigned to one girl and one boy. Juan must share a locker, but Rachel cannot share a locker. Nita's locker cannot be adjacent to Trisha's locker. Fred must be assigned to locker 3.
+
+Question: Which one of the following is a complete and accurate list of the children who must be among those assigned to shared lockers?
+
+Options:
+A. Fred, Juan
+B. Juan, Paul
+C. Juan, Marc, Paul
+D. Juan, Marc, Trisha
+E. Juan, Nita, Trisha
+
+Let's break down the problem step by step:
+
+Let's start by listing the facts and conditions provided in the passage:
+
+1. There are four boys (Fred, Juan, Marc, and Paul) and three girls (Nita, Rachel, and Trisha).
+2. There are five lockers (1 through 5) arranged along a straight wall.
+3. Each locker can be assigned to either one or two children.
+4. Each child must be assigned to exactly one locker.
+5. Each shared locker must be assigned to one girl and one boy.
+6. Juan must share a locker.
+7. Rachel cannot share a locker.
+8. Nita's locker cannot be adjacent to Trisha's locker.
+9. Fred must be assigned to locker 3.
+
+Let's use these facts to make some deductions:
+
+- Fact 9 tells us that Fred must be assigned to locker 3. So, we have [fact 10: Fred is assigned to locker 3].
+
+Currently, we obtain the initial [state 1: Fred is assigned to locker 3].
+
+We know that Juan must share a locker (fact 6). Since each shared locker must have one boy and one girl (fact 5), Juan's locker must be shared with a girl. However, we don't know which girl yet.
+
+- We can create two possible states based on this information:
+  - [state 1-1: Juan shares locker with Nita]
+  - [state 1-2: Juan shares locker with Trisha]
+
+In state 1-1, if Juan shares a locker with Nita, we can deduce the following:
+  - Rachel cannot share a locker (fact 7), then two boys, Marc and Paul and one girl, Trisha should be assigned to the left three lockers, among them one locker has been assigned with Fred.
+  - Considering each shared locker mush be assigned to one girl and one boy (fact 5), Trisha mush share one locker with another boy, otherwise two boys will share a locker.
+  
+  Based on state 1-1, Juan, Nita, Trisha mush be among those assigned to shared lockers.
+
+Then back to state 1-2, if Juan shares locker with Trisha, we find that the case is the same with state 1-1, 
+
+Finally, by considering all ending states, state 1-1, and state 1-2, Juan, Nita and Trisha are those must be assinged to shared lockers.
+
+So, the answer is **E. Juan, Nita, Trisha**.

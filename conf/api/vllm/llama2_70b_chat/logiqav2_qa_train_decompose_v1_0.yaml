@@ -1,0 +1,64 @@
+hydra:
+  run:
+    dir: ./
+
+train_file: logiqa-v2/train.txt
+dev_file:
+test_file: logiqa-v2/train.txt
+
+num_shot: 5
+
+output_file: openai-api-output/logiqav2-train-v1.0.100.qa.decompose.llama2.70b.chat.json
+flush_file: ${output_file}l
+
+# Data loading
+read_tensor:
+  _target_: data.reclor_prompt.ReClorGenerativeDataset
+  prompt_generator:
+    _target_: data.reclor_prompt.ReClorExemplarGenerator
+    file_path: ${train_file}
+    shot: 0
+    random_sampling: False
+    read_func:
+      _target_: data.readers.LogiQAReaderV2
+  read_func:
+    _target_: data.readers.LogiQAReaderV2
+  suffix: "Decompose it into smaller questions and answer them first when necessary, and then merge the conclusions to reach the correct answer."
+  max_data_num: 100
+  api_based: False
+  service_based: True
+  service_processor:
+    _target_: data.collators.api.vllm.VLLMRequestGenerator
+    api_url: http://10.97.26.125:8006/v1/completions
+    max_tokens: 3572
+    model: llama-2-70b-chat
+
+# Dataloader
+num_workers: 64
+prefetch_factor: 2
+
+output_dir:
+
+post_process:
+  _target_: post_processors.openai_api_callback.OpenAICallBack
+  output_file: ${output_file}
+  answer_clean:
+    _target_: post_processors.openai_api_callback.MCQAAnswerClean
+    prompt: few-shot
+
+
+# Training hyper-parameters
+per_gpu_train_batch_size: 1
+per_gpu_eval_batch_size: 1
+
+ddp_eval: False
+no_cuda: False
+seed: 42
+local_rank: -1
+
+# Temporary variables
+n_gpu: 1
+device:
+train_batch_size:
+eval_batch_size:
+world_size:

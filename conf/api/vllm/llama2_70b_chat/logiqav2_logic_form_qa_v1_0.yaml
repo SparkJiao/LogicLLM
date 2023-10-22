@@ -1,0 +1,63 @@
+hydra:
+  run:
+    dir: ./
+
+train_file:
+dev_file:
+test_file: openai-api-output/logiqav2-logic-form-train-v1.0.100.json
+
+num_shot: 5
+
+output_file: openai-api-output/logiqav2-logic-form-train-v1.0.100.qa.llama2.70b.chat.json
+flush_file: ${output_file}l
+
+# Data loading
+read_tensor:
+  _target_: data.logic_form.ComposePromptGenerator
+  read_func:
+    _target_: data.logic_form.LogicFormPredictionReader
+    few_shot: True
+  template_id: 1
+  instruction:
+    _target_: data.logic_form.read_single_file
+    file_path: data/prompts/logiqa/logic_form/prompt_0.md
+  few_shot_prompt:
+  compose_keys: ["text"]
+  max_data_num: 100
+  api_based: False
+  service_based: True
+  service_processor:
+    _target_: data.collators.api.vllm.VLLMRequestGenerator
+#    api_url: http://10.97.26.125:8005/generate
+    api_url: http://localhost:6000/generate
+    max_tokens: 4096
+
+# Dataloader
+num_workers: 64
+prefetch_factor: 2
+
+output_dir:
+
+post_process:
+  _target_: post_processors.openai_api_callback.OpenAICallBack
+  output_file: ${output_file}
+  answer_clean:
+    _target_: post_processors.openai_api_callback.MCQAAnswerClean
+    prompt: few-shot
+
+
+# Training hyper-parameters
+per_gpu_train_batch_size: 1
+per_gpu_eval_batch_size: 1
+
+ddp_eval: False
+no_cuda: False
+seed: 42
+local_rank: -1
+
+# Temporary variables
+n_gpu: 1
+device:
+train_batch_size:
+eval_batch_size:
+world_size:

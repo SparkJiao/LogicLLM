@@ -1,6 +1,6 @@
 import json
 import random
-from typing import List, Dict
+from typing import List, Dict, Callable
 
 import torch
 from torch.utils.data import Dataset, default_collate
@@ -184,7 +184,10 @@ class ReClorExemplarGeneratorZh:
 
 
 class ReClorGenerativeDataset(Dataset):
-    def __init__(self, file_path: str, tokenizer: PreTrainedTokenizer, read_func, prompt_generator, suffix: str = "The answer is"):
+    def __init__(self, file_path: str, tokenizer: PreTrainedTokenizer, read_func, prompt_generator, suffix: str = "The answer is",
+                 max_data_num: int = -1,
+                 api_based: bool = False,
+                 service_based: bool = False, service_processor: Callable = None):
         self.prompt_generator = prompt_generator
         # read_func = ReClorReader()
         all_context, all_question, all_option_list, all_label = read_func(file_path)
@@ -199,10 +202,48 @@ class ReClorGenerativeDataset(Dataset):
             self.indices.append(i)
             self.labels.append(_rank2option[all_label[i]])
 
+        self.max_data_num = max_data_num
+        self.api_based = api_based
+        self.service_based = service_based
+        self.service_processor = service_processor
+
     def __len__(self):
+        if self.max_data_num:
+            return min(self.max_data_num, len(self.inputs))
         return len(self.inputs)
 
+    def service_getitem(self, index):
+        prompt, prompt_indices = self.prompt_generator()
+        prompt = prompt + "\n\n" + self.inputs[index]
+        response = self.service_processor(prompt)
+        return {
+            "input": prompt,
+            "response": response,
+            "meta_data": {
+                "index": self.indices[index],
+                "label": self.labels[index],
+                "text": prompt,
+                "response": response,
+            }
+        }
+
+    def api_getitem(self, index):
+        prompt, prompt_indices = self.prompt_generator()
+        prompt = prompt + "\n\n" + self.inputs[index]
+        return {
+            "text": prompt,
+            "meta_data": {
+                "index": self.indices[index],
+                "label": self.labels[index],
+                "text": prompt,
+            }
+        }
+
     def __getitem__(self, index):
+        if self.service_based:
+            return self.service_getitem(index)
+        if self.api_based:
+            return self.api_getitem(index)
         prompt, prompt_indices = self.prompt_generator()
         return {
             "input": prompt + "\n\n" + self.inputs[index],
@@ -540,7 +581,6 @@ class ReClorTrainingGenerativeCollator:
         self.padding = padding
 
     def __call__(self, batch):
-
         inputs = [b["input"] for b in batch]
         outputs = [b["label"] for b in batch]
 
@@ -684,7 +724,7 @@ class ReClorRewardPairCollator:
                 else:
                     inputs = [b["input"] for b in batch]
                 model_inputs = self.tokenizer(inputs, padding="longest", truncation=True,
-                                          max_length=self.max_seq_length, return_tensors="pt")
+                                              max_length=self.max_seq_length, return_tensors="pt")
             else:
                 inputs = [b["inputs"] for b in batch]
                 outputs = [b["targets"] for b in batch]

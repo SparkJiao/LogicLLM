@@ -1,12 +1,16 @@
+import collections
 import json
 import random
 
 import torch
 from torch.utils.data import Dataset
 
+from transformers import PreTrainedTokenizer, AutoTokenizer
+
 from data.collators.api.wiki_utils import extract_ending_entity, extract_ending_entity_and_anonymization, extract_ending_entity_and_replace
 from data.collators.wiki_seq2seq_collator import construct_seq2seq
 from general_util.logger import get_child_logger
+from general_util.tokenization_utils import expand_special_tokenizer
 
 logger = get_child_logger(__name__)
 
@@ -410,9 +414,17 @@ class WikiRelationConsistent:
         "{}",
     ]
 
-    def __init__(self, template_id: int, anonymization: bool = False):
+    def __init__(self, template_id: int, anonymization: bool = False, offline_inference: bool = False, tokenizer: PreTrainedTokenizer = None,
+                 add_eos: bool = False, **kwargs):
         self.template = self.templates[template_id]
         self.anonymization = anonymization
+        self.offline_inference = offline_inference
+        if tokenizer is not None:
+            self.tokenizer = AutoTokenizer.from_pretrained(tokenizer, **kwargs)
+            expand_special_tokenizer(self.tokenizer)
+        else:
+            self.tokenizer = None
+        self.add_eos = add_eos
 
     @staticmethod
     def anonymize_call(self, batch):
@@ -483,6 +495,13 @@ class WikiRelationConsistent:
             "index": [b["index"] for b in batch],
         }
 
+        if self.offline_inference:
+            if self.add_eos:
+                model_inputs["text"] = [text + self.tokenizer.eos_token for text in model_inputs["text"]]
+            new_model_inputs = self.tokenizer(model_inputs["text"], padding="longest", truncation=True, max_length=2048, return_tensors="pt")
+            new_model_inputs["meta_data"] = model_inputs["meta_data"]
+            return new_model_inputs
+
         return model_inputs
 
 
@@ -524,3 +543,57 @@ class RelDiscChatDataset(Dataset):
                 "index": pred["id"],
             }
         }
+
+
+class WikiDatasetRelDisc(Dataset):
+    def __init__(self, file_path: str, tokenizer: PreTrainedTokenizer):
+        super().__init__()
+        predictions = json.load(open(file_path))
+
+        self.data = []
+        for pred in predictions:
+            text = pred["text"][0]
+            if pred["pred"] == "Yes":
+                self.data.append({
+                    "text": text,
+                    "label": 1,
+                    "meta_data": {
+                        "text": text,
+                        "index": pred["id"][0],
+                        "label": 1,
+                    }
+                })
+            elif pred["pred"] == "No":
+                self.data.append({
+                    "text": text,
+                    "label": 0,
+                    "meta_data": {
+                        "text": text,
+                        "index": pred["id"][0],
+                        "label": 0,
+                    }
+                })
+
+    def __len__(self):
+        return len(self.data)
+
+    def __getitem__(self, index):
+        return self.data[index]
+
+
+class WikiRelDiscCollator:
+    def __init__(self, tokenizer: PreTrainedTokenizer, max_length: int = 2048, add_eos: bool = True, **kwargs):
+        self.tokenizer = AutoTokenizer.from_pretrained(tokenizer, **kwargs)
+        expand_special_tokenizer(self.tokenizer)
+        self.max_length = max_length
+        self.add_eos = add_eos
+
+    def __call__(self, batch):
+        texts = [b["text"] for b in batch]
+        if self.add_eos:
+            texts = [text + self.tokenizer.eos_token for text in texts]
+
+        model_inputs = self.tokenizer(texts, padding="longest", truncation=True, max_length=self.max_length, return_tensors="pt")
+        model_inputs["labels"] = torch.tensor([b["label"] for b in batch], dtype=torch.long)
+        model_inputs["meta_data"] = [b["meta_data"] for b in batch]
+        return model_inputs

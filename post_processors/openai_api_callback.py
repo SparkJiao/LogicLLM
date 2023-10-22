@@ -62,7 +62,7 @@ class OpenAICallBack:
         index = meta_data["index"]
         # assert isinstance(index, str), type(index)
         # assert isinstance(text, str), type(text)
-        assert isinstance(label, int), type(label)
+        # assert isinstance(label, int), type(label)
 
         response = batch_model_outputs["response"]
         pred_clean = self.answer_clean(response)

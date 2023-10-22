@@ -19,6 +19,7 @@ from peft import (
 )
 from peft.tuners.lora import LoraLayer
 from torch import nn
+import torch.distributed as dist
 from transformers import AutoTokenizer
 from transformers.models.llama.modeling_llama import LlamaModel, LlamaPreTrainedModel, LlamaConfig, \
     SequenceClassifierOutputWithPast, \
@@ -26,6 +27,7 @@ from transformers.models.llama.modeling_llama import LlamaModel, LlamaPreTrained
 
 from general_util.logger import get_child_logger
 from general_util.mixin import LogMixin
+from general_util.training_utils import get_rank
 from modules.layers import fold_tensor, get_accuracy
 
 logger = get_child_logger(__name__)
@@ -58,19 +60,19 @@ def llama_fast_attention_wrap(attn_layer: nn.Module, vanilla_torch: bool = False
     ) -> Tuple[torch.Tensor, Optional[torch.Tensor], Optional[Tuple[torch.Tensor]]]:
         bsz, q_len, _ = hidden_states.size()
 
-        if self.pretraining_tp > 1:
-            key_value_slicing = (self.num_key_value_heads * self.head_dim) // self.pretraining_tp
-            query_slices = self.q_proj.weight.split((self.num_heads * self.head_dim) // self.pretraining_tp, dim=0)
+        if self.config.pretraining_tp > 1:
+            key_value_slicing = (self.num_key_value_heads * self.head_dim) // self.config.pretraining_tp
+            query_slices = self.q_proj.weight.split((self.num_heads * self.head_dim) // self.config.pretraining_tp, dim=0)
             key_slices = self.k_proj.weight.split(key_value_slicing, dim=0)
             value_slices = self.v_proj.weight.split(key_value_slicing, dim=0)
 
-            query_states = [F.linear(hidden_states, query_slices[i]) for i in range(self.pretraining_tp)]
+            query_states = [F.linear(hidden_states, query_slices[i]) for i in range(self.config.pretraining_tp)]
             query_states = torch.cat(query_states, dim=-1)
 
-            key_states = [F.linear(hidden_states, key_slices[i]) for i in range(self.pretraining_tp)]
+            key_states = [F.linear(hidden_states, key_slices[i]) for i in range(self.config.pretraining_tp)]
             key_states = torch.cat(key_states, dim=-1)
 
-            value_states = [F.linear(hidden_states, value_slices[i]) for i in range(self.pretraining_tp)]
+            value_states = [F.linear(hidden_states, value_slices[i]) for i in range(self.config.pretraining_tp)]
             value_states = torch.cat(value_states, dim=-1)
 
         else:
@@ -179,10 +181,10 @@ def llama_fast_attention_wrap(attn_layer: nn.Module, vanilla_torch: bool = False
 
         attn_output = attn_output.reshape(bsz, q_len, self.hidden_size)
 
-        if self.pretraining_tp > 1:
-            attn_output = attn_output.split(self.hidden_size // self.pretraining_tp, dim=2)
-            o_proj_slices = self.o_proj.weight.split(self.hidden_size // self.pretraining_tp, dim=1)
-            attn_output = sum([F.linear(attn_output[i], o_proj_slices[i]) for i in range(self.pretraining_tp)])
+        if self.config.pretraining_tp > 1:
+            attn_output = attn_output.split(self.hidden_size // self.config.pretraining_tp, dim=2)
+            o_proj_slices = self.o_proj.weight.split(self.hidden_size // self.config.pretraining_tp, dim=1)
+            attn_output = sum([F.linear(attn_output[i], o_proj_slices[i]) for i in range(self.config.pretraining_tp)])
         else:
             attn_output = self.o_proj(attn_output)
 
@@ -299,9 +301,6 @@ class LlamaPreTrainedModelPeftMixin(LlamaPreTrainedModel, ABC):
 
         # if use_peft:
         model = super().from_pretrained(pretrained_model_name_or_path, *model_args, **kwargs)
-        # else:
-        #     model = super().from_pretrained(pretrained_model_name_or_path, load_in_4bit=load_in_4bit, load_in_8bit=load_in_8bit,
-        #                                     *model_args, **kwargs)
 
         if vocab_size is not None and pad_token_id is not None:
             # assert vocab_size == model.config.vocab_size + 1, "Currently, only hack here to add pad token id is supported. "
@@ -310,23 +309,21 @@ class LlamaPreTrainedModelPeftMixin(LlamaPreTrainedModel, ABC):
             model.config.pad_token_id = pad_token_id
 
         if enable_flash_attention:
-            logger.info("⚡⚡⚡ enable llama flash attention.")
+            # logger.warning("⚡⚡⚡ enable llama flash attention.")
 
-            layers = model.model.layers
-            for layer in layers:
-                llama_fast_attention_wrap(layer.self_attn, vanilla_torch=flash_attention_vanilla_torch,
-                                          var_len=flash_attention_var_len)
+            # layers = model.model.layers
+            # for layer in layers:
+            #     llama_fast_attention_wrap(layer.self_attn, vanilla_torch=flash_attention_vanilla_torch,
+            #                               var_len=flash_attention_var_len)
+            # Now, let's use the integrated flash-attention.
+            logger.warning("Please use HF integrated flash attention 2 instead.")
 
         if use_peft:
             if lora_config is None:
                 lora_config = LoraConfig(task_type=TaskType.SEQ_CLS, inference_mode=False, r=8, lora_alpha=32,
                                          lora_dropout=0.1)
 
-            # logger.info(*model_args)
-            # logger.info(kwargs)
-            logger.info(lora_config)
-
-            logger.info(f"LORA Config: {lora_config}")
+            logger.warning(lora_config)
             logger.info(lora_config.target_modules.__class__)
             if isinstance(lora_config.target_modules, omegaconf.listconfig.ListConfig):
                 lora_config.target_modules = list(lora_config.target_modules)
@@ -339,10 +336,10 @@ class LlamaPreTrainedModelPeftMixin(LlamaPreTrainedModel, ABC):
                 lora_config.modules_to_save = list(lora_config.modules_to_save)
 
             logger.info(lora_config.target_modules.__class__)
-            logger.info(lora_config.target_modules)
+            logger.warning(lora_config.target_modules)
             gradient_checkpointing = model.model.gradient_checkpointing
             if load_in_8bit or load_in_4bit:
-                # model = prepare_model_for_int8_training(model, use_gradient_checkpointing=gradient_checkpointing)
+                logger.warning(f"Rank {get_rank()} is being loaded in 8-{load_in_8bit} | 4-{load_in_4bit} bit.")
                 model = prepare_model_for_kbit_training(model, use_gradient_checkpointing=gradient_checkpointing)
             model = get_peft_model(model, lora_config)
 
@@ -379,22 +376,24 @@ class LlamaPreTrainedModelPeftMixin(LlamaPreTrainedModel, ABC):
         quantization_config = kwargs.pop("quantization_config", None)
         tp_sharded = kwargs.pop("tp_sharded", None)
 
-        model = cls.from_pretrained(pretrained_model_name_or_path, *model_args, **kwargs)
+        # model = cls.from_pretrained(pretrained_model_name_or_path, *model_args, **kwargs)
+        #
+        # n_gpus = torch.cuda.device_count()
+        # model = tp.tensor_parallel(model, [torch.device(f"cuda:{i}") for i in range(n_gpus)], sharded=tp_sharded)
+        #
+        # if load_in_8bit or load_in_4bit:
+        #     modules_to_not_convert = get_keys_to_not_convert(model)
+        #     if not isinstance(modules_to_not_convert, list):
+        #         modules_to_not_convert = [modules_to_not_convert]
+        #
+        #     model = replace_with_bnb_linear(model,
+        #                                     modules_to_not_convert=modules_to_not_convert,
+        #                                     quantization_config=BitsAndBytesConfig(load_in_8bit=load_in_8bit,
+        #                                                                            load_in_4bit=load_in_4bit))
+        #     model.is_loaded_in_8bit = load_in_8bit
+        #     model.is_loaded_in_4bit = load_in_4bit
 
-        n_gpus = torch.cuda.device_count()
-        model = tp.tensor_parallel(model, [torch.device(f"cuda:{i}") for i in range(n_gpus)], sharded=tp_sharded)
-
-        if load_in_8bit or load_in_4bit:
-            modules_to_not_convert = get_keys_to_not_convert(model)
-            if not isinstance(modules_to_not_convert, list):
-                modules_to_not_convert = [modules_to_not_convert]
-
-            model = replace_with_bnb_linear(model,
-                                            modules_to_not_convert=modules_to_not_convert,
-                                            quantization_config=BitsAndBytesConfig(load_in_8bit=load_in_8bit,
-                                                                                   load_in_4bit=load_in_4bit))
-            model.is_loaded_in_8bit = load_in_8bit
-            model.is_loaded_in_4bit = load_in_4bit
+        model = _tp_load_model_low_mem_usage(pretrained_model_name_or_path, model_class=cls, tp_sharded=tp_sharded, **kwargs)
 
         return model
 
@@ -428,17 +427,24 @@ def load_model_from_pretrained_tp(pretrained_model_name_or_path: str, *args, **k
     enable_flash_attention = kwargs.pop("enable_flash_attention", False)
     flash_attention_vanilla_torch = kwargs.pop("flash_attention_vanilla_torch", False)
     flash_attention_var_len = kwargs.pop("flash_attention_var_len", False)
+    tp_low_mem_loading = kwargs.pop("tp_low_mem_loading", False)
 
-    model = LlamaForCausalLM.from_pretrained(pretrained_model_name_or_path, *args, **kwargs)
-
-    import tensor_parallel as tp
-    import torch.distributed as dist
-
-    n_gpus = torch.cuda.device_count()
-    if not dist.is_initialized():
-        model = tp.tensor_parallel(model, [torch.device(f"cuda:{i}") for i in range(n_gpus)], sharded=tp_sharded)
+    if tp_low_mem_loading:
+        model = _tp_load_model_low_mem_usage(pretrained_model_name_or_path,
+                                             model_class=LlamaForCausalLM,
+                                             tp_sharded=tp_sharded,
+                                             **kwargs)
     else:
-        model = tp.tensor_parallel(model, sharded=False)[0]
+        model = LlamaForCausalLM.from_pretrained(pretrained_model_name_or_path, *args, **kwargs)
+
+        import tensor_parallel as tp
+        import torch.distributed as dist
+
+        n_gpus = torch.cuda.device_count()
+        if not dist.is_initialized():
+            model = tp.tensor_parallel(model, [torch.device(f"cuda:{i}") for i in range(n_gpus)], sharded=tp_sharded)
+        else:
+            model = tp.tensor_parallel(model, sharded=False)[0]
 
     if enable_flash_attention:
         logger.info("⚡⚡⚡ enable llama flash attention.")
@@ -447,6 +453,59 @@ def load_model_from_pretrained_tp(pretrained_model_name_or_path: str, *args, **k
         for layer in layers:
             llama_fast_attention_wrap(layer.self_attn, vanilla_torch=flash_attention_vanilla_torch,
                                       var_len=flash_attention_var_len)
+
+    return model
+
+
+def _tp_load_model_low_mem_usage(pretrained_model_name_or_path: str, model_class, tp_sharded: bool = False, **kwargs):
+    import tensor_parallel as tp
+    import accelerate
+    from tqdm import tqdm
+
+    torch_dtype = kwargs.pop("torch_dtype", torch.bfloat16)
+
+    n_gpus = torch.cuda.device_count()
+
+    with accelerate.init_empty_weights():
+        config = LlamaConfig.from_pretrained(pretrained_model_name_or_path)
+        model = model_class(config, **kwargs)
+
+        model = tp.TensorParallelPreTrainedModel(  # <- tensor parallelism starts here
+            model,
+            device_ids=[torch.device(f"cuda:{i}") for i in range(n_gpus)],
+            sharded=tp_sharded,
+        )
+
+    device_map = tp.infer_sharded_device_map(model)  # <- The model is on meta device but we can sill deduce
+    #    the target devices for each weight using this helper function
+
+    weight_index_file = os.path.join(pretrained_model_name_or_path, "pytorch_model.bin.index.json")
+    weight_index = json.load(open(weight_index_file, "r"))
+    shard_filenames = set(weight_index["weight_map"].values())
+
+    for shard_filename in tqdm(sorted(shard_filenames), desc=f"loading {pretrained_model_name_or_path}..."):
+        # Download a shard
+        shard_path = os.path.join(pretrained_model_name_or_path, shard_filename)
+
+        # Convert model shard
+        converted_state_dict = tp.convert_state_dict(  # <- tensor_parallel helper function.
+            torch.load(shard_path),  # Creates a tensor_parallel checkpoint form a normal one
+            model.tensor_parallel_config,
+            world_size=len(model.devices),
+            for_pretrained=True,
+        )
+
+        # Dispatch the shard
+        for param_name, param in converted_state_dict.items():
+            module_name = param_name
+
+            while len(module_name) > 0 and module_name not in device_map:
+                module_name = ".".join(module_name.split(".")[:-1])
+            param_device = device_map[module_name]
+
+            accelerate.utils.set_module_tensor_to_device(model, param_name, param_device, value=param, dtype=torch_dtype)
+            converted_state_dict[param_name] = None
+        del converted_state_dict
 
     return model
 
@@ -1002,12 +1061,7 @@ class LlamaForConditionalGenerationFlan(LlamaForConditionalGeneration, LogMixin,
                                    attention_mask=flan_attention_mask,
                                    input_lens=flan_input_lens,
                                    return_dict=return_dict)
-        # if torch.isnan(outputs1.loss):
-        #     print("Normal inputs NAN loss")
-        # if torch.isnan(outputs2.loss):
-        #     print("Flan inputs NAN loss")
 
-        # loss = (outputs1.loss + outputs2.loss) / 2
         loss = self.merit_ratio * outputs1.loss + (1 - self.merit_ratio) * outputs2.loss
 
         return MultipleChoicePreTrainModelOutput(
@@ -1564,7 +1618,7 @@ class LlamaForCausalLMWithAssistant(LlamaForCausalLM):
         return model
 
     @classmethod
-    def from_pretrained_eval_tp(cls, pretrained_model_name_or_path, tp_sharded=False, **kwargs,):
+    def from_pretrained_eval_tp(cls, pretrained_model_name_or_path, tp_sharded=False, **kwargs, ):
         import tensor_parallel as tp
         import accelerate
         from tqdm import tqdm

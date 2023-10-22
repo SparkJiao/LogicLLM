@@ -17,6 +17,7 @@
 # See the License for the specific language governing permissions and
 # limitations under the License.
 
+import datetime
 import glob
 import logging
 import os
@@ -62,7 +63,7 @@ def worker_init_fn(worker_id):
 def save_model(model: Union[deepspeed.DeepSpeedEngine, deepspeed.PipelineEngine],
                cfg: DictConfig, output_dir: str, tokenizer: PreTrainedTokenizer = None, state_dict: Dict = None):
     unwrapped_model = unwrap_model(model)
-    model.save_checkpoint(output_dir)
+    model.save_checkpoint(cfg.output_dir)
 
     logger.info(f"Loading fp32 state dict from {output_dir}")
     zero_stage = get_zero_stage(cfg.ds_cfg)
@@ -145,6 +146,8 @@ def train(cfg, model, tokenizer, continue_from_global_step=0):
 
             assert total_dataset_len > 0
 
+    logger.warning(f"Rank No. {dist.get_rank()} has {total_dataset_len} samples.")
+
     if getattr(cfg, "do_preprocess", False):
         return
 
@@ -212,6 +215,9 @@ def train(cfg, model, tokenizer, continue_from_global_step=0):
             epoch_iterator = tqdm(sub_train_dataloader, desc="Iteration", disable=cfg.local_rank not in [-1, 0], dynamic_ncols=True)
             if cfg.local_rank != -1:
                 sub_train_dataloader.sampler.set_epoch(epoch)
+
+            if dist.is_initialized():
+                dist.barrier()
 
             for step, batch in enumerate(epoch_iterator):
                 # If training is continued from a checkpoint, fast forward
@@ -293,7 +299,7 @@ def main(cfg: DictConfig):
     else:  # Initializes the distributed backend which will take care of synchronizing nodes/GPUs
         torch.cuda.set_device(cfg.local_rank)
         device = str(torch.device("cuda", cfg.local_rank))
-        deepspeed.init_distributed()
+        deepspeed.init_distributed(dist_backend="nccl", timeout=datetime.timedelta(seconds=7200))
         cfg.n_gpu = 1
         cfg.world_size = dist.get_world_size()
     cfg.device = device
@@ -332,9 +338,8 @@ def main(cfg: DictConfig):
     if use_barrier and cfg.local_rank == 0:
         dist.barrier()  # Make sure only the first process in distributed training will download model & vocab
 
-    # TODO: model parallel.
-    # if cfg.local_rank == -1:  # For FullyShardedDDP, place the model on cpu first.
-    #     model.to(cfg.device)
+    if dist.is_initialized():
+        dist.barrier()
 
     # logger.info("Training/evaluation parameters %s", OmegaConf.to_yaml(cfg))
     if cfg.local_rank in [-1, 0] and cfg.do_train:

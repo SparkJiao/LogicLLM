@@ -405,7 +405,20 @@ class LogiQAReader:
         return all_context, all_question, all_option_list, all_label
 
 
+def _format_option_list(option_list: List[str], _rank2option: List[str]) -> str:
+    res = ""
+    for op_id, op in enumerate(option_list):
+        res += f"{_rank2option[op_id]}. {op}\n"
+    return res
+
+
 class LogiQAReaderV2:
+    rank2option = ['A', 'B', 'C', 'D']
+
+    def __init__(self, return_dict: bool = False, flat_options: bool = False):
+        self.return_dict = return_dict
+        self.flat_options = flat_options
+
     def __call__(self, file):
         all_context = []
         all_question = []
@@ -420,6 +433,16 @@ class LogiQAReaderV2:
                 all_context.append(item["text"])
                 all_question.append(item["question"])
                 all_option_list.append(item["options"])
+
+        if self.return_dict:
+            return [
+                {
+                    "context": context,
+                    "question": question,
+                    "option_list": _format_option_list(option_list, self.rank2option) if self.flat_options else option_list,
+                    "label": label,
+                } for context, question, option_list, label in zip(all_context, all_question, all_option_list, all_label)
+            ]
 
         return all_context, all_question, all_option_list, all_label
 

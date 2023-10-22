@@ -1,0 +1,65 @@
+hydra:
+  run:
+    dir: ./
+
+train_file:
+dev_file:
+test_file: ../research.data/gpt4-distil-data
+
+num_shot: 5
+
+output_file: ../research.data/gpt4-distil-data/annotation_v1_turbo.json
+flush_file: ${output_file}l
+
+# Model
+model:
+  _target_: open_ai_callers.vanilla_caller.GPTTurbo
+  model: "gpt-3.5-turbo"
+  max_tokens: 2048
+  temperature: 0.0
+  api_time_interval: 1
+
+# Data loading
+read_tensor:
+  _target_: data.collators.api.annotation.AnnotationDataset
+  file_names: [
+    c3.json,
+    cmmlu.json,
+    logiqav2-zh-train.json,
+    logiqav2-en-train.json,
+    lsat.json,
+    mmlu.json,
+  ]
+  output_file: ${flush_file}
+
+# Data collator
+
+# Dataloader
+num_workers: 0
+prefetch_factor: 2
+
+output_dir:
+
+post_process:
+  _target_: post_processors.openai_api_callback.OpenAICallBack
+  output_file: ${output_file}
+  answer_clean:
+    _target_: post_processors.openai_api_callback.MCQAAnswerClean
+    prompt: few-shot
+
+
+# Training hyper-parameters
+per_gpu_train_batch_size: 1
+per_gpu_eval_batch_size: 1
+
+ddp_eval: False
+no_cuda: False
+seed: 42
+local_rank: -1
+
+# Temporary variables
+n_gpu: 1
+device:
+train_batch_size:
+eval_batch_size:
+world_size:

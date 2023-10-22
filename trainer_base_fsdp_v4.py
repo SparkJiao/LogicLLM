@@ -21,18 +21,17 @@ import glob
 import logging
 import os
 import sys
-import time
 from typing import Dict, Union
 
 import hydra
 import torch
+import wandb
 from fairscale.nn.data_parallel.fully_sharded_data_parallel import FullyShardedDataParallel as FullyShardedDDP
 from fairscale.optim.grad_scaler import ShardedGradScaler
 from omegaconf import DictConfig, OmegaConf
 from torch import distributed as dist
 from torch.utils.data import (DataLoader, RandomSampler)
 from torch.utils.data.distributed import DistributedSampler
-from torch.utils.tensorboard import SummaryWriter
 from tqdm import tqdm, trange
 from transformers import (get_linear_schedule_with_warmup, AutoTokenizer, PreTrainedTokenizer)
 
@@ -41,9 +40,6 @@ from general_util.evaluator import evaluate_fn as evaluate
 from general_util.logger import setting_logger
 from general_util.training_utils import batch_to_device, unwrap_model, set_seed, note_best_checkpoint, initialize_optimizer, \
     load_and_cache_examples, if_cancel_sync, initialize_lr_scheduler, set_seed_int
-from general_util.tokenization_utils import expand_special_tokenizer
-
-from deepspeed.pipe import PipelineModule
 
 logger: logging.Logger
 
@@ -107,17 +103,8 @@ def forward_step(model, inputs: Dict[str, torch.Tensor], cfg, scaler, return_out
 def train(cfg, train_dataset, model, tokenizer, continue_from_global_step=0):
     """ Train the model """
     if cfg.local_rank in [-1, 0]:
-        _dir_splits = cfg.output_dir.split('/')
-        if len(_dir_splits) == 2:
-            _sub_dir = _dir_splits[1].split('.')[0]
-            _log_dir = '/'.join([_dir_splits[0], 'runs', _sub_dir] + _dir_splits[1:])
-        else:
-            _log_dir = '/'.join([_dir_splits[0], 'runs'] + _dir_splits[1:])
-        tb_writer = SummaryWriter(log_dir=_log_dir)
-        tb_helper = hydra.utils.instantiate(cfg.summary_helper,
-                                            writer=tb_writer) if "summary_helper" in cfg and cfg.summary_helper else None
+        tb_helper = hydra.utils.instantiate(cfg.summary_helper) if "summary_helper" in cfg and cfg.summary_helper else None
     else:
-        tb_writer = None
         tb_helper = None
 
     # cfg.train_batch_size = cfg.per_gpu_train_batch_size * max(1, cfg.n_gpu)
@@ -239,13 +226,14 @@ def train(cfg, train_dataset, model, tokenizer, continue_from_global_step=0):
                 global_step += 1
 
                 # Log metrics
-                if cfg.local_rank in [-1, 0] and cfg.logging_steps > 0 and global_step % cfg.logging_steps == 0:
-                    tb_writer.add_scalar('lr', scheduler.get_lr()[0], global_step)
-                    tb_writer.add_scalar('loss', (tr_loss - logging_loss) / cfg.logging_steps, global_step)
+                log_metrics = {}
+                if cfg.local_rank in [-1, 0]:
+                    log_metrics['lr'] = scheduler.get_lr()[0]
+                    log_metrics['loss'] = tr_loss - logging_loss
                     logging_loss = tr_loss
 
                     if tb_helper:
-                        tb_helper(step=global_step, last_batch=batch, last_outputs=last_outputs)
+                        log_metrics.update(tb_helper(last_batch=batch, last_outputs=last_outputs))
 
                 # Save model checkpoint
                 if cfg.save_steps > 0 and global_step % cfg.save_steps == 0:
@@ -263,7 +251,7 @@ def train(cfg, train_dataset, model, tokenizer, continue_from_global_step=0):
 
                         if cfg.local_rank in [-1, 0]:
                             for key, value in results.items():
-                                tb_writer.add_scalar(f"eval/{key}", value, global_step)
+                                log_metrics[f"eval/{key}"] = value
 
                             sub_path = os.path.join(cfg.output_dir, 'checkpoint-{}'.format(global_step))
                             flag = note_best_checkpoint(cfg, results, sub_path)
@@ -278,6 +266,9 @@ def train(cfg, train_dataset, model, tokenizer, continue_from_global_step=0):
                                 logger.info("Saving best model checkpoint to %s", cfg.output_dir)
                     torch.cuda.empty_cache()
 
+                if len(log_metrics) and cfg.local_rank in [-1, 0]:
+                    wandb.log(log_metrics)
+
                 del batch
                 del last_outputs
 
@@ -288,9 +279,6 @@ def train(cfg, train_dataset, model, tokenizer, continue_from_global_step=0):
         if 0 < cfg.max_steps < global_step:
             train_iterator.close()
             break
-
-    if cfg.local_rank in [-1, 0]:
-        tb_writer.close()
 
     return global_step, tr_loss / global_step
 
@@ -355,6 +343,14 @@ def main(cfg: DictConfig):
                 os.makedirs(cfg.output_dir)
             OmegaConf.save(cfg, os.path.join(cfg.output_dir, "training_config.yaml"))
 
+            wandb.init(
+                project="VQA",
+                name=cfg.exp_name,
+                notes=cfg.exp_notes,
+                config=OmegaConf.to_container(cfg, resolve=True),
+            )
+            wandb.define_metric(cfg.prediction_cfg.metric, summary=("max" if cfg.prediction_cfg.measure > 0 else "min"))
+
         # TODO: Add option for continuously training from checkpoint.
         #  The operation should be introduced in ``train`` method since both the state dict
         #  of schedule and optimizer (and scaler, if any) should be loaded.
@@ -380,17 +376,12 @@ def main(cfg: DictConfig):
     # Test
     results = {}
     if cfg.do_eval:
-        # if not cfg.ddp_eval and cfg.local_rank not in [-1, 0]:
-        #     return results
-
         checkpoints = [cfg.output_dir]
         if cfg.save_best:
-            # logging.getLogger("transformers.modeling_utils").setLevel(logging.WARN)  # Reduce logging
-            pass
+            logging.getLogger("transformers.modeling_utils").setLevel(logging.WARN)  # Reduce logging
         elif cfg.prediction_cfg.best_checkpoint and os.path.exists(cfg.prediction_cfg.best_checkpoint):
             checkpoints = [cfg.prediction_cfg.best_checkpoint]
-            # logging.getLogger("transformers.modeling_utils").setLevel(logging.WARN)  # Reduce logging
-            pass
+            logging.getLogger("transformers.modeling_utils").setLevel(logging.WARN)  # Reduce logging
         elif cfg.eval_sub_path:
             checkpoints = list(sorted(list(set(
                 os.path.dirname(c) for c in
@@ -401,7 +392,7 @@ def main(cfg: DictConfig):
                     os.path.dirname(c) for c in
                     glob.glob(cfg.output_dir + f"/{cfg.eval_sub_path}/" + "adapter_model.bin", recursive=True)
                 ))))
-            # logging.getLogger("transformers.modeling_utils").setLevel(logging.WARN)  # Reduce logging
+            logging.getLogger("transformers.modeling_utils").setLevel(logging.WARN)  # Reduce logging
         logger.info(" the following checkpoints: %s", checkpoints)
         for checkpoint in checkpoints:
             global_step = checkpoint.split("-")[-1] if len(checkpoints) > 1 else ""
@@ -419,17 +410,6 @@ def main(cfg: DictConfig):
             if cfg.n_gpu == 1 and not getattr(model, "is_loaded_in_8bit", False) and not getattr(model, "is_loaded_in_4bit", False
                                                                                                  ) and getattr(cfg, "move_to_gpu", True):
                 model.to(cfg.device)
-            # else:  # use device map
-            #     # For model parallel (of mT5)
-            #     if getattr(cfg, "get_device_map", None):
-            #         model.parallelize(hydra.utils.call(cfg.get_device_map))
-            #     else:
-            #         model.parallelize()
-
-            # logger.info(tokenizer)
-            # cfg.model_name_or_path = checkpoint
-
-            # print(model)
 
             if cfg.test_file:
                 prefix = f'test' + (f'-{prefix}' if prefix != "" else "")

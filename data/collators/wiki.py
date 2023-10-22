@@ -51,6 +51,13 @@ class WikiPathDatasetV5(Dataset):
             "index": index,
         }
 
+    @classmethod
+    def init_from_bin_file(cls, file_path, *args, **kwargs):
+        logger.info(f"Loading cached file from {file_path}")
+        all_examples, raw_texts = torch.load(file_path)
+
+        return cls(all_examples, raw_texts)
+
 
 def map_counterfactual_data(examples: List[Dict[str, Any]]):
     exp_orig_id2cate = {}

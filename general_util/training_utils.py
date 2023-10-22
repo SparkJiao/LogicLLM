@@ -31,6 +31,13 @@ def set_seed_int(seed):
     torch.manual_seed(seed)
 
 
+def get_rank():
+    if dist.is_initialized():
+        return dist.get_rank()
+    else:
+        return -1
+
+
 def to_list(tensor):
     return tensor.detach().cpu().tolist()
 
