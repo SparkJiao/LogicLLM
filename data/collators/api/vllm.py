@@ -71,6 +71,7 @@ class VLLMRequestGenerator:
                                                                stream=self.stream,
                                                                stop=self.stop,
                                                                **self.kwargs))[0]
+            response = response.replace(prompt, "")
         else:
             response = post_http_request(prompt,
                                          self.api_url,
@@ -87,7 +88,12 @@ class VLLMRequestGenerator:
                 logger.warning(response.content)
                 response = ""
             else:
-                response = json.loads(response.content)["choices"][0]["text"]
+                outputs = []
+                for item in json.loads(response.content)["choices"]:
+                    outputs.append(item["text"].replace(prompt, ""))
+                if len(outputs) == 1:
+                    response = outputs[0]
+                else:
+                    response = outputs
 
-        response = response.replace(prompt, "")
         return response

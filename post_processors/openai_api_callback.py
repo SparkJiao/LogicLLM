@@ -1,3 +1,4 @@
+import collections
 import json
 import os
 import re
@@ -65,7 +66,12 @@ class OpenAICallBack:
         # assert isinstance(label, int), type(label)
 
         response = batch_model_outputs["response"]
-        pred_clean = self.answer_clean(response)
+        if isinstance(response, str):
+            pred_clean = self.answer_clean(response)
+        elif isinstance(response, list):
+            pred_clean = [self.answer_clean(item) for item in response]
+        else:
+            raise ValueError(f"Unknown type of response: {type(response)}")
         # print("pred_after: ", pred_clean)
         self.predictions.append({
             "text": text,
@@ -84,22 +90,29 @@ class OpenAICallBack:
         cnt = 0
         outputs = []
         for item in self.predictions:
-            if not item["pred"].strip():
+            if isinstance(item["pred"], list):
+                preds = item["pred"]
+            else:
+                preds = [item["pred"]]
+
+            pred = collections.Counter(preds).most_common(1)[0][0]
+
+            if not pred.strip():
                 outputs.append(0)
                 continue
-            if len(item["pred"].strip()) > 1:
+            if len(pred.strip()) > 1:
                 outputs.append(0)
                 continue
             if isinstance(item["label"], str):
-                if item["label"].strip() == item["pred"].strip():
+                if item["label"].strip() == pred.strip():
                     cnt += 1
             elif isinstance(item["label"], list) and isinstance(item["label"][0], str):
-                if item["label"][0].strip() == item["pred"].strip():
+                if item["label"][0].strip() == pred.strip():
                     cnt += 1
             else:
-                if item["label"] == ord(item["pred"].strip()) - ord("A"):
+                if item["label"] == ord(pred.strip()) - ord("A"):
                     cnt += 1
-            outputs.append(ord(item["pred"].strip()) - ord("A"))
+            outputs.append(ord(pred.strip()) - ord("A"))
         assert len(outputs) == len(self.predictions)
 
         np_output_file = self.output_file.replace(".json", ".npy")

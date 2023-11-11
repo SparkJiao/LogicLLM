@@ -1,18 +1,11 @@
 import json
-import omegaconf
-import json
-import random
 from typing import List, Dict, Tuple, Union, Any, Callable
 
-import torch
-from torch.utils.data import Dataset, default_collate
-from transformers import PreTrainedTokenizer, AutoTokenizer
-
-from data.collators.flan import convert_to_standard_inputs
-from data.cot_critic import vanilla_seq2seq_convertor as vanilla_seq2seq_converter_text
-from general_util.logger import get_child_logger
-from general_util.tokenization_utils import expand_special_tokenizer, is_seq2seq_tokenizer
 from omegaconf.listconfig import ListConfig
+from torch.utils.data import Dataset
+from transformers import PreTrainedTokenizer
+
+from general_util.logger import get_child_logger
 
 logger = get_child_logger(__name__)
 
@@ -24,8 +17,8 @@ def read_example_files(file_list: ListConfig, split: str = "\n\n"):
     return split.join(exemplars)
 
 
-def read_single_file(file_path: str):
-    return open(file_path, "r").read().strip()
+def read_single_file(file_path: str, suffix: str = ""):
+    return open(file_path, "r").read().strip() + suffix
 
 
 templates = [
@@ -33,10 +26,23 @@ templates = [
     "{}\n\nBased on the original description of the problem above and the corresponding logic form. What's the correct answer?\n",
     "{}\n\nThe answer is ",
     "[Context]\n{}\n\n[Question]\n{}\n\n[Options]\n{}\n\nPlease decompose the problem above into smaller ones so that we can solve it separately and reach the final answer by consideing each subproblem and merge the sub-conclusions.\n\n",
-    "[Response]\n{}\n\n[Json]\n"
+    "[Response]\n{}\n\n[Json]\n",
+    "{}\n\n{}\n\n{}\n\n{}\n\n",
+    "Context:\n{}\n\nQuestion:\n{}\n\nOptions:\n{}\n\n",
+    "Context:\n{}\n\nQuestion:\n{}\n\nOptions:\n{}\n\n<Reasoning Start>\n",
 ]
 
 _rank2option = ["A", "B", "C", "D", "E"]
+
+
+def basic_filter():
+    def _func(item: Dict[str, str], label: int):
+        pred = item["pred"]
+        if pred:
+            return (ord(pred) - ord("A")) == label
+        return False
+
+    return _func
 
 
 def _format_option_list(option_list: List[str]) -> str:
@@ -81,9 +87,40 @@ class ChatReader:
                 "label": item["label"],
                 "text": item["text"] + item["response"],
                 "response": item["response"],
+                "pred": item["pred"],
             }
             for item in data
         ]
+        return data
+
+
+class ChatMergeReader:
+    def __init__(self, chat_file: str, original_reader: Callable, skip_empty: bool = True, filter_correct: bool = False, _filter: Callable = None):
+        reader = ChatReader()
+        chat_response = reader(chat_file)
+        self.id2response = {item["index"]: item for item in chat_response}
+        self.original_reader = original_reader
+        self.skip_empty = skip_empty
+        self.filter_correct = filter_correct
+        self._filter = _filter
+
+    def __call__(self, file_path: str) -> List[Dict[str, str]]:
+        original_data = self.original_reader(file_path)
+        data = []
+        for i, item in enumerate(original_data):
+            if "index" in item:
+                item_id = item["index"]
+            else:
+                item_id = i
+            if item_id in self.id2response:
+                response = self.id2response[item_id]["response"]
+            else:
+                response = ""
+            item["response"] = response
+            if (response or not self.skip_empty) and (not self.filter_correct or (self._filter(self.id2response[item_id], self.id2response[item_id]["label"]))):
+                data.append(item)
+
+        logger.info(f"ChatMergeReader: {len(data)} / {len(original_data)}")
         return data
 
 
@@ -145,16 +182,27 @@ class ComposePromptGenerator(Dataset):
                  compose_keys: Union[List, Tuple, ListConfig] = ("context", "question", "options"),
                  max_data_num: int = -1,
                  api_based: bool = False,
-                 service_based: bool = False, service_processor: Callable = None):
+                 service_based: bool = False, service_processor: Callable = None,
+                 flush_file: str = None):
         self.instruction = instruction
         self.few_shot_prompt = few_shot_prompt
         self.compose_keys = compose_keys
         self.input_data: List[Dict[str, Any]] = read_func(file_path)
 
+        flushed_data = {}
+        if flush_file is not None:
+            tmp = open(flush_file, "r").readlines()
+            for line in tmp:
+                item = json.loads(line)
+                flushed_data[item["id"]] = item
+
         self.inputs = []
         self.indices = []
         self.labels = []
         for i in range(len(self.input_data)):
+            if i in flushed_data:
+                continue
+
             _input = ""
             if self.instruction:
                 _input += self.instruction + "\n\n"

@@ -1,16 +1,14 @@
-import random
+from typing import Callable
+from typing import Union, Tuple, Dict, Optional
 
+import hydra
 import torch
+from omegaconf import DictConfig
 from torch.utils.data import Dataset
 from transformers import AutoTokenizer, PreTrainedTokenizer
 
 from general_util.logger import get_child_logger
 from general_util.tokenization_utils import expand_special_tokenizer
-from typing import Callable
-from datasets import load_dataset
-import hydra
-from omegaconf import DictConfig
-from typing import Union, Tuple, Dict, Optional
 
 logger = get_child_logger("FLAN")
 

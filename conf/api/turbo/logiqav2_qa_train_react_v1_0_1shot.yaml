@@ -1,0 +1,68 @@
+hydra:
+  run:
+    dir: ./
+
+train_file: logiqa-v2/train.txt
+dev_file:
+test_file: logiqa-v2/train.txt
+
+num_shot: 5
+
+output_file: openai-api-output/logiqav2-train-v1.0.react.1shot.turbo.json
+lush_file: ${output_file}l
+
+model:
+  _target_: open_ai_callers.vanilla_caller.GPTTurbo
+  model: "gpt-3.5-turbo"
+  max_tokens: 2048
+  api_time_interval: 1
+
+# Data loading
+read_tensor:
+  _target_: data.logic_form.ComposePromptGenerator
+  read_func:
+    _target_: data.readers.LogiQAReaderV2
+    return_dict: True
+    flat_options: True
+  template_id: 6
+  instruction:
+    _target_: data.prompts.logiqa.react.prompts.get_prompt
+    prompt_name: react_v1
+  few_shot_prompt:
+    _target_: data.logic_form.read_single_file
+    file_path: data/prompts/logiqa/react/train_4554.txt
+    suffix: "\n<END OF EXAMPLES>"
+  compose_keys: [ "context", "question", "option_list" ]
+  max_data_num: -1
+  api_based: True
+  service_based: False
+
+# Dataloader
+num_workers: 0
+prefetch_factor: 2
+
+output_dir:
+
+post_process:
+  _target_: post_processors.openai_api_callback.OpenAICallBack
+  output_file: ${output_file}
+  answer_clean:
+    _target_: post_processors.openai_api_callback.MCQAAnswerClean
+    prompt: few-shot
+
+
+# Training hyper-parameters
+per_gpu_train_batch_size: 1
+per_gpu_eval_batch_size: 1
+
+ddp_eval: False
+no_cuda: False
+seed: 42
+local_rank: -1
+
+# Temporary variables
+n_gpu: 1
+device:
+train_batch_size:
+eval_batch_size:
+world_size:

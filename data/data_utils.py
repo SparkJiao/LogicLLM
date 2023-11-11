@@ -3,7 +3,7 @@ from typing import List, Set, Union, Dict, Tuple
 
 from transformers import PreTrainedTokenizer
 from transformers import RobertaTokenizer, RobertaTokenizerFast, AlbertTokenizer, AlbertTokenizerFast, DebertaTokenizer, \
-    DebertaTokenizerFast, DebertaV2Tokenizer
+    DebertaTokenizerFast, DebertaV2Tokenizer, LlamaTokenizer
 from transformers.models.bert.tokenization_bert import whitespace_tokenize
 
 from general_util.logger import get_child_logger

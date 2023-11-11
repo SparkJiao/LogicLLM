@@ -28,13 +28,15 @@ class GPTTurbo(GPTAPIInterface):
                  frequency_penalty: float = 0.0,
                  presence_penalty: float = 0.0,
                  api_time_interval: int = 2,
-                 organization: str = ""):
+                 organization: str = "",
+                 n: int = 1, ):
         super().__init__(model, max_tokens, api_time_interval)
         self.temperature = temperature
         self.top_p = top_p
         self.frequency_penalty = frequency_penalty
         self.presence_penalty = presence_penalty
         self.organization = organization
+        self.n = n
 
     def __call__(self, text: Union[str, List[str]]):
         if isinstance(text, list):
@@ -64,6 +66,7 @@ class GPTTurbo(GPTAPIInterface):
                     frequency_penalty=self.frequency_penalty,
                     presence_penalty=self.presence_penalty,
                     organization=self.organization if self.organization else None,
+                    n=self.n,
                 )
                 error_time = 0
                 flag = True
@@ -85,4 +88,8 @@ class GPTTurbo(GPTAPIInterface):
 
         if self.api_time_interval:
             time.sleep(self.api_time_interval)
-        return {"response": response["choices"][0]["message"]["content"]}
+
+        response = [choice["message"]["content"] for choice in response["choices"]]
+        if len(response) == 1:
+            response = response[0]
+        return {"response": response}

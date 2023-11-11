@@ -122,5 +122,5 @@ if __name__ == "__main__":
         else:
             hydra_formatted_args.append(arg)
     sys.argv = hydra_formatted_args
-
+    print(sys.argv)
     main()
