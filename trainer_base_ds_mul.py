@@ -134,6 +134,8 @@ def train(cfg, model, tokenizer, continue_from_global_step=0):
             if dist.is_initialized():
                 dist.barrier()
 
+        logger.warning(f"Rank No. {dist.get_rank()} has {total_dataset_len} samples.")
+
         if dist.is_initialized():
             if dist.get_rank() == 0:
                 objects = [total_dataset_len for _ in range(dist.get_world_size())]
