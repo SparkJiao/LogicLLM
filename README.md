@@ -77,19 +77,18 @@ python trainer_base_fsdp_v4.py -cp conf/llama/wiki/mc_eval/ -cn llama_30b_merit_
 
 If you find the repository and the paper helpful, please kindly cite our papers:
 ```
-@article{logicllm2023jiao,
+@inproceedings{logicllm2023jiao,
   author       = {Fangkai Jiao and
                   Zhiyang Teng and
-                  Shafiq R. Joty and
                   Bosheng Ding and
-                  Aixin Sun and
                   Zhengyuan Liu and
-                  Nancy F. Chen},
-  title        = {LogicLLM: Exploring Self-supervised Logic-enhanced Training for Large
+                  Nancy F. Chen and
+                  Shafiq R. Joty},
+  title        = {Exploring Self-supervised Logic-enhanced Training for Large
                   Language Models},
-  journal      = {CoRR},
-  volume       = {abs/2305.13718},
-  year         = {2023},
+  booktitle    = {{NAACL}},
+  publisher    = {Association for Computational Linguistics},
+  year         = {2024},
 }
 
 @inproceedings{merit2022jiao,
@@ -97,12 +96,8 @@ If you find the repository and the paper helpful, please kindly cite our papers:
                   Yangyang Guo and
                   Xuemeng Song and
                   Liqiang Nie},
-  editor       = {Smaranda Muresan and
-                  Preslav Nakov and
-                  Aline Villavicencio},
   title        = {MERIt: Meta-Path Guided Contrastive Learning for Logical Reasoning},
-  booktitle    = {Findings of the Association for Computational Linguistics: {ACL} 2022,
-                  Dublin, Ireland, May 22-27, 2022},
+  booktitle    = {Findings of {ACL}},
   pages        = {3496--3509},
   publisher    = {Association for Computational Linguistics},
   year         = {2022},
